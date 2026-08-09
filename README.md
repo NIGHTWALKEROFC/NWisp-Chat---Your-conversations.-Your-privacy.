@@ -29,3 +29,43 @@ A privacy-first mobile app combining **WhatsApp-style encrypted messaging** with
 | 🕵️ | Granular privacy controls — last seen, read receipts, discoverability |
 
 ## 🏗️ Architecture
+
+Flutter (Android + iOS)
+│
+├── Firebase Auth → identity
+├── Cloud Firestore → messages, stories, metadata (TTL auto-delete)
+├── Firebase Storage → media (photos/videos)
+├── Cloud Functions → push notification relay
+└── Signal Protocol → end-to-end encryption (client-side only)
+
+No self-hosted server — everything runs on Firebase's managed, free-tier infrastructure.
+
+## 🚀 Getting started
+
+1. Clone the repo and run `flutter pub get` inside `mobile/`.
+2. Create a Firebase project and run `flutterfire configure`.
+3. Deploy `firestore.rules` and `storage.rules`.
+4. Enable Firestore TTL policies on `expiresAt` for `messages` and `stories`.
+5. `flutter run`.
+
+Full setup walkthrough: see [`docs/SETUP.md`](docs/SETUP.md).
+
+## 🔐 Security
+
+- All message content is encrypted client-side with the Signal Protocol before it ever reaches Firebase — the server only ever sees ciphertext.
+- Firestore Security Rules enforce conversation membership and per-user write scoping.
+- Report vulnerabilities privately — do not open a public issue for security bugs.
+
+## 📦 Builds
+
+Handled via [Codemagic](https://codemagic.io) — see `codemagic.yaml`. Every push to `main` triggers Android and iOS builds.
+
+## 📄 License
+
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+<div align="center">
+Built by <a href="https://github.com/NIGHTWALKEROFC">NIGHTWALKEROFC</a>
+</div>
