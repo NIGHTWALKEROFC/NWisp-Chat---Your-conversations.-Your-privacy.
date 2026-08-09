@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "39179591297",
+    "project_id": "nwisp-c2f49",
+    "storage_bucket": "nwisp-c2f49.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:39179591297:android:ac003ce4e627e4639bb780",
+        "android_client_info": {
+          "package_name": "com.nightwalker.securechat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4_QHFNvRDCX7OMG990N5_jbbUF4FGx38"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
