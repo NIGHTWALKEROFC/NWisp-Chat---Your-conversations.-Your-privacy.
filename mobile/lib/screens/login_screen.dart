@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import 'chat_list_screen.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -52,6 +53,12 @@ class _LoginScreenState extends State<LoginScreen> {
             ElevatedButton(
               onPressed: _loading ? null : _login,
               child: _loading ? const CircularProgressIndicator() : const Text('Sign in'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const RegisterScreen()),
+              ),
+              child: const Text("Don't have an account? Sign up"),
             ),
           ],
         ),
