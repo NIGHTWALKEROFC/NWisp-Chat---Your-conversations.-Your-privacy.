@@ -9,7 +9,6 @@ class AuthService {
     required String email,
     required String password,
     required String username,
-    required Map<String, dynamic> deviceKeys,
   }) async {
     final existing = await _db.collection('usernames').doc(username.toLowerCase()).get();
     if (existing.exists) throw Exception('Username already taken');
@@ -27,27 +26,8 @@ class AuthService {
       'createdAt': FieldValue.serverTimestamp(),
     });
     batch.set(_db.collection('usernames').doc(username.toLowerCase()), {'uid': cred.user!.uid});
-    batch.set(
-      _db.collection('users').doc(cred.user!.uid).collection('devices').doc('1'),
-      {
-        'identityKey': deviceKeys['identityKey'],
-        'signedPrekey': deviceKeys['signedPrekey'],
-        'signedPrekeySignature': deviceKeys['signedPrekeySignature'],
-        'registrationId': deviceKeys['registrationId'],
-        'createdAt': FieldValue.serverTimestamp(),
-      },
-    );
     await batch.commit();
 
-    if (deviceKeys['oneTimePrekeys'] != null) {
-      for (final otk in deviceKeys['oneTimePrekeys']) {
-        await _db
-            .collection('users').doc(cred.user!.uid)
-            .collection('devices').doc('1')
-            .collection('oneTimePrekeys').doc(otk['keyId'].toString())
-            .set({'publicKey': otk['publicKey'], 'used': false});
-      }
-    }
     return cred;
   }
 
