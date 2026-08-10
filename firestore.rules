@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(uid);
+
+      match /devices/{deviceId} {
+        allow read: if isSignedIn();
+        allow write: if isOwner(uid);
+
+        match /oneTimePrekeys/{keyId} {
+          allow read: if isSignedIn();
+          allow update: if isSignedIn()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used']);
+          allow create, delete: if isOwner(uid);
+        }
+      }
+    }
+
+    match /usernames/{name} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      function isMember() {
+        return isSignedIn() &&
+          exists(/databases/$(database)/documents/conversations/$(conversationId)/members/$(request.auth.uid));
+      }
+      allow read: if isMember();
+      allow create: if isSignedIn();
+
+      match /members/{memberId} {
+        allow read: if isMember();
+        allow write: if isSignedIn();
+      }
+
+      match /messages/{messageId} {
+        allow read: if isMember();
+        allow create: if isMember() && request.resource.data.senderId == request.auth.uid;
+        allow update: if isMember()
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deliveredTo', 'readBy']);
+        allow delete: if false;
+      }
+    }
+
+    match /stories/{storyId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if false;
+
+      match /views/{viewerId} {
+        allow read: if isSignedIn();
+        allow write: if isOwner(viewerId);
+      }
+    }
+  }
+}
