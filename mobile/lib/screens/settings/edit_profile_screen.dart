@@ -1,5 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../services/auth_service.dart';
+import '../../services/media_service.dart';
 
 class EditProfileScreen extends StatefulWidget {
   final String currentUsername;
@@ -13,7 +16,39 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final _usernameController = TextEditingController(text: widget.currentUsername);
   final _authService = AuthService();
   bool _saving = false;
+  bool _uploadingPhoto = false;
   String? _error;
+  String? _photoUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _authService.currentUserProfile().then((doc) {
+      if (mounted) setState(() => _photoUrl = doc.data()?['photoUrl'] as String?);
+    });
+  }
+
+  Future<void> _pickPhoto() async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+    if (picked == null) return;
+
+    setState(() => _uploadingPhoto = true);
+    try {
+      final uid = _authService.currentUserId!;
+      final url = await MediaService.uploadAvatar(File(picked.path), uid);
+      await _authService.updatePhotoUrl(url);
+      if (mounted) setState(() => _photoUrl = url);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not upload photo — check your connection and try again.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingPhoto = false);
+    }
+  }
 
   Future<void> _save() async {
     final newUsername = _usernameController.text.trim();
@@ -49,22 +84,35 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            CircleAvatar(
-              radius: 40,
-              backgroundColor: scheme.primaryContainer,
-              child: Text(
-                _usernameController.text.isNotEmpty ? _usernameController.text[0].toUpperCase() : '?',
-                style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
+            Center(
+              child: Stack(
+                children: [
+                  CircleAvatar(
+                    radius: 40,
+                    backgroundColor: scheme.primaryContainer,
+                    backgroundImage: _photoUrl != null ? NetworkImage(_photoUrl!) : null,
+                    child: _photoUrl == null
+                        ? Text(
+                            _usernameController.text.isNotEmpty ? _usernameController.text[0].toUpperCase() : '?',
+                            style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
+                          )
+                        : null,
+                  ),
+                  if (_uploadingPhoto)
+                    Positioned.fill(
+                      child: CircleAvatar(
+                        radius: 40,
+                        backgroundColor: Colors.black45,
+                        child: const CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      ),
+                    ),
+                ],
               ),
             ),
             const SizedBox(height: 8),
             Center(
               child: TextButton.icon(
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Avatar upload coming soon')),
-                  );
-                },
+                onPressed: _uploadingPhoto ? null : _pickPhoto,
                 icon: const Icon(Icons.camera_alt_outlined, size: 18),
                 label: const Text('Change photo'),
               ),
