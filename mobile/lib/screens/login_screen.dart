@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import 'chat_list_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -9,15 +9,16 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _identifierController = TextEditingController();
+  final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _authService = AuthService();
   bool _loading = false;
   String? _error;
 
   Future<void> _login() async {
     setState(() { _loading = true; _error = null; });
     try {
-      await ApiService.login(_identifierController.text.trim(), _passwordController.text);
+      await _authService.loginWithEmail(_emailController.text.trim(), _passwordController.text);
       if (!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const ChatListScreen()));
     } catch (e) {
@@ -37,8 +38,8 @@ class _LoginScreenState extends State<LoginScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             TextField(
-              controller: _identifierController,
-              decoration: const InputDecoration(labelText: 'Username, email, or phone'),
+              controller: _emailController,
+              decoration: const InputDecoration(labelText: 'Email'),
             ),
             const SizedBox(height: 12),
             TextField(
