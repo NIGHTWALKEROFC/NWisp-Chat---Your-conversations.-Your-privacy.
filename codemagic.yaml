@@ -10,4 +10,25 @@ workflows:
         SUPABASE_URL: "https://bgbmrtwbndoewwwjxnxa.supabase.co"
         SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnYm1ydHdibmRvZXd3d2p4bnhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyODE5OTUsImV4cCI6MjEwMTg1Nzk5NX0.xa0VJg9di1Tm-p6ZmuJSri2kPbsRS1SxoWq4lmJ0CzU"
       android_signing:
-        -
+        - securechat_keystore
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          cd mobile
+          flutter packages pub get
+      - name: Build APK and AAB
+        script: |
+          cd mobile
+          flutter build appbundle --release \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+    artifacts:
+      - mobile/build/**/outputs/**/*.aab
+      - mobile/build/**/outputs/**/*.apk
+    publishing:
+      email:
+        recipients:
+          - saraamuhammad3@gmail.com
