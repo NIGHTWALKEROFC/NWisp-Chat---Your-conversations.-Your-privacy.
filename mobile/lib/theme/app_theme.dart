@@ -1,22 +1,24 @@
 import 'package:flutter/material.dart';
 
 /// Central place for the app's visual identity.
-/// Change [seedColor] to re-skin the entire app in one line.
+/// [seedColor] can be overridden per-device from Settings > Appearance;
+/// it defaults to the app's signature teal-green if the user hasn't
+/// picked a custom accent color.
 class AppTheme {
-  static const Color seedColor = Color(0xFF00C896); // teal-green accent
+  static const Color defaultSeedColor = Color(0xFF00C896);
   static const Color darkSurface = Color(0xFF0D1117);
 
-  static ThemeData light() {
+  static ThemeData light([Color? seedColor]) {
     final scheme = ColorScheme.fromSeed(
-      seedColor: seedColor,
+      seedColor: seedColor ?? defaultSeedColor,
       brightness: Brightness.light,
     );
     return _base(scheme);
   }
 
-  static ThemeData dark() {
+  static ThemeData dark([Color? seedColor]) {
     final scheme = ColorScheme.fromSeed(
-      seedColor: seedColor,
+      seedColor: seedColor ?? defaultSeedColor,
       brightness: Brightness.dark,
       surface: darkSurface,
     );
