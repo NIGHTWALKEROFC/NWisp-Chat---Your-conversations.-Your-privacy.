@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/settings_service.dart';
-import '../../services/theme_service.dart';
+import '../../services/branding_service.dart';
 import '../login_screen.dart';
+import '../security/pin_screen.dart';
 import 'edit_profile_screen.dart';
 import 'account_screen.dart';
+import 'appearance_screen.dart';
+import 'blocked_users_screen.dart';
+
+const _ttlOptions = [1, 6, 24, 72, 168]; // hours: 1h, 6h, 1d, 3d, 7d
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -18,6 +24,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _stayLoggedIn = true;
   bool _lastSeenVisible = true;
   bool _readReceiptsEnabled = true;
+  bool _appLockEnabled = false;
+  int _ttlHours = 24;
   String _username = '';
   String _email = '';
   bool _loadingProfile = true;
@@ -30,15 +38,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _load() async {
     final stay = await SettingsService.getStayLoggedIn();
+    final appLock = await AppLockService.isEnabled();
     final doc = await _authService.currentUserProfile();
     final data = doc.data() ?? {};
     if (!mounted) return;
     setState(() {
       _stayLoggedIn = stay;
+      _appLockEnabled = appLock;
       _username = (data['username'] as String?) ?? '';
       _email = _authService.currentUser?.email ?? '';
       _lastSeenVisible = (data['lastSeenVisible'] as bool?) ?? true;
       _readReceiptsEnabled = (data['readReceiptsEnabled'] as bool?) ?? true;
+      _ttlHours = (data['messageTtlHours'] as num?)?.toInt() ?? 24;
       _loadingProfile = false;
     });
   }
@@ -53,49 +64,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _openThemePicker() {
-    final themeService = context.read<ThemeService>();
+  Future<void> _toggleAppLock(bool enable) async {
+    if (enable) {
+      final result = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(builder: (_) => const PinScreen(mode: PinScreenMode.setup)),
+      );
+      if (result == true && mounted) setState(() => _appLockEnabled = true);
+    } else {
+      await AppLockService.disable();
+      setState(() => _appLockEnabled = false);
+    }
+  }
+
+  void _openTtlPicker() {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('App theme', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-                ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Auto-delete messages after', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               ),
-              for (final entry in const [
-                (ThemeMode.system, 'System default', Icons.brightness_auto_outlined),
-                (ThemeMode.light, 'Light', Icons.light_mode_outlined),
-                (ThemeMode.dark, 'Dark', Icons.dark_mode_outlined),
-              ])
-                RadioListTile<ThemeMode>(
-                  value: entry.$1,
-                  groupValue: themeService.mode,
-                  title: Text(entry.$2),
-                  secondary: Icon(entry.$3),
-                  onChanged: (mode) {
-                    if (mode != null) themeService.setMode(mode);
-                    Navigator.pop(sheetContext);
-                  },
-                ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+            ),
+            for (final hours in _ttlOptions)
+              RadioListTile<int>(
+                value: hours,
+                groupValue: _ttlHours,
+                title: Text(_ttlLabel(hours)),
+                onChanged: (value) async {
+                  if (value == null) return;
+                  setState(() => _ttlHours = value);
+                  await _authService.updateMessageTtl(value);
+                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
+  }
+
+  String _ttlLabel(int hours) {
+    if (hours < 24) return '$hours hour${hours == 1 ? '' : 's'}';
+    final days = hours ~/ 24;
+    return '$days day${days == 1 ? '' : 's'}';
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final branding = context.watch<BrandingService>();
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: _loadingProfile
@@ -107,10 +132,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: CircleAvatar(
                     radius: 26,
                     backgroundColor: scheme.primaryContainer,
-                    child: Text(
-                      _username.isNotEmpty ? _username[0].toUpperCase() : '?',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
-                    ),
+                    backgroundImage: branding.logoUrl != null ? NetworkImage(branding.logoUrl!) : null,
+                    child: branding.logoUrl == null
+                        ? Text(
+                            _username.isNotEmpty ? _username[0].toUpperCase() : '?',
+                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
+                          )
+                        : null,
                   ),
                   title: Text(_username, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
                   subtitle: Text(_email),
@@ -137,6 +165,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
 
+                _SectionLabel('Appearance'),
+                ListTile(
+                  leading: const Icon(Icons.palette_outlined),
+                  title: const Text('Theme, color & logo'),
+                  subtitle: const Text('Customize how the app looks on this device'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AppearanceScreen()),
+                  ),
+                ),
+
                 _SectionLabel('Privacy'),
                 SwitchListTile.adaptive(
                   secondary: const Icon(Icons.visibility_outlined),
@@ -156,17 +196,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     await _authService.updatePrivacySetting('readReceiptsEnabled', v);
                   },
                 ),
-
-                _SectionLabel('Appearance'),
                 ListTile(
-                  leading: const Icon(Icons.palette_outlined),
-                  title: const Text('Theme'),
-                  subtitle: Text(_themeLabel(context.watch<ThemeService>().mode)),
+                  leading: const Icon(Icons.block_outlined),
+                  title: const Text('Blocked users'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: _openThemePicker,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
+                  ),
                 ),
 
-                _SectionLabel('Session'),
+                _SectionLabel('Security'),
+                SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.pin_outlined),
+                  title: const Text('App lock (PIN)'),
+                  subtitle: const Text('Require a PIN every time you open the app'),
+                  value: _appLockEnabled,
+                  onChanged: _toggleAppLock,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.timer_outlined),
+                  title: const Text('Auto-delete messages'),
+                  subtitle: Text('After ${_ttlLabel(_ttlHours)}'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _openTtlPicker,
+                ),
                 SwitchListTile.adaptive(
                   secondary: const Icon(Icons.lock_clock_outlined),
                   title: const Text('Stay signed in'),
@@ -196,12 +250,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
     );
   }
-
-  String _themeLabel(ThemeMode mode) => switch (mode) {
-        ThemeMode.light => 'Light',
-        ThemeMode.dark => 'Dark',
-        ThemeMode.system => 'System default',
-      };
 }
 
 class _SectionLabel extends StatelessWidget {
