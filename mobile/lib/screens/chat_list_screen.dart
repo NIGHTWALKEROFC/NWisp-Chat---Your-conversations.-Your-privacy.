@@ -1,4 +1,8 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../services/conversation_service.dart';
+import 'chat/chat_detail_screen.dart';
+import 'contacts/contacts_screen.dart';
 import 'settings/settings_screen.dart';
 
 class ChatListScreen extends StatelessWidget {
@@ -7,6 +11,8 @@ class ChatListScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final conversationService = ConversationService();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Chats'),
@@ -21,38 +27,65 @@ class ChatListScreen extends StatelessWidget {
           ),
         ],
       ),
-      // NOTE: conversation list + "start new chat" is intentionally not wired
-      // up yet — that needs a real Firestore schema for conversations and a
-      // contact-picker flow, which is worth designing properly rather than
-      // guessing at. See suggested next features.
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.chat_bubble_outline_rounded, size: 72, color: scheme.primary.withValues(alpha: 0.5)),
-              const SizedBox(height: 16),
-              Text(
-                'No conversations yet',
-                style: Theme.of(context).textTheme.titleMedium,
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: conversationService.conversationsStream(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          final docs = snapshot.data!.docs;
+          if (docs.isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.chat_bubble_outline_rounded, size: 72, color: scheme.primary.withValues(alpha: 0.5)),
+                    const SizedBox(height: 16),
+                    Text('No conversations yet', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Tap the button below to message a contact.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 8),
-              Text(
-                'Start a new chat to see it here.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: scheme.onSurfaceVariant),
-              ),
-            ],
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('New chat flow coming soon')),
+            );
+          }
+          return ListView.builder(
+            itemCount: docs.length,
+            itemBuilder: (context, i) {
+              final data = docs[i].data();
+              final (otherUid, otherUsername) = conversationService.otherParticipant(data);
+              final lastMessage = (data['lastMessageText'] as String?) ?? 'Say hello 👋';
+              return ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: scheme.primaryContainer,
+                  child: Text(otherUsername.isNotEmpty ? otherUsername[0].toUpperCase() : '?'),
+                ),
+                title: Text(otherUsername),
+                subtitle: Text(lastMessage, maxLines: 1, overflow: TextOverflow.ellipsis),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ChatDetailScreen(
+                      conversationId: docs[i].id,
+                      peerUid: otherUid,
+                      peerUsername: otherUsername,
+                    ),
+                  ),
+                ),
+              );
+            },
           );
         },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const ContactsScreen()),
+        ),
         child: const Icon(Icons.chat_rounded),
       ),
     );
