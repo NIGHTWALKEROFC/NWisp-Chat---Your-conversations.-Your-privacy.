@@ -7,6 +7,8 @@ workflows:
       flutter: stable
       vars:
         PACKAGE_NAME: "com.nightwalker.securechat"
+        SUPABASE_URL: "https://bgbmrtwbndoewwwjxnxa.supabase.co"
+        SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnYm1ydHdibmRvZXd3d2p4bnhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyODE5OTUsImV4cCI6MjEwMTg1Nzk5NX0.xa0VJg9di1Tm-p6ZmuJSri2kPbsRS1SxoWq4lmJ0CzU"
       android_signing:
         - securechat_keystore
     scripts:
@@ -17,14 +19,16 @@ workflows:
       - name: Build APK and AAB
         script: |
           cd mobile
-          flutter build appbundle --release
+          flutter build appbundle --release \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
     artifacts:
       - mobile/build/**/outputs/**/*.aab
       - mobile/build/**/outputs/**/*.apk
     publishing:
       email:
         recipients:
-          - your-email@example.com
+          - saraamuhammad3@gmail.com
 
   ios-workflow:
     name: Secure Chat - iOS
@@ -34,6 +38,9 @@ workflows:
       flutter: stable
       xcode: latest
       cocoapods: default
+      vars:
+        SUPABASE_URL: "https://bgbmrtwbndoewwwjxnxa.supabase.co"
+        SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnYm1ydHdibmRvZXd3d2p4bnhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyODE5OTUsImV4cCI6MjEwMTg1Nzk5NX0.xa0VJg9di1Tm-p6ZmuJSri2kPbsRS1SxoWq4lmJ0CzU"
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.nightwalker.securechat
@@ -49,10 +56,13 @@ workflows:
       - name: Build IPA
         script: |
           cd mobile
-          flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
+          flutter build ipa --release \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
+            --export-options-plist=/Users/builder/export_options.plist
     artifacts:
       - mobile/build/ios/ipa/*.ipa
     publishing:
       email:
         recipients:
-          - your-email@example.com
+          - saraamuhammad3@gmail.com
