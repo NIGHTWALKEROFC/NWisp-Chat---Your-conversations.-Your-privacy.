@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:provider/provider.dart';
 import 'firebase_options.dart';
-import 'screens/login_screen.dart';
+import 'services/theme_service.dart';
+import 'theme/app_theme.dart';
+import 'screens/auth_gate.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -11,18 +14,31 @@ void main() async {
     url: const String.fromEnvironment('SUPABASE_URL'),
     anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
   );
-  runApp(const SecureChatApp());
+
+  final themeService = ThemeService();
+  await themeService.load();
+
+  runApp(
+    ChangeNotifierProvider.value(
+      value: themeService,
+      child: const SecureChatApp(),
+    ),
+  );
 }
 
 class SecureChatApp extends StatelessWidget {
   const SecureChatApp({super.key});
+
   @override
   Widget build(BuildContext context) {
+    final themeService = context.watch<ThemeService>();
     return MaterialApp(
       title: 'Secure Chat',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: const LoginScreen(),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: themeService.mode,
+      home: const AuthGate(),
     );
   }
 }
