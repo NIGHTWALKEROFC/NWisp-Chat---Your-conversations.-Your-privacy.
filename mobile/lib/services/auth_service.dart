@@ -5,8 +5,6 @@ class AuthService {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
 
-  /// Emits whenever the signed-in user changes (login, logout, token refresh).
-  /// AuthGate listens to this to decide which screen to show at launch.
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
   User? get currentUser => _auth.currentUser;
@@ -28,10 +26,15 @@ class AuthService {
       'username': username,
       'usernameLower': username.toLowerCase(),
       'phoneNumber': phoneNumber,
+      'photoUrl': null,
       'emailVisible': false,
       'phoneVisible': false,
       'lastSeenVisible': true,
       'readReceiptsEnabled': true,
+      'online': false,
+      'lastSeen': FieldValue.serverTimestamp(),
+      'blockedUsers': <String>[],
+      'messageTtlHours': 24,
       'createdAt': FieldValue.serverTimestamp(),
     });
     batch.set(_db.collection('usernames').doc(username.toLowerCase()), {'uid': cred.user!.uid});
@@ -45,10 +48,6 @@ class AuthService {
 
   Future<void> logout() => _auth.signOut();
 
-  /// Firebase requires a recent login before sensitive changes
-  /// (email, password). Call this right before updateEmail/updatePassword
-  /// if the user hasn't signed in recently, or Firebase throws
-  /// `requires-recent-login`.
   Future<void> reauthenticate(String currentPassword) async {
     final user = _auth.currentUser;
     if (user == null || user.email == null) {
@@ -61,9 +60,6 @@ class AuthService {
     await user.reauthenticateWithCredential(credential);
   }
 
-  /// Sends a verification link to the new address; the email only changes
-  /// once the user clicks it. This is the current Firebase-recommended flow
-  /// (the older, instant `updateEmail` is deprecated for security reasons).
   Future<void> requestEmailChange(String newEmail) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No signed-in user');
@@ -76,15 +72,18 @@ class AuthService {
     await user.updatePassword(newPassword);
   }
 
-  /// Phone number here is a profile field (shown to contacts, used for
-  /// recovery) — not yet a sign-in method. See README note on Phone sign-in.
   Future<void> updatePhoneNumber(String phoneNumber) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
     await _db.collection('users').doc(uid).update({'phoneNumber': phoneNumber});
   }
 
-  /// Renames the user, keeping the `usernames` uniqueness collection in sync.
+  Future<void> updatePhotoUrl(String photoUrl) async {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    await _db.collection('users').doc(uid).update({'photoUrl': photoUrl});
+  }
+
   Future<void> updateUsername(String newUsername) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
@@ -119,5 +118,26 @@ class AuthService {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
     await _db.collection('users').doc(uid).update({field: value});
+  }
+
+  /// How long a new message stays before the scheduled cleanup job removes
+  /// it (see scripts/cleanup.js, which already deletes by `expiresAt` —
+  /// no server-side change needed for this to take effect).
+  Future<void> updateMessageTtl(int hours) async {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    await _db.collection('users').doc(uid).update({'messageTtlHours': hours});
+  }
+
+  /// Saves this device's FCM token so a future Cloud Function can look it up
+  /// to send push notifications. Storing the token is the only part that
+  /// happens on-device — actually sending notifications when the app is
+  /// closed requires a small server-side Cloud Function, a separate follow-up.
+  Future<void> saveFcmToken(String token) async {
+    final uid = currentUserId;
+    if (uid == null) return;
+    await _db.collection('users').doc(uid).update({
+      'fcmTokens': FieldValue.arrayUnion([token]),
+    });
   }
 }
