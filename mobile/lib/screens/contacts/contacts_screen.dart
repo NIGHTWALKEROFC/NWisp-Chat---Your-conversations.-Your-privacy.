@@ -34,6 +34,25 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
     );
   }
 
+  Widget _errorState(BuildContext context, Object? error) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, size: 48, color: scheme.error),
+            const SizedBox(height: 12),
+            Text('Could not load this', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text('$error', textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -61,6 +80,7 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
           StreamBuilder(
             stream: _contactService.contactsStream(),
             builder: (context, snapshot) {
+              if (snapshot.hasError) return _errorState(context, snapshot.error);
               if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
               final docs = snapshot.data!.docs;
               if (docs.isEmpty) {
@@ -102,6 +122,7 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
           StreamBuilder(
             stream: _contactService.incomingRequestsStream(),
             builder: (context, snapshot) {
+              if (snapshot.hasError) return _errorState(context, snapshot.error);
               if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
               final docs = snapshot.data!.docs;
               if (docs.isEmpty) {
