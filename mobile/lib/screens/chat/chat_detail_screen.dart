@@ -173,6 +173,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _chatService.messageStream(widget.conversationId),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.error_outline, size: 48, color: scheme.error),
+                          const SizedBox(height: 12),
+                          Text('Could not load messages', style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 4),
+                          Text('${snapshot.error}',
+                              textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
+                        ],
+                      ),
+                    ),
+                  );
+                }
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                 final docs = snapshot.data!.docs;
                 if (docs.isEmpty) {
