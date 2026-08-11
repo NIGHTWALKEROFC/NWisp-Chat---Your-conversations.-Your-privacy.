@@ -16,4 +16,7 @@ jobs:
       - run: cd scripts && npm install
       - env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: echo "Secret length is ${#FIREBASE_SERVICE_ACCOUNT} characters"
+      - env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: cd scripts && node cleanup.js
