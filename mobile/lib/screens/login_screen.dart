@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
+import '../services/branding_service.dart';
 import '../services/settings_service.dart';
 import 'register_screen.dart';
 
@@ -58,6 +60,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final logoUrl = context.watch<BrandingService>().logoUrl;
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -67,7 +70,12 @@ class _LoginScreenState extends State<LoginScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 24),
-                Icon(Icons.lock_outline_rounded, size: 56, color: scheme.primary),
+                if (logoUrl != null)
+                  Center(
+                    child: CircleAvatar(radius: 32, backgroundImage: NetworkImage(logoUrl)),
+                  )
+                else
+                  Icon(Icons.lock_outline_rounded, size: 56, color: scheme.primary),
                 const SizedBox(height: 12),
                 Text(
                   'Welcome back',
