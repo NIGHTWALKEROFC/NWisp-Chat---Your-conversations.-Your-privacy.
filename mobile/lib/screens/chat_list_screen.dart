@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/conversation_service.dart';
 import 'chat/chat_detail_screen.dart';
 import 'contacts/contacts_screen.dart';
+import 'contacts/find_users_screen.dart';
 import 'settings/settings_screen.dart';
 
 class ChatListScreen extends StatelessWidget {
@@ -18,6 +19,14 @@ class ChatListScreen extends StatelessWidget {
         title: const Text('Chats'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Search people',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const FindUsersScreen()),
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Settings',
             onPressed: () => Navigator.push(
@@ -30,6 +39,23 @@ class ChatListScreen extends StatelessWidget {
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: conversationService.conversationsStream(),
         builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.error_outline, size: 48, color: scheme.error),
+                    const SizedBox(height: 12),
+                    Text('Could not load chats', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 4),
+                    Text('${snapshot.error}', textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+            );
+          }
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
           final docs = snapshot.data!.docs;
           if (docs.isEmpty) {
