@@ -22,7 +22,7 @@ class MediaService {
 
     await Supabase.instance.client.storage
         .from(bucket)
-        .uploadToSignedUrl(path, data['token'], await file.readAsBytes());
+        .uploadToSignedUrl(path, data['token'], file);
 
     return path;
   }
