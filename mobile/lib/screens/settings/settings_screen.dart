@@ -4,14 +4,17 @@ import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/branding_service.dart';
+import '../../widgets/contact_developer_sheet.dart';
 import '../login_screen.dart';
 import '../security/pin_screen.dart';
 import 'edit_profile_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
 import 'blocked_users_screen.dart';
+import 'help_center_screen.dart';
+import 'privacy_policy_screen.dart';
 
-const _ttlOptions = [1, 6, 24, 72, 168]; // hours: 1h, 6h, 1d, 3d, 7d
+const _ttlOptions = [1, 6, 24, 72, 168];
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -72,8 +75,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       if (result == true && mounted) setState(() => _appLockEnabled = true);
     } else {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Turn off app lock?'),
+          content: const Text('Anyone with access to your unlocked phone will be able to open this app.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Turn off'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
       await AppLockService.disable();
-      setState(() => _appLockEnabled = false);
+      if (mounted) setState(() => _appLockEnabled = false);
     }
   }
 
@@ -90,6 +109,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text('Auto-delete messages after', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  "This is the app-wide default. Any single chat can override it from that chat's settings.",
+                  style: TextStyle(fontSize: 12.5),
+                ),
               ),
             ),
             for (final hours in _ttlOptions)
@@ -152,7 +181,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
                 const Divider(height: 24),
-
                 _SectionLabel('Account'),
                 ListTile(
                   leading: const Icon(Icons.badge_outlined),
@@ -164,7 +192,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     MaterialPageRoute(builder: (_) => const AccountScreen()),
                   ),
                 ),
-
                 _SectionLabel('Appearance'),
                 ListTile(
                   leading: const Icon(Icons.palette_outlined),
@@ -176,7 +203,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     MaterialPageRoute(builder: (_) => const AppearanceScreen()),
                   ),
                 ),
-
                 _SectionLabel('Privacy'),
                 SwitchListTile.adaptive(
                   secondary: const Icon(Icons.visibility_outlined),
@@ -205,7 +231,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
                   ),
                 ),
-
+                ListTile(
+                  leading: const Icon(Icons.privacy_tip_outlined),
+                  title: const Text('Privacy Policy'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen()),
+                  ),
+                ),
                 _SectionLabel('Security'),
                 SwitchListTile.adaptive(
                   secondary: const Icon(Icons.pin_outlined),
@@ -217,7 +251,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.timer_outlined),
                   title: const Text('Auto-delete messages'),
-                  subtitle: Text('After ${_ttlLabel(_ttlHours)}'),
+                  subtitle: Text('After ${_ttlLabel(_ttlHours)} (app-wide default)'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openTtlPicker,
                 ),
@@ -231,7 +265,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     await SettingsService.setStayLoggedIn(v);
                   },
                 ),
-
+                _SectionLabel('Support'),
+                ListTile(
+                  leading: const Icon(Icons.help_outline),
+                  title: const Text('Help Centre'),
+                  subtitle: const Text('FAQ and how to contact the developer'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const HelpCenterScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.support_agent_outlined),
+                  title: const Text('Contact the developer'),
+                  onTap: () => showContactDeveloperSheet(context),
+                ),
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
