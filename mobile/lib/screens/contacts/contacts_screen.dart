@@ -17,21 +17,34 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
   final _authService = AuthService();
   late final TabController _tabController = TabController(length: 2, vsync: this);
 
+  String? _openingUid;
+
   Future<void> _openChat(String uid, String username) async {
-    final myProfile = await _authService.currentUserProfile();
-    final myUsername = (myProfile.data()?['username'] as String?) ?? '';
-    final conversationId = await _conversationService.getOrCreateConversation(
-      otherUid: uid,
-      myUsername: myUsername,
-      otherUsername: username,
-    );
-    if (!mounted) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChatDetailScreen(conversationId: conversationId, peerUid: uid, peerUsername: username),
-      ),
-    );
+    if (_openingUid != null) return;
+    setState(() => _openingUid = uid);
+    try {
+      final myProfile = await _authService.currentUserProfile();
+      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
+      final conversationId = await _conversationService.getOrCreateConversation(
+        otherUid: uid,
+        myUsername: myUsername,
+        otherUsername: username,
+      );
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatDetailScreen(conversationId: conversationId, peerUid: uid, peerUsername: username),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't open this chat. Check your connection and try again.")),
+      );
+    } finally {
+      if (mounted) setState(() => _openingUid = null);
+    }
   }
 
   Widget _errorState(BuildContext context, Object? error) {
@@ -106,13 +119,16 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                 itemBuilder: (context, i) {
                   final data = docs[i].data();
                   final username = (data['username'] as String?) ?? '';
+                  final isOpening = _openingUid == docs[i].id;
                   return ListTile(
                     leading: CircleAvatar(
                       backgroundColor: scheme.primaryContainer,
                       child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
                     ),
                     title: Text(username),
-                    trailing: const Icon(Icons.chat_bubble_outline),
+                    trailing: isOpening
+                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.chat_bubble_outline),
                     onTap: () => _openChat(docs[i].id, username),
                   );
                 },
