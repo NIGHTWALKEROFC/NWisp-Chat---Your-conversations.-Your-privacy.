@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import 'settings/privacy_policy_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -16,9 +17,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   bool _loading = false;
   bool _obscurePassword = true;
+  bool _agreedToPolicy = false;
   String? _error;
 
   Future<void> _register() async {
+    if (!_agreedToPolicy) {
+      setState(() => _error = 'Please agree to the Privacy Policy to continue.');
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -31,8 +37,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
         username: _usernameController.text.trim(),
         phoneNumber: phone.isEmpty ? null : phone,
       );
-      // AuthGate is listening to authStateChanges and will move to
-      // ChatListScreen automatically once registration signs the user in.
     } catch (e) {
       setState(() => _error = _friendlyError(e));
     } finally {
@@ -99,7 +103,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _agreedToPolicy,
+                onChanged: (v) => setState(() => _agreedToPolicy = v ?? false),
+                title: Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    const Text('I agree to the '),
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen()),
+                      ),
+                      child: Text(
+                        'Privacy Policy',
+                        style: TextStyle(color: scheme.primary, decoration: TextDecoration.underline),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
