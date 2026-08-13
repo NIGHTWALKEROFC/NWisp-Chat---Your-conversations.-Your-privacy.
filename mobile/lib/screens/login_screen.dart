@@ -4,6 +4,8 @@ import '../services/auth_service.dart';
 import '../services/branding_service.dart';
 import '../services/settings_service.dart';
 import 'register_screen.dart';
+import 'settings/forgot_password_screen.dart';
+import 'settings/help_center_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -38,8 +40,6 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await _authService.loginWithEmail(_emailController.text.trim(), _passwordController.text);
       await SettingsService.setStayLoggedIn(_stayLoggedIn);
-      // AuthGate is listening to authStateChanges, so no manual navigation
-      // is needed here — it will swap to ChatListScreen automatically.
     } catch (e) {
       setState(() => _error = _friendlyError(e));
     } finally {
@@ -62,6 +62,21 @@ class _LoginScreenState extends State<LoginScreen> {
     final scheme = Theme.of(context).colorScheme;
     final logoUrl = context.watch<BrandingService>().logoUrl;
     return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            tooltip: 'Help Centre',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const HelpCenterScreen()),
+            ),
+          ),
+        ],
+      ),
+      extendBodyBehindAppBar: true,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -69,7 +84,7 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 24),
+                const SizedBox(height: 8),
                 if (logoUrl != null)
                   Center(
                     child: CircleAvatar(radius: 32, backgroundImage: NetworkImage(logoUrl)),
@@ -89,8 +104,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   style: TextStyle(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 28),
-
-                // Email / Phone tab
                 SegmentedButton<bool>(
                   segments: const [
                     ButtonSegment(value: false, label: Text('Email'), icon: Icon(Icons.email_outlined)),
@@ -100,7 +113,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   onSelectionChanged: (s) => setState(() => _usePhoneTab = s.first),
                 ),
                 const SizedBox(height: 16),
-
                 if (_usePhoneTab)
                   Container(
                     padding: const EdgeInsets.all(14),
@@ -145,7 +157,16 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+                      ),
+                      child: const Text('Forgot password?'),
+                    ),
+                  ),
                   SwitchListTile.adaptive(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Stay signed in'),
@@ -170,7 +191,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         : const Text('Sign in'),
                   ),
                 ],
-
                 const SizedBox(height: 12),
                 TextButton(
                   onPressed: () => Navigator.push(
