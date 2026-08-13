@@ -7,7 +7,6 @@ class ContactService {
 
   String get _myUid => _auth.currentUser!.uid;
 
-  /// Prefix search on usernameLower. Excludes yourself.
   Future<List<Map<String, dynamic>>> searchUsers(String query) async {
     final lower = query.trim().toLowerCase();
     if (lower.isEmpty) return [];
@@ -24,8 +23,24 @@ class ContactService {
         .toList();
   }
 
+  Future<Set<String>> myContactUids() async {
+    final snap = await _db.collection('users').doc(_myUid).collection('contacts').get();
+    return snap.docs.map((d) => d.id).toSet();
+  }
+
+  Future<Set<String>> myPendingOutgoingUids() async {
+    final snap = await _db.collection('contactRequests').where('fromUid', isEqualTo: _myUid).get();
+    return snap.docs
+        .where((d) => d.data()['status'] == 'pending')
+        .map((d) => d.data()['toUid'] as String)
+        .toSet();
+  }
+
   Future<void> sendRequest({required String toUid, required String toUsername, required String myUsername}) async {
     if (toUid == _myUid) throw Exception("You can't add yourself");
+
+    final alreadyContact = await _db.collection('users').doc(_myUid).collection('contacts').doc(toUid).get();
+    if (alreadyContact.exists) throw Exception('Already in your contacts');
 
     final existing = await _db
         .collection('contactRequests')
