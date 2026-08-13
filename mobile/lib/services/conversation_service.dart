@@ -1,9 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-/// Manages 1:1 conversations. Conversation IDs are deterministic
-/// (sorted uids joined with '_'), so two users always land on the same
-/// conversation document without needing a lookup query first.
 class ConversationService {
   final _db = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
@@ -13,8 +10,6 @@ class ConversationService {
     return sorted.join('_');
   }
 
-  /// Creates the conversation document if it doesn't exist yet, and
-  /// returns its ID either way.
   Future<String> getOrCreateConversation({
     required String otherUid,
     required String myUsername,
@@ -31,12 +26,13 @@ class ConversationService {
         'lastMessageText': null,
         'lastMessageAt': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
+        'mutedBy': <String>[],
+        'chatTtlHours': null,
       });
     }
     return id;
   }
 
-  /// Conversations the current user is part of, most recent first.
   Stream<QuerySnapshot<Map<String, dynamic>>> conversationsStream() {
     final myUid = _auth.currentUser!.uid;
     return _db
@@ -46,8 +42,10 @@ class ConversationService {
         .snapshots();
   }
 
-  /// Given a conversation doc's data, returns the other participant's
-  /// uid and display name.
+  Stream<DocumentSnapshot<Map<String, dynamic>>> conversationStream(String conversationId) {
+    return _db.collection('conversations').doc(conversationId).snapshots();
+  }
+
   (String uid, String username) otherParticipant(Map<String, dynamic> data) {
     final myUid = _auth.currentUser!.uid;
     final participants = List<String>.from(data['participants'] ?? []);
@@ -60,6 +58,37 @@ class ConversationService {
     return _db.collection('conversations').doc(conversationId).update({
       'lastMessageText': preview,
       'lastMessageAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  bool isMutedByMe(Map<String, dynamic> data) {
+    final muted = List<String>.from(data['mutedBy'] ?? []);
+    return muted.contains(_auth.currentUser!.uid);
+  }
+
+  Future<void> setMuted(String conversationId, bool muted) {
+    final myUid = _auth.currentUser!.uid;
+    return _db.collection('conversations').doc(conversationId).update({
+      'mutedBy': muted ? FieldValue.arrayUnion([myUid]) : FieldValue.arrayRemove([myUid]),
+    });
+  }
+
+  Future<void> setChatTtlHours(String conversationId, int? hours) {
+    return _db.collection('conversations').doc(conversationId).update({'chatTtlHours': hours});
+  }
+
+  Future<void> clearChat(String conversationId) async {
+    final messages = await _db.collection('conversations').doc(conversationId).collection('messages').get();
+    for (var i = 0; i < messages.docs.length; i += 450) {
+      final chunk = messages.docs.skip(i).take(450);
+      final batch = _db.batch();
+      for (final doc in chunk) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+    }
+    await _db.collection('conversations').doc(conversationId).update({
+      'lastMessageText': null,
     });
   }
 }
