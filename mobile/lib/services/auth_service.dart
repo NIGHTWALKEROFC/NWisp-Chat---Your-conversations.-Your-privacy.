@@ -120,24 +120,60 @@ class AuthService {
     await _db.collection('users').doc(uid).update({field: value});
   }
 
-  /// How long a new message stays before the scheduled cleanup job removes
-  /// it (see scripts/cleanup.js, which already deletes by `expiresAt` —
-  /// no server-side change needed for this to take effect).
   Future<void> updateMessageTtl(int hours) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
     await _db.collection('users').doc(uid).update({'messageTtlHours': hours});
   }
 
-  /// Saves this device's FCM token so a future Cloud Function can look it up
-  /// to send push notifications. Storing the token is the only part that
-  /// happens on-device — actually sending notifications when the app is
-  /// closed requires a small server-side Cloud Function, a separate follow-up.
   Future<void> saveFcmToken(String token) async {
     final uid = currentUserId;
     if (uid == null) return;
     await _db.collection('users').doc(uid).update({
       'fcmTokens': FieldValue.arrayUnion([token]),
     });
+  }
+
+  Future<void> startPhoneVerification({
+    required String phoneNumber,
+    required void Function(String verificationId) onCodeSent,
+    required void Function(String message) onFailed,
+    void Function(PhoneAuthCredential credential)? onAutoVerified,
+  }) async {
+    await _auth.verifyPhoneNumber(
+      phoneNumber: phoneNumber,
+      timeout: const Duration(seconds: 60),
+      verificationCompleted: (credential) {
+        if (onAutoVerified != null) onAutoVerified(credential);
+      },
+      verificationFailed: (e) => onFailed(e.message ?? 'Phone verification failed'),
+      codeSent: (verificationId, _) => onCodeSent(verificationId),
+      codeAutoRetrievalTimeout: (_) {},
+    );
+  }
+
+  PhoneAuthCredential resolvePhoneCode({required String verificationId, required String smsCode}) {
+    return PhoneAuthProvider.credential(verificationId: verificationId, smsCode: smsCode);
+  }
+
+  Future<void> linkAndSavePhoneNumber({
+    required PhoneAuthCredential credential,
+    required String phoneNumber,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('No signed-in user');
+
+    final alreadyLinked = user.providerData.any((p) => p.providerId == 'phone');
+    if (alreadyLinked) {
+      await user.unlink('phone');
+    }
+    await user.linkWithCredential(credential);
+    await _db.collection('users').doc(user.uid).update({'phoneNumber': phoneNumber});
+  }
+
+  Future<void> sendPasswordResetEmail(String email) => _auth.sendPasswordResetEmail(email: email);
+
+  Future<void> signInWithPhoneCredential(PhoneAuthCredential credential) {
+    return _auth.signInWithCredential(credential);
   }
 }
