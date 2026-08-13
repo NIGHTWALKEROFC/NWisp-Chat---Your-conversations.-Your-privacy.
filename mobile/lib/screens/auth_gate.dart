@@ -3,19 +3,11 @@ import '../services/app_lock_service.dart';
 import '../services/auth_service.dart';
 import '../services/presence_service.dart';
 import '../services/settings_service.dart';
+import '../widgets/contact_developer_sheet.dart';
 import 'chat_list_screen.dart';
 import 'login_screen.dart';
+import 'settings/forgot_password_screen.dart';
 
-/// Decides what the user sees on launch:
-/// - "Stay signed in" is OFF -> always sign out and show Login.
-/// - "Stay signed in" is ON (default) -> follow Firebase's own session
-///   state, so a signed-in user goes straight to their chats instead of
-///   being asked to log in again every time the app is reopened.
-/// - If App Lock is on, a PIN screen sits in front of the chats even when
-///   the Firebase session is still valid.
-///
-/// Also starts/stops best-effort presence (see PresenceService) as the app
-/// moves to and from the foreground.
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
@@ -85,7 +77,6 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   }
 }
 
-/// Wraps the signed-in app with a PIN check, only if App Lock is enabled.
 class _LockGate extends StatefulWidget {
   final Widget child;
   const _LockGate({required this.child});
@@ -108,9 +99,6 @@ class _LockGateState extends State<_LockGate> {
         }
         final locked = snapshot.data! && !_unlocked;
         if (!locked) return widget.child;
-        // A dedicated in-place PIN screen (not PinScreen, which is built to
-        // be pushed and popped) — there's nothing to "pop back to" at this
-        // level, so a successful unlock just flips local state instead.
         return _PinGateScreen(onUnlocked: () => setState(() => _unlocked = true));
       },
     );
@@ -126,8 +114,18 @@ class _PinGateScreen extends StatefulWidget {
 }
 
 class _PinGateScreenState extends State<_PinGateScreen> {
+  final _authService = AuthService();
   final _pinController = TextEditingController();
   String? _error;
+  String? _hint;
+
+  @override
+  void initState() {
+    super.initState();
+    AppLockService.getHint().then((h) {
+      if (mounted) setState(() => _hint = h);
+    });
+  }
 
   Future<void> _submit() async {
     final ok = await AppLockService.verify(_pinController.text.trim());
@@ -139,13 +137,84 @@ class _PinGateScreenState extends State<_PinGateScreen> {
     }
   }
 
+  Future<void> _forgotPin() async {
+    final controller = TextEditingController();
+    bool obscure = true;
+    final password = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Forgot PIN?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Confirm your account password to turn off app lock and get back in.'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                obscureText: obscure,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Account password',
+                  suffixIcon: IconButton(
+                    icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                    onPressed: () => setDialogState(() => obscure = !obscure),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ForgotPasswordScreen(alsoResetAppLock: true)),
+                  );
+                },
+                child: const Text("I've also forgotten my account password"),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controller.text),
+              child: const Text('Confirm'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (password == null || password.isEmpty) return;
+
+    try {
+      await _authService.reauthenticate(password);
+      await AppLockService.resetAfterAccountVerification();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('App lock turned off. Set a new PIN anytime in Settings.')),
+      );
+      widget.onUnlocked();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Incorrect password.');
+    }
+  }
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: SafeArea(
         child: Center(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(28),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -153,6 +222,11 @@ class _PinGateScreenState extends State<_PinGateScreen> {
                 Icon(Icons.lock_outline_rounded, size: 52, color: scheme.primary),
                 const SizedBox(height: 16),
                 Text('Enter your PIN', style: Theme.of(context).textTheme.titleLarge),
+                if (_hint != null && _hint!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text('Hint: ${_hint!}', style: TextStyle(color: scheme.onSurfaceVariant)),
+                  ),
                 const SizedBox(height: 20),
                 TextField(
                   controller: _pinController,
@@ -170,6 +244,13 @@ class _PinGateScreenState extends State<_PinGateScreen> {
                   ),
                 const SizedBox(height: 20),
                 ElevatedButton(onPressed: _submit, child: const Text('Unlock')),
+                const SizedBox(height: 8),
+                TextButton(onPressed: _forgotPin, child: const Text('Forgot PIN?')),
+                TextButton.icon(
+                  onPressed: () => showContactDeveloperSheet(context),
+                  icon: const Icon(Icons.support_agent_outlined, size: 16),
+                  label: const Text('Contact the developer'),
+                ),
               ],
             ),
           ),
