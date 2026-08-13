@@ -9,13 +9,6 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow write: if isOwner(uid);
 
-      // A user's own contact list. Normally only the owner manages their
-      // own list, EXCEPT: when a contact request is accepted, the app
-      // writes a mirror entry into the OTHER user's contacts subcollection
-      // too (so both sides see each other instantly). That mirror write is
-      // only allowed when the document id being written/deleted equals the
-      // acting user's own uid — i.e. you can only add/remove *yourself*
-      // from someone else's contact list, never an arbitrary entry.
       match /contacts/{contactId} {
         allow read: if isOwner(uid);
         allow write: if isSignedIn() && (isOwner(uid) || request.auth.uid == contactId);
@@ -40,24 +33,19 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Contact (friend) requests between two users.
     match /contactRequests/{requestId} {
       allow read: if isSignedIn() &&
         (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
       allow create: if isSignedIn() && request.resource.data.fromUid == request.auth.uid;
-      // Only the recipient can accept/decline; only status may change.
       allow update: if isSignedIn() && resource.data.toUid == request.auth.uid
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
       allow delete: if false;
     }
 
     match /conversations/{conversationId} {
-      // NOTE: this app stores membership as a `participants` array field on
-      // the conversation document itself (see ConversationService) — there
-      // is no separate `members` subcollection being written anywhere in
-      // the app, so rules must check `participants`, not a subcollection.
       function isParticipant() {
-        return isSignedIn() && request.auth.uid in resource.data.participants;
+        return isSignedIn() &&
+          (resource == null || request.auth.uid in resource.data.participants);
       }
       function isParticipantOnCreate() {
         return isSignedIn() && request.auth.uid in request.resource.data.participants;
@@ -65,8 +53,7 @@ service cloud.firestore {
 
       allow read: if isParticipant();
       allow create: if isParticipantOnCreate();
-      // Needed so either side can update lastMessageText/lastMessageAt.
-      allow update: if isParticipant();
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
       allow delete: if false;
 
       function isConvParticipant() {
@@ -77,11 +64,9 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read: if isConvParticipant();
         allow create: if isConvParticipant() && request.resource.data.senderId == request.auth.uid;
-        // deliveredTo/readBy are updated by any participant; reactions map
-        // is keyed by uid and also updated by any participant.
         allow update: if isConvParticipant()
                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deliveredTo', 'readBy', 'reactions']);
-        allow delete: if false;
+        allow delete: if isConvParticipant();
       }
 
       match /typing/{uid} {
@@ -100,6 +85,12 @@ service cloud.firestore {
         allow read: if isSignedIn();
         allow write: if isOwner(viewerId);
       }
+    }
+
+    match /reports/{reportId} {
+      allow read: if false;
+      allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
+      allow update, delete: if false;
     }
   }
 }
