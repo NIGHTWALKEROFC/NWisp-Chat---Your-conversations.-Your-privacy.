@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
+import '../../services/conversation_service.dart';
+import '../chat/chat_detail_screen.dart';
 
 class FindUsersScreen extends StatefulWidget {
   const FindUsersScreen({super.key});
@@ -12,9 +14,13 @@ class FindUsersScreen extends StatefulWidget {
 class _FindUsersScreenState extends State<FindUsersScreen> {
   final _contactService = ContactService();
   final _authService = AuthService();
+  final _conversationService = ConversationService();
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _results = [];
-  final Set<String> _sentTo = {};
+
+  Set<String> _contactUids = {};
+  Set<String> _pendingUids = {};
+  final Set<String> _sendingTo = {};
   bool _loading = false;
   bool _searched = false;
   String? _error;
@@ -40,7 +46,6 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
       });
       return;
     }
-    // Debounce so we don't fire a query on every keystroke.
     _debounce = Timer(const Duration(milliseconds: 350), () => _search(trimmed));
   }
 
@@ -52,9 +57,13 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
     });
     try {
       final results = await _contactService.searchUsers(query);
-      if (!mounted || myRequestId != _requestId) return; // stale response, ignore
+      final contactUids = await _contactService.myContactUids();
+      final pendingUids = await _contactService.myPendingOutgoingUids();
+      if (!mounted || myRequestId != _requestId) return;
       setState(() {
         _results = results;
+        _contactUids = contactUids;
+        _pendingUids = pendingUids;
         _loading = false;
         _searched = true;
       });
@@ -69,16 +78,45 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
   }
 
   Future<void> _sendRequest(String uid, String username) async {
-    final myProfile = await _authService.currentUserProfile();
-    final myUsername = (myProfile.data()?['username'] as String?) ?? '';
+    setState(() => _sendingTo.add(uid));
     try {
+      final myProfile = await _authService.currentUserProfile();
+      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
       await _contactService.sendRequest(toUid: uid, toUsername: username, myUsername: myUsername);
       if (!mounted) return;
-      setState(() => _sentTo.add(uid));
+      setState(() {
+        _pendingUids.add(uid);
+        _sendingTo.remove(uid);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _sendingTo.remove(uid));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
+  }
+
+  Future<void> _openChat(String uid, String username) async {
+    try {
+      final myProfile = await _authService.currentUserProfile();
+      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
+      final conversationId = await _conversationService.getOrCreateConversation(
+        otherUid: uid,
+        myUsername: myUsername,
+        otherUsername: username,
+      );
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatDetailScreen(conversationId: conversationId, peerUid: uid, peerUsername: username),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+        const SnackBar(content: Text("Couldn't open this chat. Check your connection and try again.")),
       );
     }
   }
@@ -158,19 +196,34 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
               final user = _results[i];
               final uid = user['uid'] as String;
               final username = (user['username'] as String?) ?? '';
-              final alreadySent = _sentTo.contains(uid);
+              final isContact = _contactUids.contains(uid);
+              final isPending = _pendingUids.contains(uid);
+              final isSending = _sendingTo.contains(uid);
               return ListTile(
                 leading: CircleAvatar(
                   backgroundColor: scheme.primaryContainer,
                   child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
                 ),
                 title: Text(username),
-                trailing: alreadySent
-                    ? const Text('Sent')
-                    : TextButton(
-                        onPressed: () => _sendRequest(uid, username),
-                        child: const Text('Add'),
-                      ),
+                onTap: isContact ? () => _openChat(uid, username) : null,
+                trailing: isContact
+                    ? TextButton.icon(
+                        onPressed: () => _openChat(uid, username),
+                        icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                        label: const Text('Message'),
+                      )
+                    : isPending
+                        ? const Text('Requested')
+                        : TextButton(
+                            onPressed: isSending ? null : () => _sendRequest(uid, username),
+                            child: isSending
+                                ? const SizedBox(
+                                    height: 16,
+                                    width: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Text('Add'),
+                          ),
               );
             },
           );
