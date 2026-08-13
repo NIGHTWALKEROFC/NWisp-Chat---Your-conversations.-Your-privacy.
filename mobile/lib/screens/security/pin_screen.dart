@@ -14,6 +14,7 @@ class PinScreen extends StatefulWidget {
 class _PinScreenState extends State<PinScreen> {
   final _pinController = TextEditingController();
   final _confirmController = TextEditingController();
+  final _hintController = TextEditingController();
   String? _error;
 
   Future<void> _submit() async {
@@ -28,7 +29,7 @@ class _PinScreenState extends State<PinScreen> {
         setState(() => _error = "PINs don't match");
         return;
       }
-      await AppLockService.setPin(pin);
+      await AppLockService.setPin(pin, hint: _hintController.text);
       if (mounted) Navigator.pop(context, true);
     } else {
       final ok = await AppLockService.verify(pin);
@@ -43,13 +44,21 @@ class _PinScreenState extends State<PinScreen> {
   }
 
   @override
+  void dispose() {
+    _pinController.dispose();
+    _confirmController.dispose();
+    _hintController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final isSetup = widget.mode == PinScreenMode.setup;
     return Scaffold(
       body: SafeArea(
         child: Center(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(28),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -78,6 +87,16 @@ class _PinScreenState extends State<PinScreen> {
                     maxLength: 8,
                     textAlign: TextAlign.center,
                     decoration: const InputDecoration(counterText: '', labelText: 'Confirm PIN'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _hintController,
+                    maxLength: 40,
+                    textAlign: TextAlign.center,
+                    decoration: const InputDecoration(
+                      labelText: 'Optional hint (never shows your PIN)',
+                      counterText: '',
+                    ),
                   ),
                 ],
                 if (_error != null)
