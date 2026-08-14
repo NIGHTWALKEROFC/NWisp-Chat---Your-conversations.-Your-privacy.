@@ -14,7 +14,6 @@ class AuthService {
     required String email,
     required String password,
     required String username,
-    String? phoneNumber,
   }) async {
     final existing = await _db.collection('usernames').doc(username.toLowerCase()).get();
     if (existing.exists) throw Exception('Username already taken');
@@ -25,10 +24,8 @@ class AuthService {
     batch.set(_db.collection('users').doc(cred.user!.uid), {
       'username': username,
       'usernameLower': username.toLowerCase(),
-      'phoneNumber': phoneNumber,
       'photoUrl': null,
       'emailVisible': false,
-      'phoneVisible': false,
       'lastSeenVisible': true,
       'readReceiptsEnabled': true,
       'online': false,
@@ -70,12 +67,6 @@ class AuthService {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No signed-in user');
     await user.updatePassword(newPassword);
-  }
-
-  Future<void> updatePhoneNumber(String phoneNumber) async {
-    final uid = currentUserId;
-    if (uid == null) throw Exception('No signed-in user');
-    await _db.collection('users').doc(uid).update({'phoneNumber': phoneNumber});
   }
 
   Future<void> updatePhotoUrl(String photoUrl) async {
@@ -134,46 +125,5 @@ class AuthService {
     });
   }
 
-  Future<void> startPhoneVerification({
-    required String phoneNumber,
-    required void Function(String verificationId) onCodeSent,
-    required void Function(String message) onFailed,
-    void Function(PhoneAuthCredential credential)? onAutoVerified,
-  }) async {
-    await _auth.verifyPhoneNumber(
-      phoneNumber: phoneNumber,
-      timeout: const Duration(seconds: 60),
-      verificationCompleted: (credential) {
-        if (onAutoVerified != null) onAutoVerified(credential);
-      },
-      verificationFailed: (e) => onFailed(e.message ?? 'Phone verification failed'),
-      codeSent: (verificationId, _) => onCodeSent(verificationId),
-      codeAutoRetrievalTimeout: (_) {},
-    );
-  }
-
-  PhoneAuthCredential resolvePhoneCode({required String verificationId, required String smsCode}) {
-    return PhoneAuthProvider.credential(verificationId: verificationId, smsCode: smsCode);
-  }
-
-  Future<void> linkAndSavePhoneNumber({
-    required PhoneAuthCredential credential,
-    required String phoneNumber,
-  }) async {
-    final user = _auth.currentUser;
-    if (user == null) throw Exception('No signed-in user');
-
-    final alreadyLinked = user.providerData.any((p) => p.providerId == 'phone');
-    if (alreadyLinked) {
-      await user.unlink('phone');
-    }
-    await user.linkWithCredential(credential);
-    await _db.collection('users').doc(user.uid).update({'phoneNumber': phoneNumber});
-  }
-
   Future<void> sendPasswordResetEmail(String email) => _auth.sendPasswordResetEmail(email: email);
-
-  Future<void> signInWithPhoneCredential(PhoneAuthCredential credential) {
-    return _auth.signInWithCredential(credential);
-  }
 }
