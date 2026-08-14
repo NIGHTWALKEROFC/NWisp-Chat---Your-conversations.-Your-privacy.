@@ -23,13 +23,12 @@ class PrivacyPolicyScreen extends StatelessWidget {
           ),
           _Section(
             title: '2. Information we collect',
-            body: '• Account info: username, email address, and (if you choose to add one) '
-                'phone number.\n'
+            body: '• Account info: username and email address.\n'
                 '• Content you create: messages, media you send, and Stories, for as long as '
                 'their auto-delete timer allows.\n'
                 '• Device info: a push-notification token for your device, and basic presence '
                 'info (online/offline, last seen) if you have that visible in your privacy settings.\n'
-                "• We do not collect your precise location, and we don't run ads or ad tracking.",
+                "• We do not collect your precise location, phone number, or run ads or ad tracking.",
           ),
           _Section(
             title: '3. How we store it',
@@ -46,19 +45,17 @@ class PrivacyPolicyScreen extends StatelessWidget {
           ),
           _Section(
             title: '5. Your choices',
-            body: '• You can change or remove your email, phone number, username, and photo at '
-                'any time in Account settings.\n'
+            body: '• You can change your email, username, and photo at any time in Account settings.\n'
                 '• You can turn off last-seen and read-receipt visibility in Settings.\n'
-                "• You can set a shorter auto-delete duration app-wide or per chat.\n"
+                '• You can set a shorter auto-delete duration app-wide or per chat.\n'
                 '• You can clear a chat, block a contact, or delete your account by contacting '
                 'the developer.',
           ),
           _Section(
             title: '6. Security',
-            body: 'Changing your email or phone number requires confirming your current '
-                'password, and phone number changes additionally require verifying a one-time '
-                'code sent by SMS. An optional local app-lock PIN is available for extra '
-                'protection on your device.',
+            body: 'Changing your email requires confirming your current password and clicking '
+                'a verification link sent to the new address before the change takes effect. '
+                'An optional local app-lock PIN is available for extra protection on your device.',
           ),
           _Section(
             title: '7. Children',
