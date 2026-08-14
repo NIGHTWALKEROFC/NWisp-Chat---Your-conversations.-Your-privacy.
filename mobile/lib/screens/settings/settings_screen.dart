@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/settings_service.dart';
-import '../../services/branding_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import '../login_screen.dart';
 import '../security/pin_screen.dart';
@@ -149,7 +147,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final branding = context.watch<BrandingService>();
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: _loadingProfile
@@ -161,13 +158,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: CircleAvatar(
                     radius: 26,
                     backgroundColor: scheme.primaryContainer,
-                    backgroundImage: branding.logoUrl != null ? NetworkImage(branding.logoUrl!) : null,
-                    child: branding.logoUrl == null
-                        ? Text(
-                            _username.isNotEmpty ? _username[0].toUpperCase() : '?',
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
-                          )
-                        : null,
+                    child: Text(
+                      _username.isNotEmpty ? _username[0].toUpperCase() : '?',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
+                    ),
                   ),
                   title: Text(_username, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
                   subtitle: Text(_email),
@@ -185,7 +179,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.badge_outlined),
                   title: const Text('Account'),
-                  subtitle: const Text('Email, phone, password'),
+                  subtitle: const Text('Email, password'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.push(
                     context,
@@ -195,7 +189,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _SectionLabel('Appearance'),
                 ListTile(
                   leading: const Icon(Icons.palette_outlined),
-                  title: const Text('Theme, color & logo'),
+                  title: const Text('Theme & color'),
                   subtitle: const Text('Customize how the app looks on this device'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.push(
