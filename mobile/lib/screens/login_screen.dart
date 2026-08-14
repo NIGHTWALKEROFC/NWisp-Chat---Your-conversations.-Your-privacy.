@@ -21,7 +21,6 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _obscurePassword = true;
   bool _stayLoggedIn = true;
-  bool _usePhoneTab = false;
   String? _error;
 
   @override
@@ -60,7 +59,6 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final logoUrl = context.watch<BrandingService>().logoUrl;
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -85,12 +83,7 @@ class _LoginScreenState extends State<LoginScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 8),
-                if (logoUrl != null)
-                  Center(
-                    child: CircleAvatar(radius: 32, backgroundImage: NetworkImage(logoUrl)),
-                  )
-                else
-                  Icon(Icons.lock_outline_rounded, size: 56, color: scheme.primary),
+                Icon(Icons.lock_outline_rounded, size: 56, color: scheme.primary),
                 const SizedBox(height: 12),
                 Text(
                   'Welcome back',
@@ -104,93 +97,60 @@ class _LoginScreenState extends State<LoginScreen> {
                   style: TextStyle(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 28),
-                SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('Email'), icon: Icon(Icons.email_outlined)),
-                    ButtonSegment(value: true, label: Text('Phone'), icon: Icon(Icons.phone_outlined)),
-                  ],
-                  selected: {_usePhoneTab},
-                  onSelectionChanged: (s) => setState(() => _usePhoneTab = s.first),
+                TextField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    labelText: 'Email',
+                    prefixIcon: Icon(Icons.email_outlined),
+                  ),
                 ),
-                const SizedBox(height: 16),
-                if (_usePhoneTab)
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: scheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.info_outline, color: scheme.primary, size: 20),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'Phone sign-in needs a one-time setup in the Firebase console '
-                            '(SMS verification). Use Email for now — ask to have Phone '
-                            'sign-in enabled next.',
-                            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                else ...[
-                  TextField(
-                    controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'Email',
-                      prefixIcon: Icon(Icons.email_outlined),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    suffixIcon: IconButton(
+                      icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _passwordController,
-                    obscureText: _obscurePassword,
-                    decoration: InputDecoration(
-                      labelText: 'Password',
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      suffixIcon: IconButton(
-                        icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
-                        onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                      ),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
                     ),
+                    child: const Text('Forgot password?'),
                   ),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
-                      ),
-                      child: const Text('Forgot password?'),
-                    ),
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Stay signed in'),
+                  subtitle: const Text('Off = sign in again every time you open the app'),
+                  value: _stayLoggedIn,
+                  onChanged: (v) => setState(() => _stayLoggedIn = v),
+                ),
+                const SizedBox(height: 8),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(_error!, style: TextStyle(color: scheme.error)),
                   ),
-                  SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Stay signed in'),
-                    subtitle: const Text('Off = sign in again every time you open the app'),
-                    value: _stayLoggedIn,
-                    onChanged: (v) => setState(() => _stayLoggedIn = v),
-                  ),
-                  const SizedBox(height: 8),
-                  if (_error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Text(_error!, style: TextStyle(color: scheme.error)),
-                    ),
-                  ElevatedButton(
-                    onPressed: _loading ? null : _login,
-                    child: _loading
-                        ? const SizedBox(
-                            height: 22,
-                            width: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
-                          )
-                        : const Text('Sign in'),
-                  ),
-                ],
+                ElevatedButton(
+                  onPressed: _loading ? null : _login,
+                  child: _loading
+                      ? const SizedBox(
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
+                        )
+                      : const Text('Sign in'),
+                ),
                 const SizedBox(height: 12),
                 TextButton(
                   onPressed: () => Navigator.push(
