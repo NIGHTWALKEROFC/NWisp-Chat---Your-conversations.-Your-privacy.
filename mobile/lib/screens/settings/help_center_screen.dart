@@ -11,15 +11,8 @@ const _faqs = [
   _FaqItem(
     'I forgot my password. What do I do?',
     "Go to the login screen and tap 'Forgot password?', or open Account settings "
-        "inside the app and tap 'Forgot your password?'. You can reset it with a "
-        'link sent to your email, or with an OTP sent to your phone number (only '
-        'if you already verified a phone number in Account settings).',
-  ),
-  _FaqItem(
-    "Password reset says my phone number isn't recognized.",
-    'Phone-based reset only works for a number that was already added and '
-        "verified inside the app (Account settings > Phone number). If you never "
-        'added one, use the email reset option instead, or contact the developer below.',
+        "inside the app and tap 'Forgot your password?'. We'll email you a secure "
+        'reset link.',
   ),
   _FaqItem(
     'I forgot my app lock PIN.',
@@ -35,9 +28,9 @@ const _faqs = [
         "just one chat from that chat's settings screen.",
   ),
   _FaqItem(
-    "Can I change my username, email, or phone number?",
-    'Yes, all three are in Account settings. Email and phone changes require '
-        'your current password, and phone changes also require verifying an SMS code.',
+    'Can I change my username or email?',
+    'Yes, both are in Account settings. Email changes require your current password '
+        'and a confirmation link sent to the new address.',
   ),
 ];
 
