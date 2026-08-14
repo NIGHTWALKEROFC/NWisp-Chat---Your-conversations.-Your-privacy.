@@ -1,8 +1,6 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
-import '../../widgets/phone_otp_sheet.dart';
 import 'forgot_password_screen.dart';
 
 class AccountScreen extends StatefulWidget {
@@ -14,7 +12,6 @@ class AccountScreen extends StatefulWidget {
 class _AccountScreenState extends State<AccountScreen> {
   final _authService = AuthService();
   String _email = '';
-  String _phone = '';
   bool _loading = true;
 
   @override
@@ -24,11 +21,9 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Future<void> _load() async {
-    final doc = await _authService.currentUserProfile();
     if (!mounted) return;
     setState(() {
       _email = _authService.currentUser?.email ?? '';
-      _phone = (doc.data()?['phoneNumber'] as String?) ?? '';
       _loading = false;
     });
   }
@@ -54,48 +49,6 @@ class _AccountScreenState extends State<AccountScreen> {
       );
     } catch (e) {
       _showErrorWithHelp('Could not change email. Check your password and try again.');
-    }
-  }
-
-  Future<void> _changePhone() async {
-    final newPhone = await _promptDialog(
-      title: 'Change phone number',
-      label: 'Phone number (e.g. +91XXXXXXXXXX)',
-      initialValue: _phone,
-      keyboardType: TextInputType.phone,
-    );
-    if (newPhone == null || newPhone.trim().isEmpty || newPhone.trim() == _phone) return;
-    final trimmedPhone = newPhone.trim();
-
-    final password = await _promptPassword('Confirm your current password to change your phone number.');
-    if (password == null) return;
-
-    try {
-      await _authService.reauthenticate(password);
-    } catch (e) {
-      _showErrorWithHelp('Incorrect password.');
-      return;
-    }
-
-    if (!mounted) return;
-    final credential = await showPhoneOtpSheet(context, phoneNumber: trimmedPhone);
-    if (credential == null) return;
-
-    try {
-      await _authService.linkAndSavePhoneNumber(credential: credential, phoneNumber: trimmedPhone);
-      if (!mounted) return;
-      setState(() => _phone = trimmedPhone);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Phone number verified and updated')),
-      );
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'credential-already-in-use' || e.code == 'provider-already-linked') {
-        _showErrorWithHelp('This phone number is already linked to another account.');
-      } else {
-        _showErrorWithHelp(e.message ?? 'Could not update phone number.');
-      }
-    } catch (e) {
-      _showErrorWithHelp('Could not update phone number.');
     }
   }
 
@@ -214,13 +167,6 @@ class _AccountScreenState extends State<AccountScreen> {
                   onTap: _changeEmail,
                 ),
                 ListTile(
-                  leading: const Icon(Icons.phone_outlined),
-                  title: const Text('Phone number'),
-                  subtitle: Text(_phone.isEmpty ? 'Not set' : _phone),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: _changePhone,
-                ),
-                ListTile(
                   leading: const Icon(Icons.lock_outline),
                   title: const Text('Password'),
                   subtitle: const Text('••••••••'),
@@ -230,7 +176,7 @@ class _AccountScreenState extends State<AccountScreen> {
                 ListTile(
                   leading: const Icon(Icons.restart_alt),
                   title: const Text('Forgot your password?'),
-                  subtitle: const Text('Reset it via email link or phone OTP'),
+                  subtitle: const Text('Reset it via email link'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.push(
                     context,
