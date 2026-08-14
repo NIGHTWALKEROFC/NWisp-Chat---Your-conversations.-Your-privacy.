@@ -11,7 +11,6 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   final _usernameController = TextEditingController();
   final _emailController = TextEditingController();
-  final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _authService = AuthService();
 
@@ -30,12 +29,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _error = null;
     });
     try {
-      final phone = _phoneController.text.trim();
       await _authService.registerWithEmail(
         email: _emailController.text.trim(),
         password: _passwordController.text,
         username: _usernameController.text.trim(),
-        phoneNumber: phone.isEmpty ? null : phone,
       );
     } catch (e) {
       setState(() => _error = _friendlyError(e));
@@ -78,16 +75,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 decoration: const InputDecoration(
                   labelText: 'Email',
                   prefixIcon: Icon(Icons.email_outlined),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _phoneController,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  labelText: 'Phone number (optional)',
-                  prefixIcon: Icon(Icons.phone_outlined),
-                  helperText: 'Stored on your profile — sign-in still uses email for now',
                 ),
               ),
               const SizedBox(height: 12),
