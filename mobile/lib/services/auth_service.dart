@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'crypto_service.dart';
 
 class AuthService {
   final _auth = FirebaseAuth.instance;
@@ -19,6 +20,8 @@ class AuthService {
     if (existing.exists) throw Exception('Username already taken');
 
     final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
+    final publicKey = await CryptoService.ensureIdentityKeyPair();
+    await CryptoService.ensureLocalStorageKey();
 
     final batch = _db.batch();
     batch.set(_db.collection('users').doc(cred.user!.uid), {
@@ -32,6 +35,7 @@ class AuthService {
       'lastSeen': FieldValue.serverTimestamp(),
       'blockedUsers': <String>[],
       'messageTtlHours': 24,
+      'publicKey': publicKey,
       'createdAt': FieldValue.serverTimestamp(),
     });
     batch.set(_db.collection('usernames').doc(username.toLowerCase()), {'uid': cred.user!.uid});
@@ -40,8 +44,15 @@ class AuthService {
     return cred;
   }
 
-  Future<UserCredential> loginWithEmail(String email, String password) =>
-      _auth.signInWithEmailAndPassword(email: email, password: password);
+  Future<UserCredential> loginWithEmail(String email, String password) async {
+    final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
+    // Make sure this device has keys even if the account was created
+    // elsewhere or before this migration — publishes/refreshes publicKey.
+    final publicKey = await CryptoService.ensureIdentityKeyPair();
+    await CryptoService.ensureLocalStorageKey();
+    await _db.collection('users').doc(cred.user!.uid).set({'publicKey': publicKey}, SetOptions(merge: true));
+    return cred;
+  }
 
   Future<void> logout() => _auth.signOut();
 
