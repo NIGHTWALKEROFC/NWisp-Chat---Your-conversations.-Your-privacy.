@@ -1,5 +1,5 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
@@ -14,7 +14,6 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProviderStateMixin {
   final _contactService = ContactService();
   final _conversationService = ConversationService();
-  final _authService = AuthService();
   late final TabController _tabController = TabController(length: 2, vsync: this);
 
   String? _openingUid;
@@ -23,13 +22,9 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
     if (_openingUid != null) return;
     setState(() => _openingUid = uid);
     try {
-      final myProfile = await _authService.currentUserProfile();
-      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
-      final conversationId = await _conversationService.getOrCreateConversation(
-        otherUid: uid,
-        myUsername: myUsername,
-        otherUsername: username,
-      );
+      final myUid = FirebaseAuth.instance.currentUser!.uid;
+      final conversationId = _conversationService.conversationIdFor(myUid, uid);
+      await _conversationService.ensureConversation(otherUid: uid);
       if (!mounted) return;
       await Navigator.push(
         context,
