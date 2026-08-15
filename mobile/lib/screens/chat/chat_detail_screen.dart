@@ -70,7 +70,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
   }
 
-Future<void> _send() async {
+  Future<void> _send() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
     if (_myUid == null) {
@@ -131,7 +131,9 @@ Future<void> _send() async {
             IconButton(
               iconSize: 28,
               onPressed: () {
-                LocalMessageStore.setReaction(message.id, _myUid, null);
+                final uid = _myUid;
+                if (uid == null) return;
+                LocalMessageStore.setReaction(message.id, uid, null);
                 MessageRelayService.sendReaction(
                   conversationId: widget.conversationId,
                   toUid: widget.peerUid,
