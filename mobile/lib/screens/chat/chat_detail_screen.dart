@@ -115,7 +115,9 @@ Future<void> _send() async {
               IconButton(
                 iconSize: 32,
                 onPressed: () {
-                  LocalMessageStore.setReaction(message.id, _myUid, emoji);
+                  final uid = _myUid;
+                  if (uid == null) return;
+                  LocalMessageStore.setReaction(message.id, uid, emoji);
                   MessageRelayService.sendReaction(
                     conversationId: widget.conversationId,
                     toUid: widget.peerUid,
