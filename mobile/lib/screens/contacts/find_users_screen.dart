@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
@@ -99,13 +100,9 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
 
   Future<void> _openChat(String uid, String username) async {
     try {
-      final myProfile = await _authService.currentUserProfile();
-      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
-      final conversationId = await _conversationService.getOrCreateConversation(
-        otherUid: uid,
-        myUsername: myUsername,
-        otherUsername: username,
-      );
+      final myUid = FirebaseAuth.instance.currentUser!.uid;
+      final conversationId = _conversationService.conversationIdFor(myUid, uid);
+      await _conversationService.ensureConversation(otherUid: uid);
       if (!mounted) return;
       Navigator.push(
         context,
