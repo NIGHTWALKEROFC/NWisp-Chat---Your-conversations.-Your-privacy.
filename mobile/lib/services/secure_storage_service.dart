@@ -10,5 +10,10 @@ class SecureStorageService {
 
   static Future<String?> getIdentityKeyPair() => _storage.read(key: 'identity_keypair');
 
+  static Future<void> saveLocalStorageKey(String key) =>
+      _storage.write(key: 'local_storage_key', value: key);
+
+  static Future<String?> getLocalStorageKey() => _storage.read(key: 'local_storage_key');
+
   static Future<void> clearAll() => _storage.deleteAll();
 }
