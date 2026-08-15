@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
+import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 
 const _chatTtlOptions = [1, 6, 24, 72, 168]; // hours: 1h, 6h, 1d, 3d, 7d
@@ -97,7 +98,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     if (confirmed != true) return;
     setState(() => _clearing = true);
     try {
-      await _conversationService.clearChat(widget.conversationId);
+      await MessageRelayService.clearForBoth(conversationId: widget.conversationId, toUid: widget.peerUid);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Chat cleared')));
     } catch (e) {
@@ -176,7 +177,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               ListTile(
                 leading: Icon(Icons.delete_sweep_outlined, color: scheme.error),
                 title: Text('Clear chat', style: TextStyle(color: scheme.error)),
-                subtitle: const Text('Deletes all messages in this chat'),
+                subtitle: const Text('Deletes all messages in this chat, on both devices'),
                 trailing: _clearing
                     ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : null,
