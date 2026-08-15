@@ -20,13 +20,13 @@ async function deleteExpired(query) {
 }
 
 async function main() {
-  const expiredMessages = await deleteExpired(
-    db.collectionGroup("messages").where("expiresAt", "<", now)
-  );
+  // Messages no longer live in Firestore (they're end-to-end encrypted and
+  // relayed through Supabase, then stored locally on-device) — so there's
+  // nothing to clean up here anymore. Only Stories still need this.
   const expiredStories = await deleteExpired(
     db.collection("stories").where("expiresAt", "<", now)
   );
-  console.log(`Deleted ${expiredMessages} expired messages, ${expiredStories} expired stories`);
+  console.log(`Deleted ${expiredStories} expired stories`);
 }
 
 main().then(() => process.exit(0)).catch((err) => { console.error(err); process.exit(1); });
