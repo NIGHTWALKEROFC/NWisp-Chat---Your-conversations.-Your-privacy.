@@ -1,11 +1,34 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
+import '../services/auth_service.dart';
 import '../services/local_message_store.dart';
 import 'chat/chat_detail_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
 import 'settings/settings_screen.dart';
+
+/// A row shown on the home screen — either a real ConversationSummary (has
+/// at least one local message) or a placeholder for a conversation you've
+/// opened but haven't sent anything in yet.
+class _ChatRow {
+  final String conversationId;
+  final String peerUid;
+  final String lastText;
+  final DateTime lastAt;
+  final int unreadCount;
+  final bool isPlaceholder;
+
+  _ChatRow({
+    required this.conversationId,
+    required this.peerUid,
+    required this.lastText,
+    required this.lastAt,
+    required this.unreadCount,
+    required this.isPlaceholder,
+  });
+}
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -17,6 +40,59 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   final Map<String, String> _usernameCache = {};
 
+  List<ConversationSummary> _localSummaries = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _convoDocs = [];
+  bool _localLoaded = false;
+  bool _convoLoaded = false;
+
+  late final StreamSubscription _localSub;
+  late final StreamSubscription _convoSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _localSub = LocalMessageStore.watchSummaries().listen((list) {
+      if (!mounted) return;
+      setState(() {
+        _localSummaries = list;
+        _localLoaded = true;
+      });
+    });
+
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    _convoSub = FirebaseFirestore.instance
+        .collection('conversations')
+        .where('participants', arrayContains: myUid)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _convoDocs = snap.docs;
+        _convoLoaded = true;
+      });
+    });
+
+    // Show a one-time welcome / welcome-back message set by AuthService
+    // right after sign-in or sign-up.
+    final welcome = AuthService.pendingWelcomeMessage;
+    if (welcome != null) {
+      AuthService.pendingWelcomeMessage = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(welcome), duration: const Duration(seconds: 4)),
+        );
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _localSub.cancel();
+    _convoSub.cancel();
+    super.dispose();
+  }
+
   Future<String> _usernameFor(String uid) async {
     if (_usernameCache.containsKey(uid)) return _usernameCache[uid]!;
     final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
@@ -25,9 +101,44 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return name;
   }
 
+  /// Merges real message-backed summaries with any conversation you've
+  /// opened but not messaged in yet, so a chat shows up on the home screen
+  /// the moment you start it — not only after the first message is sent.
+  List<_ChatRow> _mergedRows(String myUid) {
+    final byConvo = <String, _ChatRow>{};
+    for (final s in _localSummaries) {
+      byConvo[s.conversationId] = _ChatRow(
+        conversationId: s.conversationId,
+        peerUid: s.peerUid,
+        lastText: s.lastText,
+        lastAt: s.lastAt,
+        unreadCount: s.unreadCount,
+        isPlaceholder: false,
+      );
+    }
+    for (final doc in _convoDocs) {
+      if (byConvo.containsKey(doc.id)) continue;
+      final participants = List<String>.from(doc.data()['participants'] ?? []);
+      final peerUid = participants.firstWhere((p) => p != myUid, orElse: () => '');
+      if (peerUid.isEmpty) continue;
+      final createdAt = (doc.data()['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+      byConvo[doc.id] = _ChatRow(
+        conversationId: doc.id,
+        peerUid: peerUid,
+        lastText: 'Say hi 👋',
+        lastAt: createdAt,
+        unreadCount: 0,
+        isPlaceholder: true,
+      );
+    }
+    final rows = byConvo.values.toList()..sort((a, b) => b.lastAt.compareTo(a.lastAt));
+    return rows;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
 
     return Scaffold(
       appBar: AppBar(
@@ -51,12 +162,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ),
         ],
       ),
-      body: StreamBuilder<List<ConversationSummary>>(
-        stream: LocalMessageStore.watchSummaries(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          final summaries = snapshot.data!;
-          if (summaries.isEmpty) {
+      body: Builder(
+        builder: (context) {
+          if (myUid == null || !_localLoaded || !_convoLoaded) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final rows = _mergedRows(myUid);
+          if (rows.isEmpty) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
@@ -78,11 +190,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
             );
           }
           return ListView.builder(
-            itemCount: summaries.length,
+            itemCount: rows.length,
             itemBuilder: (context, i) {
-              final s = summaries[i];
+              final row = rows[i];
               return FutureBuilder<String>(
-                future: _usernameFor(s.peerUid),
+                future: _usernameFor(row.peerUid),
                 builder: (context, nameSnap) {
                   final username = nameSnap.data ?? '…';
                   return ListTile(
@@ -91,13 +203,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
                     ),
                     title: Text(username),
-                    subtitle: Text(s.lastText, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    trailing: s.unreadCount > 0
+                    subtitle: Text(
+                      row.lastText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: row.isPlaceholder ? TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic) : null,
+                    ),
+                    trailing: row.unreadCount > 0
                         ? CircleAvatar(
                             radius: 11,
                             backgroundColor: scheme.primary,
                             child: Text(
-                              '${s.unreadCount}',
+                              '${row.unreadCount}',
                               style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700),
                             ),
                           )
@@ -106,8 +223,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (_) => ChatDetailScreen(
-                          conversationId: s.conversationId,
-                          peerUid: s.peerUid,
+                          conversationId: row.conversationId,
+                          peerUid: row.peerUid,
                           peerUsername: username,
                         ),
                       ),
