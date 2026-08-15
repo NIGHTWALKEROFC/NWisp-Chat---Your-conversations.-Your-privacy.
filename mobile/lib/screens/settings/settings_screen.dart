@@ -11,6 +11,7 @@ import 'appearance_screen.dart';
 import 'blocked_users_screen.dart';
 import 'help_center_screen.dart';
 import 'privacy_policy_screen.dart';
+import 'terms_screen.dart';
 
 const _ttlOptions = [1, 6, 24, 72, 168];
 
@@ -232,6 +233,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.gavel_outlined),
+                  title: const Text('Terms & Conditions'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const TermsScreen()),
                   ),
                 ),
                 _SectionLabel('Security'),
