@@ -6,10 +6,38 @@ class AuthService {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
 
+  /// Set right after a successful sign-in or sign-up; the home screen reads
+  /// and clears this once to show a one-time welcome / welcome-back toast.
+  static String? pendingWelcomeMessage;
+
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
   User? get currentUser => _auth.currentUser;
   String? get currentUserId => _auth.currentUser?.uid;
+
+  /// Real-time-ish username availability check for the signup flow.
+  Future<bool> isUsernameAvailable(String username) async {
+    final lower = username.trim().toLowerCase();
+    if (lower.isEmpty) return false;
+    final doc = await _db.collection('usernames').doc(lower).get();
+    return !doc.exists;
+  }
+
+  /// Best-effort email availability check. Firebase's own enumeration
+  /// protection means this can come back inconclusive (empty list even for
+  /// a registered email) — treat a "taken" result as reliable, but don't
+  /// treat "looks available" as a guarantee. The real check still happens
+  /// at account creation, which surfaces a friendly error either way.
+  Future<bool> isEmailLikelyAvailable(String email) async {
+    final trimmed = email.trim();
+    if (trimmed.isEmpty) return false;
+    try {
+      final methods = await _auth.fetchSignInMethodsForEmail(trimmed);
+      return methods.isEmpty;
+    } catch (_) {
+      return true;
+    }
+  }
 
   Future<UserCredential> registerWithEmail({
     required String email,
@@ -37,10 +65,18 @@ class AuthService {
       'messageTtlHours': 24,
       'publicKey': publicKey,
       'createdAt': FieldValue.serverTimestamp(),
+      'lastLoginAt': FieldValue.serverTimestamp(),
     });
     batch.set(_db.collection('usernames').doc(username.toLowerCase()), {'uid': cred.user!.uid});
     await batch.commit();
 
+    // Best-effort — the account still works even if this fails (e.g. no
+    // network right at that instant); it's not required for sign-in.
+    try {
+      await cred.user!.sendEmailVerification();
+    } catch (_) {}
+
+    pendingWelcomeMessage = 'Welcome to NWisp, $username! 🎉';
     return cred;
   }
 
@@ -50,7 +86,21 @@ class AuthService {
     // elsewhere or before this migration — publishes/refreshes publicKey.
     final publicKey = await CryptoService.ensureIdentityKeyPair();
     await CryptoService.ensureLocalStorageKey();
-    await _db.collection('users').doc(cred.user!.uid).set({'publicKey': publicKey}, SetOptions(merge: true));
+
+    final userRef = _db.collection('users').doc(cred.user!.uid);
+    final snap = await userRef.get();
+    final lastLoginAt = (snap.data()?['lastLoginAt'] as Timestamp?)?.toDate();
+    final username = (snap.data()?['username'] as String?) ?? '';
+    if (lastLoginAt != null && DateTime.now().difference(lastLoginAt).inDays >= 7) {
+      pendingWelcomeMessage = 'Welcome back${username.isNotEmpty ? ', $username' : ''}! 👋';
+    } else {
+      pendingWelcomeMessage = null;
+    }
+
+    await userRef.set({
+      'publicKey': publicKey,
+      'lastLoginAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
     return cred;
   }
 
