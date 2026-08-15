@@ -14,6 +14,12 @@ class BlockedException implements Exception {
   String toString() => message;
 }
 
+class NotSignedInException implements Exception {
+  final String message = "You're not signed in. Please sign in again.";
+  @override
+  String toString() => message;
+}
+
 /// Moves message content through Supabase as a pure, temporary relay:
 /// insert -> the recipient's device picks it up over Realtime (or on
 /// reconnect) -> decrypts -> saves locally -> deletes the row. Nothing about
@@ -25,7 +31,14 @@ class MessageRelayService {
   static final Map<String, String> _publicKeyCache = {};
   static RealtimeChannel? _channel;
 
-  static String get _myUid => FirebaseAuth.instance.currentUser!.uid;
+  /// A safe accessor instead of a bare `!` null-check — a null session here
+  /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
+  /// NotSignedInException instead of an unhandled null-check crash.
+  static String get _myUid {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw NotSignedInException();
+    return uid;
+  }
 
   static Future<String> _publicKeyFor(String uid) async {
     if (_publicKeyCache.containsKey(uid)) return _publicKeyCache[uid]!;
@@ -130,6 +143,12 @@ class MessageRelayService {
     }
   }
 
+  /// Sends a message. Every step that can fail (auth, blocking, missing
+  /// recipient keys, the network insert) happens BEFORE anything is written
+  /// to the local message store — so a failed send never shows up as a
+  /// message in the chat. Throws NotSignedInException up front if the
+  /// session is gone, rather than letting a bare null-check crash the
+  /// screen.
   static Future<String> sendMessage({
     required String conversationId,
     required String recipientUid,
@@ -139,6 +158,8 @@ class MessageRelayService {
     String? replyToId,
     required int ttlHours,
   }) async {
+    if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
+
     await _checkNotBlocked(recipientUid);
     final clientId = _uuid.v4();
     final recipientKey = await _publicKeyFor(recipientUid);
