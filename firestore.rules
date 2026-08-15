@@ -13,18 +13,6 @@ service cloud.firestore {
         allow read: if isOwner(uid);
         allow write: if isSignedIn() && (isOwner(uid) || request.auth.uid == contactId);
       }
-
-      match /devices/{deviceId} {
-        allow read: if isSignedIn();
-        allow write: if isOwner(uid);
-
-        match /oneTimePrekeys/{keyId} {
-          allow read: if isSignedIn();
-          allow update: if isSignedIn()
-                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used']);
-          allow create, delete: if isOwner(uid);
-        }
-      }
     }
 
     match /usernames/{name} {
@@ -56,22 +44,10 @@ service cloud.firestore {
       allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
       allow delete: if false;
 
-      function isConvParticipant() {
-        return isSignedIn() &&
-          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
-      }
-
-      match /messages/{messageId} {
-        allow read: if isConvParticipant();
-        allow create: if isConvParticipant() && request.resource.data.senderId == request.auth.uid;
-        allow update: if isConvParticipant()
-                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deliveredTo', 'readBy', 'reactions']);
-        allow delete: if isConvParticipant();
-      }
-
       match /typing/{uid} {
-        allow read: if isConvParticipant();
-        allow write: if isConvParticipant() && request.auth.uid == uid;
+        allow read: if isSignedIn() &&
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+        allow write: if isSignedIn() && request.auth.uid == uid;
       }
     }
 
