@@ -180,11 +180,21 @@ class LocalMessageStore {
     return result;
   }
 
-  static void _notifyConversation(String conversationId) {
+  /// Retries with backoff instead of dropping the update on the floor.
+  /// Previously a decrypt/read failure here (e.g. racing with the local
+  /// storage key not being loaded yet on cold start) was swallowed by an
+  /// un-awaited `.then()` with no error handler, and the UI would just be
+  /// stuck showing its loading spinner forever with no way to recover
+  /// short of some unrelated write happening to trigger a fresh, successful
+  /// notify. Capped at 5 attempts so a genuinely bad row can't retry forever.
+  static void _notifyConversation(String conversationId, [int attempt = 0]) {
     final controller = _convoControllers[conversationId];
     if (controller == null) return;
     _loadConversation(conversationId).then((list) {
       if (!controller.isClosed) controller.add(list);
+    }).catchError((Object e) {
+      if (attempt >= 5) return;
+      Future.delayed(Duration(milliseconds: 300 * (attempt + 1)), () => _notifyConversation(conversationId, attempt + 1));
     });
   }
 
@@ -223,9 +233,12 @@ class LocalMessageStore {
     return result;
   }
 
-  static void _notifySummaries() {
+  static void _notifySummaries([int attempt = 0]) {
     _loadSummaries().then((list) {
       if (!_summaryController.isClosed) _summaryController.add(list);
+    }).catchError((Object e) {
+      if (attempt >= 5) return;
+      Future.delayed(Duration(milliseconds: 300 * (attempt + 1)), () => _notifySummaries(attempt + 1));
     });
   }
 
