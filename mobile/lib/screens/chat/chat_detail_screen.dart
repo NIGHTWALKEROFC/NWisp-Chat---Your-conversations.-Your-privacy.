@@ -2,9 +2,13 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
-import '../../services/chat_service.dart';
 import '../../services/conversation_service.dart';
+import '../../services/local_message_store.dart';
+import '../../services/message_relay_service.dart';
+import '../../services/pin_service.dart';
 import '../../services/presence_service.dart';
 import 'chat_settings_screen.dart';
 
@@ -27,52 +31,70 @@ class ChatDetailScreen extends StatefulWidget {
 }
 
 class _ChatDetailScreenState extends State<ChatDetailScreen> {
-  final _chatService = ChatService();
   final _conversationService = ConversationService();
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
   final _myUid = FirebaseAuth.instance.currentUser!.uid;
 
-  QueryDocumentSnapshot<Map<String, dynamic>>? _replyingTo;
+  LocalMessage? _replyingTo;
+  Set<String> _pinnedIds = {};
+  bool _readReceiptsEnabled = true;
 
   int? _profileTtlHours;
   int? _chatTtlOverride;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
 
-  int? get _effectiveTtlHours => _chatTtlOverride ?? _profileTtlHours;
+  int get _effectiveTtlHours => _chatTtlOverride ?? _profileTtlHours ?? 24;
 
   @override
   void initState() {
     super.initState();
+    _conversationService.ensureConversation(otherUid: widget.peerUid);
     AuthService().currentUserProfile().then((doc) {
-      if (mounted) setState(() => _profileTtlHours = (doc.data()?['messageTtlHours'] as num?)?.toInt());
+      if (!mounted) return;
+      setState(() {
+        _profileTtlHours = (doc.data()?['messageTtlHours'] as num?)?.toInt();
+        _readReceiptsEnabled = (doc.data()?['readReceiptsEnabled'] as bool?) ?? true;
+      });
     });
     _convoSub = _conversationService.conversationStream(widget.conversationId).listen((doc) {
       if (!mounted) return;
       setState(() => _chatTtlOverride = (doc.data()?['chatTtlHours'] as num?)?.toInt());
     });
+    PinService.pinnedFor(widget.conversationId).then((ids) {
+      if (mounted) setState(() => _pinnedIds = ids);
+    });
   }
 
   void _onTextChanged(String value) {
-    _chatService.setTyping(widget.conversationId, value.isNotEmpty);
+    _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
   }
 
   Future<void> _send() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
     _textController.clear();
-    await _chatService.sendMessage(
-      conversationId: widget.conversationId,
-      ciphertext: text,
-      replyToId: _replyingTo?.id,
-      ttlHours: _effectiveTtlHours,
-    );
-    await _conversationService.updateLastMessage(widget.conversationId, text);
-    await _chatService.setTyping(widget.conversationId, false);
+    final replyId = _replyingTo?.id;
     setState(() => _replyingTo = null);
+    try {
+      await MessageRelayService.sendMessage(
+        conversationId: widget.conversationId,
+        recipientUid: widget.peerUid,
+        text: text,
+        replyToId: replyId,
+        ttlHours: _effectiveTtlHours,
+      );
+    } on BlockedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message could not be sent')));
+    }
+    await _conversationService.setTyping(widget.conversationId, false);
   }
 
-  void _showReactionPicker(QueryDocumentSnapshot<Map<String, dynamic>> message) {
+  void _showReactionPicker(LocalMessage message) {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -84,7 +106,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               IconButton(
                 iconSize: 32,
                 onPressed: () {
-                  _chatService.setReaction(widget.conversationId, message.id, emoji);
+                  LocalMessageStore.setReaction(message.id, _myUid, emoji);
+                  MessageRelayService.sendReaction(
+                    conversationId: widget.conversationId,
+                    toUid: widget.peerUid,
+                    messageId: message.id,
+                    emoji: emoji,
+                  );
                   Navigator.pop(sheetContext);
                 },
                 icon: Text(emoji, style: const TextStyle(fontSize: 26)),
@@ -92,7 +120,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             IconButton(
               iconSize: 28,
               onPressed: () {
-                _chatService.setReaction(widget.conversationId, message.id, null);
+                LocalMessageStore.setReaction(message.id, _myUid, null);
+                MessageRelayService.sendReaction(
+                  conversationId: widget.conversationId,
+                  toUid: widget.peerUid,
+                  messageId: message.id,
+                  emoji: null,
+                );
                 Navigator.pop(sheetContext);
               },
               icon: const Icon(Icons.close),
@@ -103,9 +137,80 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     );
   }
 
+  void _showMessageActions(LocalMessage message) {
+    final isPinned = _pinnedIds.contains(message.id);
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.emoji_emotions_outlined),
+              title: const Text('React'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _showReactionPicker(message);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.reply_rounded),
+              title: const Text('Reply'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                setState(() => _replyingTo = message);
+              },
+            ),
+            ListTile(
+              leading: Icon(isPinned ? Icons.push_pin : Icons.push_pin_outlined),
+              title: Text(isPinned ? 'Unpin' : 'Pin'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await PinService.togglePin(widget.conversationId, message.id);
+                final ids = await PinService.pinnedFor(widget.conversationId);
+                if (mounted) setState(() => _pinnedIds = ids);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('Copy text'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Clipboard.setData(ClipboardData(text: message.text));
+              },
+            ),
+            const Divider(height: 8),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete for me'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await MessageRelayService.deleteForMe(message.id);
+              },
+            ),
+            if (message.isMine)
+              ListTile(
+                leading: Icon(Icons.delete_forever_outlined, color: Theme.of(context).colorScheme.error),
+                title: Text('Delete for everyone', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                onTap: () async {
+                  Navigator.pop(sheetContext);
+                  await MessageRelayService.deleteForEveryone(
+                    conversationId: widget.conversationId,
+                    toUid: widget.peerUid,
+                    messageId: message.id,
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
-    _chatService.setTyping(widget.conversationId, false);
+    _conversationService.setTyping(widget.conversationId, false);
     _convoSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
@@ -161,6 +266,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   final data = snapshot.data?.data();
                   final online = (data?['online'] as bool?) ?? false;
                   final lastSeenVisible = (data?['lastSeenVisible'] as bool?) ?? true;
+                  final lastSeen = data?['lastSeen'] as Timestamp?;
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
@@ -168,7 +274,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       Text(widget.peerUsername, overflow: TextOverflow.ellipsis),
                       if (lastSeenVisible)
                         Text(
-                          online ? 'Online' : 'Offline',
+                          online ? 'Online' : _lastSeenLabel(lastSeen?.toDate()),
                           style: TextStyle(fontSize: 12, color: online ? scheme.primary : scheme.onSurfaceVariant),
                         ),
                     ],
@@ -202,49 +308,30 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           ),
           Column(
             children: [
-              if (_effectiveTtlHours != null)
-                Container(
-                  width: double.infinity,
-                  color: scheme.surfaceContainerHigh,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.timer_outlined, size: 13, color: scheme.onSurfaceVariant),
-                      const SizedBox(width: 6),
-                      Text(
-                        'New messages disappear after ${_ttlLabel(_effectiveTtlHours!)}'
-                        '${_chatTtlOverride != null ? ' (set for this chat)' : ''}',
-                        style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
+              Container(
+                width: double.infinity,
+                color: scheme.surfaceContainerHigh,
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.timer_outlined, size: 13, color: scheme.onSurfaceVariant),
+                    const SizedBox(width: 6),
+                    Text(
+                      'New messages disappear after ${_ttlLabel(_effectiveTtlHours)}'
+                      '${_chatTtlOverride != null ? ' (set for this chat)' : ''}',
+                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+                    ),
+                  ],
                 ),
+              ),
               Expanded(
-                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _chatService.messageStream(widget.conversationId),
+                child: StreamBuilder<List<LocalMessage>>(
+                  stream: LocalMessageStore.watchConversation(widget.conversationId),
                   builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(32),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.error_outline, size: 48, color: scheme.error),
-                              const SizedBox(height: 12),
-                              Text('Could not load messages', style: Theme.of(context).textTheme.titleMedium),
-                              const SizedBox(height: 4),
-                              Text('${snapshot.error}',
-                                  textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
-                            ],
-                          ),
-                        ),
-                      );
-                    }
                     if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                    final docs = snapshot.data!.docs;
-                    if (docs.isEmpty) {
+                    final messages = snapshot.data!;
+                    if (messages.isEmpty) {
                       return Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -260,39 +347,44 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       if (_scrollController.hasClients) {
                         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
                       }
-                      for (final doc in docs) {
-                        final readBy = List<String>.from(doc.data()['readBy'] ?? []);
-                        if (doc.data()['senderId'] != _myUid && !readBy.contains(_myUid)) {
-                          _chatService.markRead(widget.conversationId, doc.id);
+                      final unread = messages.where((m) => !m.isMine && m.status != 'read');
+                      if (unread.isNotEmpty) {
+                        LocalMessageStore.markConversationRead(widget.conversationId);
+                        if (_readReceiptsEnabled) {
+                          for (final m in unread) {
+                            MessageRelayService.sendReadReceipt(
+                              conversationId: widget.conversationId,
+                              toUid: widget.peerUid,
+                              ref: m.id,
+                            );
+                          }
                         }
                       }
                     });
                     return ListView.builder(
                       controller: _scrollController,
                       padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
-                      itemCount: docs.length,
+                      itemCount: messages.length,
                       itemBuilder: (context, i) {
-                        final doc = docs[i];
-                        final data = doc.data();
-                        final isMine = data['senderId'] == _myUid;
-                        final reactions = Map<String, dynamic>.from(data['reactions'] ?? {});
-                        final replyToId = data['replyToId'] as String?;
-                        QueryDocumentSnapshot<Map<String, dynamic>>? replySource;
-                        if (replyToId != null) {
-                          for (final d in docs) {
-                            if (d.id == replyToId) {
-                              replySource = d;
+                        final msg = messages[i];
+                        LocalMessage? replySource;
+                        if (msg.replyToId != null) {
+                          for (final m in messages) {
+                            if (m.id == msg.replyToId) {
+                              replySource = m;
                               break;
                             }
                           }
                         }
                         return _MessageBubble(
-                          isMine: isMine,
-                          text: (data['ciphertext'] as String?) ?? '',
-                          replyPreview: replySource?.data()['ciphertext'] as String?,
-                          reactions: reactions.values.map((e) => e.toString()).toList(),
-                          onLongPress: () => _showReactionPicker(doc),
-                          onSwipeReply: () => setState(() => _replyingTo = doc),
+                          isMine: msg.isMine,
+                          text: msg.text,
+                          replyPreview: replySource?.text,
+                          reactions: msg.reactions.values.toList(),
+                          status: msg.isMine ? msg.status : null,
+                          pinned: _pinnedIds.contains(msg.id),
+                          onLongPress: () => _showMessageActions(msg),
+                          onSwipeReply: () => setState(() => _replyingTo = msg),
                         );
                       },
                     );
@@ -300,7 +392,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 ),
               ),
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _chatService.typingStream(widget.conversationId),
+                stream: _conversationService.typingStream(widget.conversationId),
                 builder: (context, snapshot) {
                   if (!snapshot.hasData) return const SizedBox.shrink();
                   final peerTyping = snapshot.data!.docs.any((d) {
@@ -330,7 +422,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Replying to: ${_replyingTo!.data()['ciphertext']}',
+                          'Replying to: ${_replyingTo!.text}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -400,6 +492,15 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     final days = hours ~/ 24;
     return '$days day${days == 1 ? '' : 's'}';
   }
+
+  String _lastSeenLabel(DateTime? lastSeen) {
+    if (lastSeen == null) return 'Offline';
+    final diff = DateTime.now().difference(lastSeen);
+    if (diff.inMinutes < 1) return 'Last seen just now';
+    if (diff.inHours < 1) return 'Last seen ${diff.inMinutes}m ago';
+    if (diff.inDays < 1) return 'Last seen ${diff.inHours}h ago';
+    return 'Last seen ${diff.inDays}d ago';
+  }
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -407,6 +508,8 @@ class _MessageBubble extends StatelessWidget {
   final String text;
   final String? replyPreview;
   final List<String> reactions;
+  final String? status;
+  final bool pinned;
   final VoidCallback onLongPress;
   final VoidCallback onSwipeReply;
 
@@ -415,6 +518,8 @@ class _MessageBubble extends StatelessWidget {
     required this.text,
     required this.replyPreview,
     required this.reactions,
+    required this.status,
+    required this.pinned,
     required this.onLongPress,
     required this.onSwipeReply,
   });
@@ -452,6 +557,11 @@ class _MessageBubble extends StatelessWidget {
             child: Column(
               crossAxisAlignment: isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
               children: [
+                if (pinned)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Icon(Icons.push_pin, size: 12, color: scheme.onSurfaceVariant),
+                  ),
                 Container(
                   padding: const EdgeInsets.all(12),
                   constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
@@ -501,6 +611,22 @@ class _MessageBubble extends StatelessWidget {
                         text,
                         style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
                       ),
+                      if (isMine && status != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: Icon(
+                              status == 'read'
+                                  ? Icons.done_all
+                                  : status == 'delivered'
+                                      ? Icons.done_all
+                                      : Icons.done,
+                              size: 14,
+                              color: status == 'read' ? Colors.lightBlueAccent : scheme.onPrimary.withValues(alpha: 0.75),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
