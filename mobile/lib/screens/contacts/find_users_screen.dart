@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
@@ -12,6 +13,7 @@ class FindUsersScreen extends StatefulWidget {
 
 class _FindUsersScreenState extends State<FindUsersScreen> {
   final _contactService = ContactService();
+  final _authService = AuthService();
   final _conversationService = ConversationService();
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _results = [];
@@ -78,8 +80,9 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
   Future<void> _sendRequest(String uid, String username) async {
     setState(() => _sendingTo.add(uid));
     try {
-      final myProfile = await AuthServiceUsername.fetch();
-      await _contactService.sendRequest(toUid: uid, toUsername: username, myUsername: myProfile);
+      final myProfile = await _authService.currentUserProfile();
+      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
+      await _contactService.sendRequest(toUid: uid, toUsername: username, myUsername: myUsername);
       if (!mounted) return;
       setState(() {
         _pendingUids.add(uid);
@@ -96,8 +99,13 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
 
   Future<void> _openChat(String uid, String username) async {
     try {
-      await _conversationService.ensureConversation(otherUid: uid);
-      final conversationId = _conversationService.conversationIdFor(uid, uid); // placeholder, replaced below
+      final myProfile = await _authService.currentUserProfile();
+      final myUsername = (myProfile.data()?['username'] as String?) ?? '';
+      final conversationId = await _conversationService.getOrCreateConversation(
+        otherUid: uid,
+        myUsername: myUsername,
+        otherUsername: username,
+      );
       if (!mounted) return;
       Navigator.push(
         context,
