@@ -34,7 +34,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final _conversationService = ConversationService();
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
-  final _myUid = FirebaseAuth.instance.currentUser!.uid;
+  String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
   LocalMessage? _replyingTo;
   Set<String> _pinnedIds = {};
