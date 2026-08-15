@@ -38,6 +38,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     if (_authService.currentUser == null) return;
     if (state == AppLifecycleState.resumed) {
       PresenceService.goOnline();
+      LocalMessageStore.purgeExpired();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       PresenceService.goOffline();
     }
