@@ -1,18 +1,33 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../services/conversation_service.dart';
+import '../models/local_message.dart';
+import '../services/local_message_store.dart';
 import 'chat/chat_detail_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
 import 'settings/settings_screen.dart';
 
-class ChatListScreen extends StatelessWidget {
+class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
+
+  @override
+  State<ChatListScreen> createState() => _ChatListScreenState();
+}
+
+class _ChatListScreenState extends State<ChatListScreen> {
+  final Map<String, String> _usernameCache = {};
+
+  Future<String> _usernameFor(String uid) async {
+    if (_usernameCache.containsKey(uid)) return _usernameCache[uid]!;
+    final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final name = (doc.data()?['username'] as String?) ?? 'Unknown';
+    _usernameCache[uid] = name;
+    return name;
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final conversationService = ConversationService();
 
     return Scaffold(
       appBar: AppBar(
@@ -36,29 +51,12 @@ class ChatListScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: conversationService.conversationsStream(),
+      body: StreamBuilder<List<ConversationSummary>>(
+        stream: LocalMessageStore.watchSummaries(),
         builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, size: 48, color: scheme.error),
-                    const SizedBox(height: 12),
-                    Text('Could not load chats', style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 4),
-                    Text('${snapshot.error}', textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
-                  ],
-                ),
-              ),
-            );
-          }
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          final docs = snapshot.data!.docs;
-          if (docs.isEmpty) {
+          final summaries = snapshot.data!;
+          if (summaries.isEmpty) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
@@ -80,28 +78,42 @@ class ChatListScreen extends StatelessWidget {
             );
           }
           return ListView.builder(
-            itemCount: docs.length,
+            itemCount: summaries.length,
             itemBuilder: (context, i) {
-              final data = docs[i].data();
-              final (otherUid, otherUsername) = conversationService.otherParticipant(data);
-              final lastMessage = (data['lastMessageText'] as String?) ?? 'Say hello 👋';
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: scheme.primaryContainer,
-                  child: Text(otherUsername.isNotEmpty ? otherUsername[0].toUpperCase() : '?'),
-                ),
-                title: Text(otherUsername),
-                subtitle: Text(lastMessage, maxLines: 1, overflow: TextOverflow.ellipsis),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ChatDetailScreen(
-                      conversationId: docs[i].id,
-                      peerUid: otherUid,
-                      peerUsername: otherUsername,
+              final s = summaries[i];
+              return FutureBuilder<String>(
+                future: _usernameFor(s.peerUid),
+                builder: (context, nameSnap) {
+                  final username = nameSnap.data ?? '…';
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: scheme.primaryContainer,
+                      child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
                     ),
-                  ),
-                ),
+                    title: Text(username),
+                    subtitle: Text(s.lastText, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: s.unreadCount > 0
+                        ? CircleAvatar(
+                            radius: 11,
+                            backgroundColor: scheme.primary,
+                            child: Text(
+                              '${s.unreadCount}',
+                              style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700),
+                            ),
+                          )
+                        : null,
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatDetailScreen(
+                          conversationId: s.conversationId,
+                          peerUid: s.peerUid,
+                          peerUsername: username,
+                        ),
+                      ),
+                    ),
+                  );
+                },
               );
             },
           );
