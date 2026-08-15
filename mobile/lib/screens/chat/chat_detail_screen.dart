@@ -70,9 +70,15 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
   }
 
-  Future<void> _send() async {
+Future<void> _send() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
+    if (_myUid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("You're not signed in. Please sign in again.")),
+      );
+      return;
+    }
     _textController.clear();
     final replyId = _replyingTo?.id;
     setState(() => _replyingTo = null);
@@ -84,6 +90,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         replyToId: replyId,
         ttlHours: _effectiveTtlHours,
       );
+    } on NotSignedInException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } on BlockedException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
