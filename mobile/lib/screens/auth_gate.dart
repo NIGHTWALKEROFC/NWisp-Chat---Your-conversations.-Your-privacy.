@@ -7,6 +7,7 @@ import '../widgets/contact_developer_sheet.dart';
 import 'chat_list_screen.dart';
 import 'login_screen.dart';
 import 'settings/forgot_password_screen.dart';
+import '../services/local_message_store.dart';
 
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
