@@ -21,7 +21,7 @@ class BlockedException implements Exception {
 class MessageRelayService {
   static final _client = Supabase.instance.client;
   static final _db = FirebaseFirestore.instance;
-  static final _uuid = Uuid();
+  static final _uuid = const Uuid();
   static final Map<String, String> _publicKeyCache = {};
   static RealtimeChannel? _channel;
 
@@ -36,9 +36,8 @@ class MessageRelayService {
     return key;
   }
 
-  /// Call once after sign-in (see main.dart / auth_gate.dart). Subscribes to
-  /// incoming rows and also catches up on anything that arrived while the
-  /// app was closed.
+  /// Call once after sign-in (see main.dart). Subscribes to incoming rows
+  /// and also catches up on anything that arrived while the app was closed.
   static Future<void> start() async {
     await _catchUp();
     _channel?.unsubscribe();
@@ -77,33 +76,46 @@ class MessageRelayService {
       );
       final messageType = row['message_type'] as String;
 
-      if (messageType == 'receipt') {
-        final data = jsonDecode(payload) as Map<String, dynamic>;
-        await LocalMessageStore.setStatus(data['ref'] as String, data['status'] as String);
-      } else if (messageType == 'delete') {
-        final data = jsonDecode(payload) as Map<String, dynamic>;
-        await LocalMessageStore.deleteMessage(data['ref'] as String);
-      } else if (messageType == 'clear') {
-        final data = jsonDecode(payload) as Map<String, dynamic>;
-        await LocalMessageStore.clearConversation(data['conversationId'] as String);
-      } else {
-        final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 24;
-        final createdAt = DateTime.now();
-        await LocalMessageStore.insert(
-          id: row['client_id'] as String,
-          conversationId: row['conversation_id'] as String,
-          peerUid: senderUid,
-          senderUid: senderUid,
-          isMine: false,
-          text: payload,
-          messageType: messageType,
-          mediaPath: row['media_path'] as String?,
-          replyToId: row['reply_to_id'] as String?,
-          status: 'delivered',
-          createdAt: createdAt,
-          expiresAt: createdAt.add(Duration(hours: ttlHours)),
-        );
-        await _sendReceipt(conversationId: row['conversation_id'] as String, toUid: senderUid, ref: row['client_id'] as String, status: 'delivered');
+      switch (messageType) {
+        case 'receipt':
+          final data = jsonDecode(payload) as Map<String, dynamic>;
+          await LocalMessageStore.setStatus(data['ref'] as String, data['status'] as String);
+          break;
+        case 'delete':
+          final data = jsonDecode(payload) as Map<String, dynamic>;
+          await LocalMessageStore.deleteMessage(data['ref'] as String);
+          break;
+        case 'clear':
+          final data = jsonDecode(payload) as Map<String, dynamic>;
+          await LocalMessageStore.clearConversation(data['conversationId'] as String);
+          break;
+        case 'reaction':
+          final data = jsonDecode(payload) as Map<String, dynamic>;
+          await LocalMessageStore.setReaction(data['ref'] as String, senderUid, data['emoji'] as String?);
+          break;
+        default:
+          final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 24;
+          final createdAt = DateTime.now();
+          await LocalMessageStore.insert(
+            id: row['client_id'] as String,
+            conversationId: row['conversation_id'] as String,
+            peerUid: senderUid,
+            senderUid: senderUid,
+            isMine: false,
+            text: payload,
+            messageType: messageType,
+            mediaPath: row['media_path'] as String?,
+            replyToId: row['reply_to_id'] as String?,
+            status: 'delivered',
+            createdAt: createdAt,
+            expiresAt: createdAt.add(Duration(hours: ttlHours)),
+          );
+          await _sendReceipt(
+            conversationId: row['conversation_id'] as String,
+            toUid: senderUid,
+            ref: row['client_id'] as String,
+            status: 'delivered',
+          );
       }
     } finally {
       await _client.from('message_relay').delete().eq('id', row['id']);
@@ -187,6 +199,26 @@ class MessageRelayService {
     return _sendReceipt(conversationId: conversationId, toUid: toUid, ref: ref, status: 'read');
   }
 
+  static Future<void> sendReaction({
+    required String conversationId,
+    required String toUid,
+    required String messageId,
+    required String? emoji,
+  }) async {
+    final key = await _publicKeyFor(toUid);
+    final (ciphertext, nonce) = await CryptoService.encryptForPeer(jsonEncode({'ref': messageId, 'emoji': emoji}), key);
+    await _client.from('message_relay').insert({
+      'conversation_id': conversationId,
+      'sender_uid': _myUid,
+      'recipient_uid': toUid,
+      'ciphertext': ciphertext,
+      'nonce': nonce,
+      'message_type': 'reaction',
+      'client_id': _uuid.v4(),
+      'ttl_hours': 1,
+    });
+  }
+
   /// Telegram-style "delete for everyone": removes it from our own device
   /// AND tells the peer's device to remove it from theirs. Nothing to
   /// un-send server-side because nothing stays server-side.
@@ -208,7 +240,7 @@ class MessageRelayService {
 
   static Future<void> deleteForMe(String messageId) => LocalMessageStore.deleteMessage(messageId);
 
-  /// "Clear chat" — same idea, tells the peer's device to wipe it locally too.
+  /// "Clear chat" — tells the peer's device to wipe it locally too.
   static Future<void> clearForBoth({required String conversationId, required String toUid}) async {
     final key = await _publicKeyFor(toUid);
     final (ciphertext, nonce) = await CryptoService.encryptForPeer(jsonEncode({'conversationId': conversationId}), key);
