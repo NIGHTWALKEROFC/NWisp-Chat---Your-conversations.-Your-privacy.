@@ -156,6 +156,20 @@ class LocalMessageStore {
     _notifySummaries();
   }
 
+  /// Wipes every local message and clears out (without closing) any open
+  /// per-conversation stream subscriptions — used when a different account
+  /// signs in on this device (see SessionService). The messages would be
+  /// undecryptable garbage anyway once the local storage key is wiped
+  /// alongside this, so they're cleared outright rather than left as
+  /// orphaned rows.
+  static Future<void> resetForNewUser() async {
+    await _db!.delete('messages');
+    for (final controller in _convoControllers.values) {
+      if (!controller.isClosed) controller.add([]);
+    }
+    _notifySummaries();
+  }
+
   static Future<List<LocalMessage>> _loadConversation(String conversationId) async {
     final rows = await _db!.query('messages', where: 'conversation_id = ?', whereArgs: [conversationId], orderBy: 'created_at ASC');
     final result = <LocalMessage>[];
@@ -181,12 +195,7 @@ class LocalMessageStore {
   }
 
   /// Retries with backoff instead of dropping the update on the floor.
-  /// Previously a decrypt/read failure here (e.g. racing with the local
-  /// storage key not being loaded yet on cold start) was swallowed by an
-  /// un-awaited `.then()` with no error handler, and the UI would just be
-  /// stuck showing its loading spinner forever with no way to recover
-  /// short of some unrelated write happening to trigger a fresh, successful
-  /// notify. Capped at 5 attempts so a genuinely bad row can't retry forever.
+  /// Capped at 5 attempts so a genuinely bad row can't retry forever.
   static void _notifyConversation(String conversationId, [int attempt = 0]) {
     final controller = _convoControllers[conversationId];
     if (controller == null) return;
