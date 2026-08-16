@@ -50,6 +50,15 @@ class CryptoService {
     _localStorageKey = key;
   }
 
+  /// Drops the in-memory copies of both keys without touching secure
+  /// storage — used right before SessionService reloads/regenerates them
+  /// for a newly active account, so nothing from the previous account can
+  /// accidentally still be used mid-transition.
+  static void clearInMemoryKeys() {
+    _myKeyPair = null;
+    _localStorageKey = null;
+  }
+
   static Uint8ListLike _randomNonce() {
     final rand = Random.secure();
     return List<int>.generate(12, (_) => rand.nextInt(256));
