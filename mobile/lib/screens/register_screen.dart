@@ -1,8 +1,19 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/auth_service.dart';
 import 'settings/privacy_policy_screen.dart';
 import 'settings/terms_screen.dart';
+
+/// Forces lowercase as the user types, the way Instagram's username field
+/// does — this is enforced going forward for new signups only; existing
+/// accounts created with mixed-case usernames are left exactly as they are.
+class _LowerCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    return newValue.copyWith(text: newValue.text.toLowerCase());
+  }
+}
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -54,12 +65,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   void _onUsernameChanged(String value) {
     _usernameDebounce?.cancel();
-    final trimmed = value.trim();
+    // The input field itself already forces lowercase as you type (see
+    // _LowerCaseTextFormatter) — this trim/lowercase is just a safety net.
+    final trimmed = value.trim().toLowerCase();
     if (trimmed.length < 3) {
       setState(() => _usernameCheck = trimmed.isEmpty ? _UsernameCheck.idle : _UsernameCheck.invalid);
       return;
     }
-    if (!RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(trimmed)) {
+    if (!RegExp(r'^[a-z0-9_]+$').hasMatch(trimmed)) {
       setState(() => _usernameCheck = _UsernameCheck.invalid);
       return;
     }
@@ -96,7 +109,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ]);
       case _UsernameCheck.invalid:
         return Text(
-          'At least 3 characters — letters, numbers, and underscores only',
+          'At least 3 characters — lowercase letters, numbers, and underscores only',
           style: TextStyle(color: scheme.error, fontSize: 12.5),
         );
     }
@@ -198,7 +211,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       await _authService.registerWithEmail(
         email: _emailController.text.trim(),
         password: _passwordController.text,
-        username: _usernameController.text.trim(),
+        username: _usernameController.text.trim().toLowerCase(),
       );
       // On success, AuthGate's authStateChanges listener takes over and
       // navigates to the home screen automatically.
@@ -273,11 +286,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
           children: [
             Text('Choose a username', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 4),
-            Text('This is how people find and message you.', style: TextStyle(color: scheme.onSurfaceVariant)),
+            Text('This is how people find and message you. Lowercase only.', style: TextStyle(color: scheme.onSurfaceVariant)),
             const SizedBox(height: 20),
             TextField(
               controller: _usernameController,
               autofocus: true,
+              inputFormatters: [_LowerCaseTextFormatter()],
               onChanged: _onUsernameChanged,
               decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person_outline)),
             ),
