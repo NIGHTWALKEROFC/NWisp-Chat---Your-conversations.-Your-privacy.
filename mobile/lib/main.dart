@@ -9,9 +9,9 @@ import 'firebase_options.dart';
 import 'services/theme_service.dart';
 import 'services/branding_service.dart';
 import 'services/auth_service.dart';
-import 'services/crypto_service.dart';
 import 'services/local_message_store.dart';
 import 'services/message_relay_service.dart';
+import 'services/session_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
 
@@ -26,17 +26,12 @@ void main() async {
 
   // If a session is already persisted from a previous run (the normal
   // "reopen the app" case), get this device's crypto keys ready BEFORE the
-  // first frame renders. Previously this only happened inside the
-  // post-runApp auth listener below, which raced with the chat list's very
-  // first read of the local message store: decryptLocal() needs
-  // _localStorageKey, which hadn't loaded yet, so that first summary load
-  // silently failed (see the added error handling in LocalMessageStore too)
-  // and the home screen was stuck on its loading spinner until some other
-  // write — like sending a message — triggered a second, successful reload.
+  // first frame renders — SessionService also checks whether this uid
+  // matches whoever last used this device, and wipes any stale
+  // account's local state first if not (see session_service.dart).
   final existingUser = FirebaseAuth.instance.currentUser;
   if (existingUser != null) {
-    await CryptoService.ensureIdentityKeyPair();
-    await CryptoService.ensureLocalStorageKey();
+    await SessionService.prepareForUser(existingUser.uid);
     await LocalMessageStore.purgeExpired();
   }
 
@@ -59,16 +54,17 @@ void main() async {
   );
 }
 
-/// Starts/stops the Supabase message relay listener and local key setup
+/// Starts/stops the Supabase message relay listener and local session setup
 /// whenever the Firebase auth state changes, and runs a light periodic
 /// sweep to delete any local messages whose auto-delete timer has expired
 /// while the app is in the foreground (see the "disappearing messages"
 /// note in the writeup for the background-execution caveat).
 ///
-/// ensureIdentityKeyPair/ensureLocalStorageKey are idempotent (they just
-/// load the existing key if one's already there), so re-running them here
+/// SessionService.prepareForUser is idempotent for a given uid (it just
+/// reloads existing keys once the account matches), so re-running it here
 /// for the same user main() already prepared above is harmless — this
-/// listener is what matters for actual sign-in/sign-out transitions.
+/// listener is what matters for actual sign-in/sign-out/account-switch
+/// transitions.
 void _setUpMessagingLifecycle() {
   Timer? sweepTimer;
   FirebaseAuth.instance.authStateChanges().listen((user) async {
@@ -77,8 +73,7 @@ void _setUpMessagingLifecycle() {
       sweepTimer?.cancel();
       return;
     }
-    await CryptoService.ensureIdentityKeyPair();
-    await CryptoService.ensureLocalStorageKey();
+    await SessionService.prepareForUser(user.uid);
     await LocalMessageStore.purgeExpired();
     await MessageRelayService.start();
     sweepTimer?.cancel();
