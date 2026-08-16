@@ -128,8 +128,13 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     if (confirmed != true) return;
     await _moderationService.blockUser(widget.peerUid);
     if (!mounted) return;
-    Navigator.pop(context);
-    Navigator.pop(context);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${widget.peerUsername} blocked')));
+  }
+
+  Future<void> _unblock() async {
+    await _moderationService.unblockUser(widget.peerUid);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${widget.peerUsername} unblocked')));
   }
 
   Future<void> _report() async {
@@ -184,10 +189,23 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 onTap: _clearing ? null : _confirmClearChat,
               ),
               const Divider(height: 24),
-              ListTile(
-                leading: Icon(Icons.block, color: scheme.error),
-                title: Text('Block ${widget.peerUsername}', style: TextStyle(color: scheme.error)),
-                onTap: _confirmBlock,
+              // Block/Unblock now reflects and toggles actual state — it
+              // used to always just show "Block", even if you'd already
+              // blocked this person.
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: _moderationService.myProfileStream(),
+                builder: (context, profileSnapshot) {
+                  final blocked = List<String>.from(profileSnapshot.data?.data()?['blockedUsers'] ?? []);
+                  final isBlocked = blocked.contains(widget.peerUid);
+                  return ListTile(
+                    leading: Icon(isBlocked ? Icons.block_flipped : Icons.block, color: scheme.error),
+                    title: Text(
+                      isBlocked ? 'Unblock ${widget.peerUsername}' : 'Block ${widget.peerUsername}',
+                      style: TextStyle(color: scheme.error),
+                    ),
+                    onTap: isBlocked ? _unblock : _confirmBlock,
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.flag_outlined),
