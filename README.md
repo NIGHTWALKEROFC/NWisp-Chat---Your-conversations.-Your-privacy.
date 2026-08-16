@@ -1,71 +1,112 @@
-<div align="center">
+# NWisp
 
-# 🔒 Secure Chat & Stories
+Privacy-focused messaging app with disappearing content by design. 1:1 encrypted chat and 24-hour stories, no dedicated backend server.
 
-**Private messaging that disappears. Stories that fade. No feed, no ads, no data mining.**
+## Stack
 
-[![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
-[![Firebase](https://img.shields.io/badge/Backend-Firebase-FFCA28?logo=firebase&logoColor=black)](https://firebase.google.com)
-[![Codemagic](https://img.shields.io/badge/CI%2FCD-Codemagic-4297F7)](https://codemagic.io)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+- **Frontend:** Flutter (Dart) — package `com.nightwalker.securechat`
+- **Auth & metadata:** Firebase Auth (email/password), Cloud Firestore (users, contacts, requests, conversation metadata, stories, reports)
+- **Messaging & media:** Supabase (Postgres relay table for message delivery, Storage for avatars/chat media/stories)
+- **CI/CD:** Codemagic — builds release APKs from this repo
 
-</div>
+## Architecture
 
----
+Firebase only handles authentication and non-message metadata. Message content never touches Firebase and is never stored server-side long-term.
 
-## ✨ What is this
+- **Encryption:** every message is end-to-end encrypted on-device before sending — X25519 (ECDH) between the sender's and recipient's static key pairs, HKDF, AES-256-GCM. Each account has one identity key pair; the private key stays in the OS keystore (`flutter_secure_storage`), the public key is published to `users/{uid}.publicKey` in Firestore so others can encrypt to it.
+- **Delivery:** encrypted messages are inserted as a single row into a Supabase table, `message_relay`. The recipient's device picks it up over Supabase Realtime (or on next app open, via a catch-up query), decrypts it, and deletes the row. Nothing about message content is meant to sit in Supabase for long.
+- **Storage:** decrypted messages are kept only in an on-device SQLite database, re-encrypted with a separate device-local AES key that never leaves the device. This is the only place message content lives long-term.
+- **Disappearing messages:** the auto-delete timer (app-wide default or per-chat override) is enforced on-device, since there is no server-side copy to expire.
 
-A privacy-first mobile app combining **WhatsApp-style encrypted messaging** with **Instagram-style 24-hour Stories** — built to disappear by design. Messages live on the server for a maximum of 24 hours. Stories vanish after a day. No feed, no permanent posts, no ads, no premium tier.
+Known limitation: the encryption scheme uses static keys, not a full Double Ratchet, so there is no per-message forward secrecy. `libsignal_protocol_dart` is a dependency for a future upgrade to full Signal-style ratcheting.
 
-## 🧩 Features
+## Features
 
-| | |
-|---|---|
-| 🔑 | Username-based identity — email/phone stay private |
-| 💬 | 1:1 and group chats, end-to-end encrypted via the Signal Protocol |
-| 📸 | Photos, videos (≤20MB), documents, reactions, replies |
-| ⏳ | 24-hour server-side message retention, auto-deleted |
-| 📱 | 24-hour Stories with custom viewer circles (Friends / Family / Work) |
-| 🕵️ | Granular privacy controls — last seen, read receipts, discoverability |
+- Email/password auth with unique usernames
+- Contact system: username search, friend-style requests, blocking (enforced — a blocked sender's messages are refused before they're relayed)
+- 1:1 chat: text, replies, reactions, typing indicators, delivered/read receipts, online/last-seen presence
+- Message actions: pin, copy, delete-for-me, delete-for-everyone (removes it from the peer's device too)
+- Auto-delete messages: app-wide default with optional per-chat override
+- Per-chat settings: mute, auto-delete override, clear chat (both sides), block/report
+- Stories: disappear after 24 hours
+- Custom accent color (HSV picker + presets), light/dark/system theme
+- App-lock PIN with optional hint and password-based recovery
+- In-app Help Centre and developer contact
+- In-app Privacy Policy
 
-## 🏗️ Architecture
+## Project structure
 
-Flutter (Android + iOS)
-│
-├── Firebase Auth → identity
-├── Cloud Firestore → messages, stories, metadata (TTL auto-delete)
-├── Firebase Storage → media (photos/videos)
-├── Cloud Functions → push notification relay
-└── Signal Protocol → end-to-end encryption (client-side only)
+```
+mobile/                  Flutter app
+  lib/
+    services/             Auth, crypto, message relay, local message store, contacts, presence, etc.
+    screens/               UI screens
+    models/                 Data models
+    widgets/                 Shared widgets
+scripts/                 Node script for scheduled Stories cleanup
+supabase/functions/      Edge function for signed media URLs
+firestore.rules          Firestore security rules
+firebase.json            Firebase project config
+codemagic.yaml           CI build config
+```
 
-No self-hosted server — everything runs on Firebase's managed, free-tier infrastructure.
+## Setup
 
-## 🚀 Getting started
+### Firebase
 
-1. Clone the repo and run `flutter pub get` inside `mobile/`.
-2. Create a Firebase project and run `flutterfire configure`.
-3. Deploy `firestore.rules` and `storage.rules`.
-4. Enable Firestore TTL policies on `expiresAt` for `messages` and `stories`.
-5. `flutter run`.
+1. Create a Firebase project, enable Authentication (Email/Password) and Cloud Firestore.
+2. Deploy `firestore.rules`:
+   ```
+   firebase deploy --only firestore:rules
+   ```
+3. Add the app's `firebase_options.dart` (generate with `flutterfire configure`).
 
-Full setup walkthrough: see [`docs/SETUP.md`](docs/SETUP.md).
+### Supabase
 
-## 🔐 Security
+1. Create a Supabase project (free tier is sufficient).
+2. Run in the SQL Editor:
+   ```sql
+   create table public.message_relay (
+     id uuid primary key default gen_random_uuid(),
+     conversation_id text not null,
+     sender_uid text not null,
+     recipient_uid text not null,
+     ciphertext text not null,
+     nonce text not null,
+     message_type text not null default 'text',
+     media_path text,
+     reply_to_id text,
+     client_id text not null,
+     ttl_hours integer not null default 24,
+     created_at timestamptz not null default now()
+   );
+   alter table public.message_relay enable row level security;
+   create policy "anon can insert" on public.message_relay for insert to anon with check (true);
+   create policy "anon can select" on public.message_relay for select to anon using (true);
+   create policy "anon can delete" on public.message_relay for delete to anon using (true);
 
-- All message content is encrypted client-side with the Signal Protocol before it ever reaches Firebase — the server only ever sees ciphertext.
-- Firestore Security Rules enforce conversation membership and per-user write scoping.
-- Report vulnerabilities privately — do not open a public issue for security bugs.
+   create extension if not exists pg_cron;
+   select cron.schedule('purge-stale-relay', '0 3 * * *', $$
+     delete from public.message_relay where created_at < now() - interval '7 days';
+   $$);
 
-## 📦 Builds
+   alter publication supabase_realtime add table public.message_relay;
+   ```
+3. Create a public Storage bucket named `avatars`.
+4. Deploy the `get-signed-url` edge function under `supabase/functions/` for signed access to chat media and stories.
 
-Handled via [Codemagic](https://codemagic.io) — see `codemagic.yaml`. Every push to `main` triggers Android and iOS builds.
+### Build
 
-## 📄 License
+Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` as environment variables (already wired in `codemagic.yaml` for CI). For a local build:
 
-MIT — see [`LICENSE`](LICENSE).
+```
+cd mobile
+flutter pub get
+flutter build apk --release \
+  --dart-define=SUPABASE_URL=<your-supabase-url> \
+  --dart-define=SUPABASE_ANON_KEY=<your-anon-key>
+```
 
----
+## Scheduled cleanup
 
-<div align="center">
-Built by <a href="https://github.com/NIGHTWALKEROFC">NIGHTWALKEROFC</a>
-</div>
+`scripts/cleanup.js`, run on a schedule via `.github/workflows/cleanup.yml`, deletes expired Stories from Firestore. It requires a `FIREBASE_SERVICE_ACCOUNT` secret in the repo's GitHub Actions settings.
