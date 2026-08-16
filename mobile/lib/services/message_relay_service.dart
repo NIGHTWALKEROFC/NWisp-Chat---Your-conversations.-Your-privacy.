@@ -28,8 +28,17 @@ class MessageRelayService {
   static final _client = Supabase.instance.client;
   static final _db = FirebaseFirestore.instance;
   static final _uuid = const Uuid();
-  static final Map<String, String> _publicKeyCache = {};
+
+  /// Public keys are cached briefly (not forever, not never) — long enough
+  /// to avoid a Firestore read on every keystroke-adjacent action, short
+  /// enough that a contact who rotated their identity key pair (reinstall,
+  /// switching accounts on a device — see SessionService) is picked up
+  /// again within a few minutes even without any explicit invalidation.
+  static final Map<String, _CachedKey> _publicKeyCache = {};
+  static const _keyCacheTtl = Duration(minutes: 3);
+
   static RealtimeChannel? _channel;
+  static Timer? _reconnectTimer;
 
   /// A safe accessor instead of a bare `!` null-check — a null session here
   /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
@@ -40,33 +49,76 @@ class MessageRelayService {
     return uid;
   }
 
-  static Future<String> _publicKeyFor(String uid) async {
-    if (_publicKeyCache.containsKey(uid)) return _publicKeyCache[uid]!;
+  static Future<String> _publicKeyFor(String uid, {bool forceRefresh = false}) async {
+    final cached = _publicKeyCache[uid];
+    if (!forceRefresh && cached != null && DateTime.now().difference(cached.fetchedAt) < _keyCacheTtl) {
+      return cached.key;
+    }
     final doc = await _db.collection('users').doc(uid).get();
     final key = doc.data()?['publicKey'] as String?;
     if (key == null) throw Exception('That user has not set up encryption keys yet.');
-    _publicKeyCache[uid] = key;
+    _publicKeyCache[uid] = _CachedKey(key, DateTime.now());
     return key;
   }
+
+  /// Clears every cached public key on this device — used when a different
+  /// account signs in (see SessionService), and safe to call any other
+  /// time too since keys just get refetched on demand afterward.
+  static void resetPublicKeyCache() => _publicKeyCache.clear();
 
   /// Call once after sign-in (see main.dart). Subscribes to incoming rows
   /// and also catches up on anything that arrived while the app was closed.
   static Future<void> start() async {
-    await _catchUp();
+    try {
+      await _catchUp();
+    } catch (_) {
+      // Don't let a catch-up failure (e.g. no network right this instant)
+      // stop us from subscribing to live updates below — we'll catch up
+      // again on the next reconnect/app start regardless.
+    }
+    _subscribe();
+  }
+
+  static void _subscribe() {
     _channel?.unsubscribe();
+    final myUid = _myUid;
     _channel = _client
-        .channel('message_relay_inbox_$_myUid')
+        .channel('message_relay_inbox_$myUid')
         .onPostgresChanges(
           event: PostgresChangeEvent.insert,
           schema: 'public',
           table: 'message_relay',
-          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'recipient_uid', value: _myUid),
-          callback: (payload) => _handleRow(payload.newRecord),
+          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'recipient_uid', value: myUid),
+          callback: (payload) {
+            _handleRow(payload.newRecord).catchError((_) {
+              // Leave it in the relay table — it'll be retried on the next
+              // catch-up instead of being silently lost.
+            });
+          },
         )
-        .subscribe();
+        .subscribe((status, [error]) {
+      if (status == RealtimeSubscribeStatus.subscribed) {
+        _reconnectTimer?.cancel();
+        // A gap in the realtime connection (however brief) could have
+        // meant a missed insert — sweep for anything still sitting in the
+        // relay table for us.
+        _catchUp().catchError((_) {});
+        return;
+      }
+      if (status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.closed) {
+        // Don't just go quiet — retry the subscription instead of leaving
+        // this device permanently unable to receive messages until it's
+        // manually restarted.
+        _reconnectTimer?.cancel();
+        _reconnectTimer = Timer(const Duration(seconds: 4), () {
+          if (FirebaseAuth.instance.currentUser != null) _subscribe();
+        });
+      }
+    });
   }
 
   static void stop() {
+    _reconnectTimer?.cancel();
     _channel?.unsubscribe();
     _channel = null;
   }
@@ -74,65 +126,89 @@ class MessageRelayService {
   static Future<void> _catchUp() async {
     final rows = await _client.from('message_relay').select().eq('recipient_uid', _myUid);
     for (final row in rows) {
-      await _handleRow(row);
+      try {
+        await _handleRow(row);
+      } catch (_) {
+        // Leave this one for the next catch-up rather than letting one bad
+        // row block the rest of the inbox from being processed.
+      }
     }
   }
 
-  static Future<void> _handleRow(Map<String, dynamic> row) async {
+  static Future<String> _decryptRow(Map<String, dynamic> row, String senderUid) async {
     try {
-      final senderUid = row['sender_uid'] as String;
-      final senderPublicKey = await _publicKeyFor(senderUid);
-      final payload = await CryptoService.decryptFromPeer(
+      final key = await _publicKeyFor(senderUid);
+      return await CryptoService.decryptFromPeer(
         ciphertextB64: row['ciphertext'] as String,
         nonceB64: row['nonce'] as String,
-        senderPublicKeyB64: senderPublicKey,
+        senderPublicKeyB64: key,
       );
-      final messageType = row['message_type'] as String;
-
-      switch (messageType) {
-        case 'receipt':
-          final data = jsonDecode(payload) as Map<String, dynamic>;
-          await LocalMessageStore.setStatus(data['ref'] as String, data['status'] as String);
-          break;
-        case 'delete':
-          final data = jsonDecode(payload) as Map<String, dynamic>;
-          await LocalMessageStore.deleteMessage(data['ref'] as String);
-          break;
-        case 'clear':
-          final data = jsonDecode(payload) as Map<String, dynamic>;
-          await LocalMessageStore.clearConversation(data['conversationId'] as String);
-          break;
-        case 'reaction':
-          final data = jsonDecode(payload) as Map<String, dynamic>;
-          await LocalMessageStore.setReaction(data['ref'] as String, senderUid, data['emoji'] as String?);
-          break;
-        default:
-          final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 24;
-          final createdAt = DateTime.now();
-          await LocalMessageStore.insert(
-            id: row['client_id'] as String,
-            conversationId: row['conversation_id'] as String,
-            peerUid: senderUid,
-            senderUid: senderUid,
-            isMine: false,
-            text: payload,
-            messageType: messageType,
-            mediaPath: row['media_path'] as String?,
-            replyToId: row['reply_to_id'] as String?,
-            status: 'delivered',
-            createdAt: createdAt,
-            expiresAt: createdAt.add(Duration(hours: ttlHours)),
-          );
-          await _sendReceipt(
-            conversationId: row['conversation_id'] as String,
-            toUid: senderUid,
-            ref: row['client_id'] as String,
-            status: 'delivered',
-          );
-      }
-    } finally {
-      await _client.from('message_relay').delete().eq('id', row['id']);
+    } catch (_) {
+      // The sender may have rotated their identity key pair since we
+      // cached it (reinstall, or an account switch on their device).
+      // Refetch once, live, before giving up.
+      final freshKey = await _publicKeyFor(senderUid, forceRefresh: true);
+      return await CryptoService.decryptFromPeer(
+        ciphertextB64: row['ciphertext'] as String,
+        nonceB64: row['nonce'] as String,
+        senderPublicKeyB64: freshKey,
+      );
     }
+  }
+
+  /// Processes one relay row. The row is only deleted from `message_relay`
+  /// AFTER it's been fully and successfully handled — if anything here
+  /// throws (bad decrypt, a dropped network call), the row is left in
+  /// place so it's retried on the next catch-up instead of being silently
+  /// and permanently lost.
+  static Future<void> _handleRow(Map<String, dynamic> row) async {
+    final senderUid = row['sender_uid'] as String;
+    final messageType = row['message_type'] as String;
+    final payload = await _decryptRow(row, senderUid);
+
+    switch (messageType) {
+      case 'receipt':
+        final data = jsonDecode(payload) as Map<String, dynamic>;
+        await LocalMessageStore.setStatus(data['ref'] as String, data['status'] as String);
+        break;
+      case 'delete':
+        final data = jsonDecode(payload) as Map<String, dynamic>;
+        await LocalMessageStore.deleteMessage(data['ref'] as String);
+        break;
+      case 'clear':
+        final data = jsonDecode(payload) as Map<String, dynamic>;
+        await LocalMessageStore.clearConversation(data['conversationId'] as String);
+        break;
+      case 'reaction':
+        final data = jsonDecode(payload) as Map<String, dynamic>;
+        await LocalMessageStore.setReaction(data['ref'] as String, senderUid, data['emoji'] as String?);
+        break;
+      default:
+        final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 24;
+        final createdAt = DateTime.now();
+        await LocalMessageStore.insert(
+          id: row['client_id'] as String,
+          conversationId: row['conversation_id'] as String,
+          peerUid: senderUid,
+          senderUid: senderUid,
+          isMine: false,
+          text: payload,
+          messageType: messageType,
+          mediaPath: row['media_path'] as String?,
+          replyToId: row['reply_to_id'] as String?,
+          status: 'delivered',
+          createdAt: createdAt,
+          expiresAt: createdAt.add(Duration(hours: ttlHours)),
+        );
+        await _sendReceipt(
+          conversationId: row['conversation_id'] as String,
+          toUid: senderUid,
+          ref: row['client_id'] as String,
+          status: 'delivered',
+        );
+    }
+
+    await _client.from('message_relay').delete().eq('id', row['id']);
   }
 
   static Future<void> _checkNotBlocked(String recipientUid) async {
@@ -146,9 +222,7 @@ class MessageRelayService {
   /// Sends a message. Every step that can fail (auth, blocking, missing
   /// recipient keys, the network insert) happens BEFORE anything is written
   /// to the local message store — so a failed send never shows up as a
-  /// message in the chat. Throws NotSignedInException up front if the
-  /// session is gone, rather than letting a bare null-check crash the
-  /// screen.
+  /// message in the chat.
   static Future<String> sendMessage({
     required String conversationId,
     required String recipientUid,
@@ -162,7 +236,11 @@ class MessageRelayService {
 
     await _checkNotBlocked(recipientUid);
     final clientId = _uuid.v4();
-    final recipientKey = await _publicKeyFor(recipientUid);
+    // Always fetch a live public key for sends specifically — if we
+    // silently encrypted with a stale cached key here, the recipient would
+    // never be able to decrypt it and we'd have no way to know the send
+    // "failed", since the Supabase insert itself always succeeds.
+    final recipientKey = await _publicKeyFor(recipientUid, forceRefresh: true);
     final (ciphertext, nonce) = await CryptoService.encryptForPeer(text, recipientKey);
 
     await _client.from('message_relay').insert({
@@ -277,4 +355,10 @@ class MessageRelayService {
     });
     await LocalMessageStore.clearConversation(conversationId);
   }
+}
+
+class _CachedKey {
+  final String key;
+  final DateTime fetchedAt;
+  _CachedKey(this.key, this.fetchedAt);
 }
