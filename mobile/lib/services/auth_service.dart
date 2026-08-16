@@ -1,6 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'crypto_service.dart';
+import 'session_service.dart';
 
 class AuthService {
   final _auth = FirebaseAuth.instance;
@@ -44,17 +44,26 @@ class AuthService {
     required String password,
     required String username,
   }) async {
-    final existing = await _db.collection('usernames').doc(username.toLowerCase()).get();
+    // Usernames are lowercase-only from here on (Instagram-style — the
+    // signup screen already forces lowercase as you type, this is just a
+    // server-side guarantee). Existing accounts created before this change
+    // keep whatever casing they already have; nothing here touches them.
+    final lowerUsername = username.trim().toLowerCase();
+
+    final existing = await _db.collection('usernames').doc(lowerUsername).get();
     if (existing.exists) throw Exception('Username already taken');
 
     final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-    final publicKey = await CryptoService.ensureIdentityKeyPair();
-    await CryptoService.ensureLocalStorageKey();
+    // SessionService both prepares this device's keys AND — if a different
+    // account was last active on this device — wipes that previous
+    // account's local state first (old messages, old keys) so it's never
+    // visible to this new one.
+    final publicKey = await SessionService.prepareForUser(cred.user!.uid);
 
     final batch = _db.batch();
     batch.set(_db.collection('users').doc(cred.user!.uid), {
-      'username': username,
-      'usernameLower': username.toLowerCase(),
+      'username': lowerUsername,
+      'usernameLower': lowerUsername,
       'photoUrl': null,
       'emailVisible': false,
       'lastSeenVisible': true,
@@ -67,7 +76,7 @@ class AuthService {
       'createdAt': FieldValue.serverTimestamp(),
       'lastLoginAt': FieldValue.serverTimestamp(),
     });
-    batch.set(_db.collection('usernames').doc(username.toLowerCase()), {'uid': cred.user!.uid});
+    batch.set(_db.collection('usernames').doc(lowerUsername), {'uid': cred.user!.uid});
     await batch.commit();
 
     // Best-effort — the account still works even if this fails (e.g. no
@@ -76,16 +85,15 @@ class AuthService {
       await cred.user!.sendEmailVerification();
     } catch (_) {}
 
-    pendingWelcomeMessage = 'Welcome to NWisp, $username! 🎉';
+    pendingWelcomeMessage = 'Welcome to NWisp, $lowerUsername! 🎉';
     return cred;
   }
 
   Future<UserCredential> loginWithEmail(String email, String password) async {
     final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
-    // Make sure this device has keys even if the account was created
-    // elsewhere or before this migration — publishes/refreshes publicKey.
-    final publicKey = await CryptoService.ensureIdentityKeyPair();
-    await CryptoService.ensureLocalStorageKey();
+    // Prepares (and, if this device last belonged to a different account,
+    // wipes-then-prepares) this device's keys and local message store.
+    final publicKey = await SessionService.prepareForUser(cred.user!.uid);
 
     final userRef = _db.collection('users').doc(cred.user!.uid);
     final snap = await userRef.get();
