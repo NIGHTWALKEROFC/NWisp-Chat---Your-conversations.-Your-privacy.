@@ -8,11 +8,14 @@ import '../../services/auth_service.dart';
 import '../../services/conversation_service.dart';
 import '../../services/local_message_store.dart';
 import '../../services/message_relay_service.dart';
+import '../../services/moderation_service.dart';
 import '../../services/pin_service.dart';
 import '../../services/presence_service.dart';
 import 'chat_settings_screen.dart';
 
-const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+// Expanded quick-reaction set (was 6, now 12) — tapping the same emoji you
+// already reacted with removes it; tapping a different one switches to it.
+const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉', '😍', '👏', '💯', '😡'];
 
 class ChatDetailScreen extends StatefulWidget {
   final String conversationId;
@@ -32,17 +35,29 @@ class ChatDetailScreen extends StatefulWidget {
 
 class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final _conversationService = ConversationService();
+  final _moderationService = ModerationService();
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
   String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
   LocalMessage? _replyingTo;
-  Set<String> _pinnedIds = {};
+  List<String> _pinnedIds = [];
+  int _pinnedBannerIndex = 0;
   bool _readReceiptsEnabled = true;
+  bool _peerBlockedByMe = false;
+
+  // WhatsApp-style long-press-to-select: long-pressing a bubble enters
+  // selection mode and highlights it; the app bar swaps to show the
+  // selected count and the available actions (react/reply/pin only make
+  // sense for exactly one selection; copy/delete work for any number).
+  final Set<String> _selectedIds = {};
+  final Map<String, GlobalKey> _bubbleKeys = {};
+  List<LocalMessage> _messages = [];
 
   int? _profileTtlHours;
   int? _chatTtlOverride;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _blockSub;
 
   int get _effectiveTtlHours => _chatTtlOverride ?? _profileTtlHours ?? 24;
 
@@ -61,13 +76,51 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (!mounted) return;
       setState(() => _chatTtlOverride = (doc.data()?['chatTtlHours'] as num?)?.toInt());
     });
-    PinService.pinnedFor(widget.conversationId).then((ids) {
-      if (mounted) setState(() => _pinnedIds = ids.toSet());
+    _blockSub = _moderationService.myProfileStream().listen((doc) {
+      if (!mounted) return;
+      final blocked = List<String>.from(doc.data()?['blockedUsers'] ?? []);
+      setState(() => _peerBlockedByMe = blocked.contains(widget.peerUid));
     });
+    PinService.pinnedFor(widget.conversationId).then((ids) {
+      if (mounted) setState(() => _pinnedIds = ids);
+    });
+  }
+
+  @override
+  void dispose() {
+    _conversationService.setTyping(widget.conversationId, false);
+    _convoSub?.cancel();
+    _blockSub?.cancel();
+    _textController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   void _onTextChanged(String value) {
     _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
+  }
+
+  GlobalKey _bubbleKeyFor(String id) => _bubbleKeys.putIfAbsent(id, () => GlobalKey());
+
+  void _jumpToMessage(String id) {
+    final ctx = _bubbleKeys[id]?.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 300), alignment: 0.5);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Scroll to find this message — it's outside the loaded view")),
+      );
+    }
+  }
+
+  void _toggleSelect(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
   }
 
   Future<void> _send() async {
@@ -76,6 +129,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     if (_myUid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("You're not signed in. Please sign in again.")),
+      );
+      return;
+    }
+    if (_peerBlockedByMe) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unblock ${widget.peerUsername} first to send a message.')),
       );
       return;
     }
@@ -104,55 +163,135 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 
   void _showReactionPicker(LocalMessage message) {
+    final uid = _myUid;
+    final myCurrent = uid != null ? message.reactions[uid] : null;
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          children: [
-            for (final emoji in _quickReactions)
-              IconButton(
-                iconSize: 32,
-                onPressed: () {
-                  final uid = _myUid;
-                  if (uid == null) return;
-                  LocalMessageStore.setReaction(message.id, uid, emoji);
-                  MessageRelayService.sendReaction(
-                    conversationId: widget.conversationId,
-                    toUid: widget.peerUid,
-                    messageId: message.id,
-                    emoji: emoji,
-                  );
-                  Navigator.pop(sheetContext);
-                },
-                icon: Text(emoji, style: const TextStyle(fontSize: 26)),
-              ),
-            IconButton(
-              iconSize: 28,
-              onPressed: () {
-                final uid = _myUid;
-                if (uid == null) return;
-                LocalMessageStore.setReaction(message.id, uid, null);
-                MessageRelayService.sendReaction(
-                  conversationId: widget.conversationId,
-                  toUid: widget.peerUid,
-                  messageId: message.id,
-                  emoji: null,
-                );
-                Navigator.pop(sheetContext);
-              },
-              icon: const Icon(Icons.close),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Wrap(
+            alignment: WrapAlignment.center,
+            children: [
+              for (final emoji in _quickReactions)
+                _ReactionOption(
+                  emoji: emoji,
+                  selected: myCurrent == emoji,
+                  onTap: () {
+                    final tapUid = _myUid;
+                    if (tapUid == null) return;
+                    // Tapping the reaction you already picked removes it
+                    // instead of re-adding it — matches the "tap it again
+                    // to remove" behavior most reaction pickers use.
+                    final newEmoji = myCurrent == emoji ? null : emoji;
+                    LocalMessageStore.setReaction(message.id, tapUid, newEmoji);
+                    MessageRelayService.sendReaction(
+                      conversationId: widget.conversationId,
+                      toUid: widget.peerUid,
+                      messageId: message.id,
+                      emoji: newEmoji,
+                    );
+                    Navigator.pop(sheetContext);
+                  },
+                ),
+              if (myCurrent != null)
+                IconButton(
+                  iconSize: 28,
+                  tooltip: 'Remove reaction',
+                  onPressed: () {
+                    final tapUid = _myUid;
+                    if (tapUid == null) return;
+                    LocalMessageStore.setReaction(message.id, tapUid, null);
+                    MessageRelayService.sendReaction(
+                      conversationId: widget.conversationId,
+                      toUid: widget.peerUid,
+                      messageId: message.id,
+                      emoji: null,
+                    );
+                    Navigator.pop(sheetContext);
+                  },
+                  icon: const Icon(Icons.close),
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  void _showMessageActions(LocalMessage message) {
-    final isPinned = _pinnedIds.contains(message.id);
-    showModalBottomSheet(
+  /// Tapping the small reaction chip under a bubble directly (not the
+  /// long-press menu): if it's your own reaction, this removes it
+  /// immediately — no picker needed. Otherwise it opens the picker.
+  void _onTapReactionChip(LocalMessage message) {
+    final uid = _myUid;
+    if (uid == null) {
+      _showReactionPicker(message);
+      return;
+    }
+    final mine = message.reactions[uid];
+    if (mine != null) {
+      LocalMessageStore.setReaction(message.id, uid, null);
+      MessageRelayService.sendReaction(
+        conversationId: widget.conversationId,
+        toUid: widget.peerUid,
+        messageId: message.id,
+        emoji: null,
+      );
+    } else {
+      _showReactionPicker(message);
+    }
+  }
+
+  void _reactToSelected() {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    final msg = _messages.where((m) => m.id == id).toList();
+    setState(() => _selectedIds.clear());
+    if (msg.isNotEmpty) _showReactionPicker(msg.first);
+  }
+
+  void _replyToSelected() {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    final msg = _messages.where((m) => m.id == id).toList();
+    if (msg.isEmpty) return;
+    setState(() {
+      _replyingTo = msg.first;
+      _selectedIds.clear();
+    });
+  }
+
+  Future<void> _pinSelected() async {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    final error = await PinService.togglePin(widget.conversationId, id);
+    final ids = await PinService.pinnedFor(widget.conversationId);
+    if (!mounted) return;
+    setState(() {
+      _pinnedIds = ids;
+      _pinnedBannerIndex = 0;
+      _selectedIds.clear();
+    });
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+    }
+  }
+
+  void _copySelected() {
+    final ordered = _messages.where((m) => _selectedIds.contains(m.id)).toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    final text = ordered.map((m) => m.text).join('\n');
+    Clipboard.setData(ClipboardData(text: text));
+    setState(() => _selectedIds.clear());
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  Future<void> _deleteSelectedFlow() async {
+    final selected = _messages.where((m) => _selectedIds.contains(m.id)).toList();
+    if (selected.isEmpty) return;
+    final allMine = selected.every((m) => m.isMine);
+    final choice = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
@@ -160,160 +299,45 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.emoji_emotions_outlined),
-              title: const Text('React'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _showReactionPicker(message);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.reply_rounded),
-              title: const Text('Reply'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                setState(() => _replyingTo = message);
-              },
-            ),
-            ListTile(
-              leading: Icon(isPinned ? Icons.push_pin : Icons.push_pin_outlined),
-              title: Text(isPinned ? 'Unpin' : 'Pin'),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                await PinService.togglePin(widget.conversationId, message.id);
-                final ids = await PinService.pinnedFor(widget.conversationId);
-                if (mounted) setState(() => _pinnedIds = ids.toSet());
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.copy_outlined),
-              title: const Text('Copy text'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                Clipboard.setData(ClipboardData(text: message.text));
-              },
-            ),
-            const Divider(height: 8),
-            ListTile(
               leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete for me'),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                await MessageRelayService.deleteForMe(message.id);
-              },
+              title: Text('Delete for me (${selected.length})'),
+              onTap: () => Navigator.pop(sheetContext, 'me'),
             ),
-            if (message.isMine)
+            if (allMine)
               ListTile(
                 leading: Icon(Icons.delete_forever_outlined, color: Theme.of(context).colorScheme.error),
-                title: Text('Delete for everyone', style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                onTap: () async {
-                  Navigator.pop(sheetContext);
-                  await MessageRelayService.deleteForEveryone(
-                    conversationId: widget.conversationId,
-                    toUid: widget.peerUid,
-                    messageId: message.id,
-                  );
-                },
+                title: Text(
+                  'Delete for everyone (${selected.length})',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                onTap: () => Navigator.pop(sheetContext, 'everyone'),
               ),
           ],
         ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _conversationService.setTyping(widget.conversationId, false);
-    _convoSub?.cancel();
-    _textController.dispose();
-    _scrollController.dispose();
-    super.dispose();
+    if (choice == null) return;
+    if (choice == 'me') {
+      for (final m in selected) {
+        await MessageRelayService.deleteForMe(m.id);
+      }
+    } else if (choice == 'everyone') {
+      for (final m in selected) {
+        await MessageRelayService.deleteForEveryone(
+          conversationId: widget.conversationId,
+          toUid: widget.peerUid,
+          messageId: m.id,
+        );
+      }
+    }
+    if (mounted) setState(() => _selectedIds.clear());
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: Row(
-          children: [
-            StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: PresenceService.watchUser(widget.peerUid),
-              builder: (context, snapshot) {
-                final online = (snapshot.data?.data()?['online'] as bool?) ?? false;
-                return Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    CircleAvatar(
-                      radius: 18,
-                      backgroundColor: scheme.primaryContainer,
-                      child: Text(
-                        widget.peerUsername.isNotEmpty ? widget.peerUsername[0].toUpperCase() : '?',
-                        style: TextStyle(fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
-                      ),
-                    ),
-                    if (online)
-                      Positioned(
-                        right: -1,
-                        bottom: -1,
-                        child: Container(
-                          width: 11,
-                          height: 11,
-                          decoration: BoxDecoration(
-                            color: Colors.greenAccent.shade400,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: scheme.surface, width: 2),
-                          ),
-                        ),
-                      ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                stream: PresenceService.watchUser(widget.peerUid),
-                builder: (context, snapshot) {
-                  final data = snapshot.data?.data();
-                  final online = (data?['online'] as bool?) ?? false;
-                  final lastSeenVisible = (data?['lastSeenVisible'] as bool?) ?? true;
-                  final lastSeen = data?['lastSeen'] as Timestamp?;
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(widget.peerUsername, overflow: TextOverflow.ellipsis),
-                      if (lastSeenVisible)
-                        Text(
-                          online ? 'Online' : _lastSeenLabel(lastSeen?.toDate()),
-                          style: TextStyle(fontSize: 12, color: online ? scheme.primary : scheme.onSurfaceVariant),
-                        ),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.tune_rounded),
-            tooltip: 'Chat settings',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ChatSettingsScreen(
-                  conversationId: widget.conversationId,
-                  peerUid: widget.peerUid,
-                  peerUsername: widget.peerUsername,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+      appBar: _selectedIds.isEmpty ? _buildNormalAppBar(scheme) : _buildSelectionAppBar(scheme),
       body: Stack(
         children: [
           Positioned.fill(
@@ -321,6 +345,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           ),
           Column(
             children: [
+              if (_pinnedIds.isNotEmpty) _buildPinnedBanner(scheme),
               Container(
                 width: double.infinity,
                 color: scheme.surfaceContainerHigh,
@@ -344,6 +369,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                     final messages = snapshot.data!;
+                    _messages = messages;
                     if (messages.isEmpty) {
                       return Center(
                         child: Column(
@@ -389,15 +415,28 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             }
                           }
                         }
-                        return _MessageBubble(
-                          isMine: msg.isMine,
-                          text: msg.text,
-                          replyPreview: replySource?.text,
-                          reactions: msg.reactions.values.toList(),
-                          status: msg.isMine ? msg.status : null,
-                          pinned: _pinnedIds.contains(msg.id),
-                          onLongPress: () => _showMessageActions(msg),
-                          onSwipeReply: () => setState(() => _replyingTo = msg),
+                        final uid = _myUid;
+                        return KeyedSubtree(
+                          key: _bubbleKeyFor(msg.id),
+                          child: _MessageBubble(
+                            isMine: msg.isMine,
+                            text: msg.text,
+                            replyPreview: replySource?.text,
+                            reactions: msg.reactions.values.toList(),
+                            myReaction: uid != null ? msg.reactions[uid] : null,
+                            status: msg.isMine ? msg.status : null,
+                            pinned: _pinnedIds.contains(msg.id),
+                            selected: _selectedIds.contains(msg.id),
+                            onLongPress: () => _toggleSelect(msg.id),
+                            onTap: () {
+                              if (_selectedIds.isNotEmpty) _toggleSelect(msg.id);
+                            },
+                            onTapReactionChip: () => _onTapReactionChip(msg),
+                            onSwipeReply: () {
+                              if (_selectedIds.isNotEmpty) return;
+                              setState(() => _replyingTo = msg);
+                            },
+                          ),
                         );
                       },
                     );
@@ -447,56 +486,247 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     ],
                   ),
                 ),
-              SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                            borderRadius: BorderRadius.circular(24),
-                          ),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                          child: TextField(
-                            controller: _textController,
-                            onChanged: _onTextChanged,
-                            minLines: 1,
-                            maxLines: 4,
-                            decoration: const InputDecoration(
-                              hintText: 'Message',
-                              border: InputBorder.none,
-                              filled: false,
-                              contentPadding: EdgeInsets.symmetric(vertical: 10),
+              if (_peerBlockedByMe)
+                _buildBlockedBar(scheme)
+              else
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                              borderRadius: BorderRadius.circular(24),
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                            child: TextField(
+                              controller: _textController,
+                              onChanged: _onTextChanged,
+                              minLines: 1,
+                              maxLines: 4,
+                              decoration: const InputDecoration(
+                                hintText: 'Message',
+                                border: InputBorder.none,
+                                filled: false,
+                                contentPadding: EdgeInsets.symmetric(vertical: 10),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [scheme.primary, scheme.primary.withValues(alpha: 0.7)],
+                        const SizedBox(width: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [scheme.primary, scheme.primary.withValues(alpha: 0.7)],
+                            ),
+                          ),
+                          child: IconButton(
+                            onPressed: _send,
+                            icon: Icon(Icons.arrow_upward_rounded, color: scheme.onPrimary),
                           ),
                         ),
-                        child: IconButton(
-                          onPressed: _send,
-                          icon: Icon(Icons.arrow_upward_rounded, color: scheme.onPrimary),
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildBlockedBar(ColorScheme scheme) {
+    return SafeArea(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        color: scheme.errorContainer.withValues(alpha: 0.35),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('You blocked ${widget.peerUsername}', style: TextStyle(color: scheme.error, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text('Unblock them to send and receive messages here.', textAlign: TextAlign.center),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              onPressed: () async {
+                await _moderationService.unblockUser(widget.peerUid);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('${widget.peerUsername} unblocked')),
+                );
+              },
+              child: const Text('Unblock'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPinnedBanner(ColorScheme scheme) {
+    final index = _pinnedBannerIndex.clamp(0, _pinnedIds.length - 1);
+    // Most-recently-pinned first, like WhatsApp/Telegram's pinned banner.
+    final pinnedId = _pinnedIds[_pinnedIds.length - 1 - index];
+    final match = _messages.where((m) => m.id == pinnedId).toList();
+    final previewText = match.isNotEmpty ? match.first.text : 'Pinned message';
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      child: InkWell(
+        onTap: () => _jumpToMessage(pinnedId),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              Icon(Icons.push_pin, size: 16, color: scheme.primary),
+              const SizedBox(width: 8),
+              if (_pinnedIds.length > 1)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Text('${index + 1}/${_pinnedIds.length}', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+                ),
+              Expanded(
+                child: Text(previewText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+              ),
+              if (_pinnedIds.length > 1)
+                IconButton(
+                  icon: const Icon(Icons.expand_more, size: 20),
+                  tooltip: 'Next pinned message',
+                  onPressed: () => setState(() => _pinnedBannerIndex = (_pinnedBannerIndex + 1) % _pinnedIds.length),
+                ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                tooltip: 'Unpin',
+                onPressed: () async {
+                  await PinService.unpin(widget.conversationId, pinnedId);
+                  final ids = await PinService.pinnedFor(widget.conversationId);
+                  if (!mounted) return;
+                  setState(() {
+                    _pinnedIds = ids;
+                    _pinnedBannerIndex = 0;
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  AppBar _buildNormalAppBar(ColorScheme scheme) {
+    return AppBar(
+      titleSpacing: 0,
+      title: Row(
+        children: [
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: PresenceService.watchUser(widget.peerUid),
+            builder: (context, snapshot) {
+              final online = (snapshot.data?.data()?['online'] as bool?) ?? false;
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: scheme.primaryContainer,
+                    child: Text(
+                      widget.peerUsername.isNotEmpty ? widget.peerUsername[0].toUpperCase() : '?',
+                      style: TextStyle(fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
+                    ),
+                  ),
+                  if (online)
+                    Positioned(
+                      right: -1,
+                      bottom: -1,
+                      child: Container(
+                        width: 11,
+                        height: 11,
+                        decoration: BoxDecoration(
+                          color: Colors.greenAccent.shade400,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: scheme.surface, width: 2),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: PresenceService.watchUser(widget.peerUid),
+              builder: (context, snapshot) {
+                final data = snapshot.data?.data();
+                final online = (data?['online'] as bool?) ?? false;
+                final lastSeenVisible = (data?['lastSeenVisible'] as bool?) ?? true;
+                final lastSeen = data?['lastSeen'] as Timestamp?;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(widget.peerUsername, overflow: TextOverflow.ellipsis),
+                    if (lastSeenVisible)
+                      Text(
+                        online ? 'Online' : _lastSeenLabel(lastSeen?.toDate()),
+                        style: TextStyle(fontSize: 12, color: online ? scheme.primary : scheme.onSurfaceVariant),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.tune_rounded),
+          tooltip: 'Chat settings',
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ChatSettingsScreen(
+                conversationId: widget.conversationId,
+                peerUid: widget.peerUid,
+                peerUsername: widget.peerUsername,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  AppBar _buildSelectionAppBar(ColorScheme scheme) {
+    final count = _selectedIds.length;
+    final single = count == 1;
+    return AppBar(
+      leading: IconButton(
+        icon: const Icon(Icons.close),
+        onPressed: () => setState(() => _selectedIds.clear()),
+      ),
+      title: Text('$count selected'),
+      actions: [
+        if (single)
+          IconButton(icon: const Icon(Icons.emoji_emotions_outlined), tooltip: 'React', onPressed: _reactToSelected),
+        if (single)
+          IconButton(icon: const Icon(Icons.reply_rounded), tooltip: 'Reply', onPressed: _replyToSelected),
+        if (single)
+          IconButton(
+            icon: Icon(_pinnedIds.contains(_selectedIds.first) ? Icons.push_pin : Icons.push_pin_outlined),
+            tooltip: 'Pin',
+            onPressed: _pinSelected,
+          ),
+        IconButton(icon: const Icon(Icons.copy_outlined), tooltip: 'Copy', onPressed: _copySelected),
+        IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: _deleteSelectedFlow),
+      ],
     );
   }
 
@@ -516,14 +746,43 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 }
 
+class _ReactionOption extends StatelessWidget {
+  final String emoji;
+  final bool selected;
+  final VoidCallback onTap;
+  const _ReactionOption({required this.emoji, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(24),
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.all(4),
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: selected ? scheme.primaryContainer : Colors.transparent,
+        ),
+        child: Text(emoji, style: const TextStyle(fontSize: 26)),
+      ),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   final bool isMine;
   final String text;
   final String? replyPreview;
   final List<String> reactions;
+  final String? myReaction;
   final String? status;
   final bool pinned;
+  final bool selected;
   final VoidCallback onLongPress;
+  final VoidCallback onTap;
+  final VoidCallback onTapReactionChip;
   final VoidCallback onSwipeReply;
 
   const _MessageBubble({
@@ -531,9 +790,13 @@ class _MessageBubble extends StatelessWidget {
     required this.text,
     required this.replyPreview,
     required this.reactions,
+    required this.myReaction,
     required this.status,
     required this.pinned,
+    required this.selected,
     required this.onLongPress,
+    required this.onTap,
+    required this.onTapReactionChip,
     required this.onSwipeReply,
   });
 
@@ -547,116 +810,126 @@ class _MessageBubble extends StatelessWidget {
       bottomRight: Radius.circular(isMine ? 4 : 18),
     );
 
-    return Dismissible(
-      key: UniqueKey(),
-      direction: DismissDirection.startToEnd,
-      confirmDismiss: (_) async {
-        onSwipeReply();
-        return false;
-      },
-      background: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: Icon(Icons.reply_rounded, color: scheme.primary),
-        ),
-      ),
-      child: GestureDetector(
-        onLongPress: onLongPress,
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 4, top: 4),
+    return Container(
+      color: selected ? scheme.primary.withValues(alpha: 0.12) : null,
+      child: Dismissible(
+        key: UniqueKey(),
+        direction: DismissDirection.startToEnd,
+        confirmDismiss: (_) async {
+          onSwipeReply();
+          return false;
+        },
+        background: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Align(
-            alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-            child: Column(
-              crossAxisAlignment: isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                if (pinned)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Icon(Icons.push_pin, size: 12, color: scheme.onSurfaceVariant),
-                  ),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                  decoration: BoxDecoration(
-                    gradient: isMine
-                        ? LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [scheme.primary, scheme.primary.withValues(alpha: 0.82)],
-                          )
-                        : null,
-                    color: isMine ? null : scheme.surfaceContainerHigh,
-                    borderRadius: radius,
-                    boxShadow: isMine
-                        ? [
-                            BoxShadow(
-                              color: scheme.primary.withValues(alpha: 0.25),
-                              blurRadius: 10,
-                              offset: const Offset(0, 3),
+            alignment: Alignment.centerLeft,
+            child: Icon(Icons.reply_rounded, color: scheme.primary),
+          ),
+        ),
+        child: GestureDetector(
+          onLongPress: onLongPress,
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 4, top: 4),
+            child: Align(
+              alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+              child: Column(
+                crossAxisAlignment: isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                children: [
+                  if (pinned)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Icon(Icons.push_pin, size: 12, color: scheme.onSurfaceVariant),
+                    ),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                    decoration: BoxDecoration(
+                      gradient: isMine
+                          ? LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [scheme.primary, scheme.primary.withValues(alpha: 0.82)],
+                            )
+                          : null,
+                      color: isMine ? null : scheme.surfaceContainerHigh,
+                      borderRadius: radius,
+                      boxShadow: isMine
+                          ? [
+                              BoxShadow(
+                                color: scheme.primary.withValues(alpha: 0.25),
+                                blurRadius: 10,
+                                offset: const Offset(0, 3),
+                              ),
+                            ]
+                          : null,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (replyPreview != null)
+                          Container(
+                            margin: const EdgeInsets.only(bottom: 6),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: (isMine ? Colors.white : scheme.primary).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                          ]
-                        : null,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (replyPreview != null)
-                        Container(
-                          margin: const EdgeInsets.only(bottom: 6),
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: (isMine ? Colors.white : scheme.primary).withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            replyPreview!,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: isMine ? Colors.white70 : scheme.onSurfaceVariant,
+                            child: Text(
+                              replyPreview!,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isMine ? Colors.white70 : scheme.onSurfaceVariant,
+                              ),
                             ),
                           ),
+                        Text(
+                          text,
+                          style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
                         ),
-                      Text(
-                        text,
-                        style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
-                      ),
-                      if (isMine && status != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: Icon(
-                              status == 'read'
-                                  ? Icons.done_all
-                                  : status == 'delivered'
-                                      ? Icons.done_all
-                                      : Icons.done,
-                              size: 14,
-                              color: status == 'read' ? Colors.lightBlueAccent : scheme.onPrimary.withValues(alpha: 0.75),
+                        if (isMine && status != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: Icon(
+                                status == 'read'
+                                    ? Icons.done_all
+                                    : status == 'delivered'
+                                        ? Icons.done_all
+                                        : Icons.done,
+                                size: 14,
+                                color: status == 'read' ? Colors.lightBlueAccent : scheme.onPrimary.withValues(alpha: 0.75),
+                              ),
                             ),
                           ),
-                        ),
-                    ],
-                  ),
-                ),
-                if (reactions.isNotEmpty)
-                  Transform.translate(
-                    offset: const Offset(0, -8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: scheme.surface,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
-                      ),
-                      child: Text(reactions.join(' '), style: const TextStyle(fontSize: 13)),
+                      ],
                     ),
                   ),
-              ],
+                  if (reactions.isNotEmpty)
+                    Transform.translate(
+                      offset: const Offset(0, -8),
+                      child: GestureDetector(
+                        // Tapping the chip directly: if it contains your own
+                        // reaction, this removes it immediately — otherwise
+                        // it opens the picker.
+                        onTap: onTapReactionChip,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: myReaction != null ? scheme.primaryContainer : scheme.surface,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+                          ),
+                          child: Text(reactions.join(' '), style: const TextStyle(fontSize: 13)),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
