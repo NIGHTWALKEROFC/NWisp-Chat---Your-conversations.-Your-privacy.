@@ -62,7 +62,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       setState(() => _chatTtlOverride = (doc.data()?['chatTtlHours'] as num?)?.toInt());
     });
     PinService.pinnedFor(widget.conversationId).then((ids) {
-      if (mounted) setState(() => _pinnedIds = ids);
+      if (mounted) setState(() => _pinnedIds = ids.toSet());
     });
   }
 
@@ -182,7 +182,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 Navigator.pop(sheetContext);
                 await PinService.togglePin(widget.conversationId, message.id);
                 final ids = await PinService.pinnedFor(widget.conversationId);
-                if (mounted) setState(() => _pinnedIds = ids);
+                if (mounted) setState(() => _pinnedIds = ids.toSet());
               },
             ),
             ListTile(
