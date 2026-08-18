@@ -211,10 +211,14 @@ class MessageRelayService {
     await _client.from('message_relay').delete().eq('id', row['id']);
   }
 
+  /// Reads the narrow blocks/{recipientUid}_{myUid} lookup doc (see
+  /// firestore.rules + ModerationService) rather than the recipient's full
+  /// blockedUsers list — that list is private to them now, and this is a
+  /// targeted "did THEY block ME specifically" check, not a way to see
+  /// anyone's whole block list.
   static Future<void> _checkNotBlocked(String recipientUid) async {
-    final doc = await _db.collection('users').doc(recipientUid).get();
-    final blockedByThem = List<String>.from(doc.data()?['blockedUsers'] ?? []);
-    if (blockedByThem.contains(_myUid)) {
+    final doc = await _db.collection('blocks').doc('${recipientUid}_$_myUid').get();
+    if (doc.exists) {
       throw BlockedException("You can't message this user.");
     }
   }
