@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'firebase_options.dart';
@@ -14,6 +15,20 @@ import 'services/message_relay_service.dart';
 import 'services/session_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
+import 'screens/chat/chat_detail_screen.dart';
+
+/// Used to navigate to a chat from a tapped push notification, from
+/// anywhere — including before AuthGate has even built a Navigator the
+/// normal widget-tree way (e.g. a cold start from a terminated-state tap).
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+const _androidChannel = AndroidNotificationChannel(
+  'messages',
+  'Messages',
+  description: 'New message notifications',
+  importance: Importance.high,
+);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,6 +55,7 @@ void main() async {
   final brandingService = BrandingService();
   await brandingService.load();
 
+  await _setUpLocalNotifications();
   _setUpPushNotifications();
   _setUpMessagingLifecycle();
 
@@ -52,6 +68,55 @@ void main() async {
       child: const SecureChatApp(),
     ),
   );
+
+  // If the app was cold-started BY tapping a notification (fully
+  // terminated, not just backgrounded), handle that tap once the app is up.
+  final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+  if (initialMessage != null) {
+    _openChatFromNotificationData(initialMessage.data);
+  }
+}
+
+Future<void> _setUpLocalNotifications() async {
+  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const iosInit = DarwinInitializationSettings();
+  await _localNotifications.initialize(
+    const InitializationSettings(android: androidInit, iOS: iosInit),
+    onDidReceiveNotificationResponse: (response) {
+      final payload = response.payload;
+      if (payload == null || payload.isEmpty) return;
+      final parts = payload.split('|'); // conversationId|peerUid|peerUsername
+      if (parts.length < 3) return;
+      _openChat(conversationId: parts[0], peerUid: parts[1], peerUsername: parts.sublist(2).join('|'));
+    },
+  );
+  await _localNotifications
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(_androidChannel);
+}
+
+void _openChatFromNotificationData(Map<String, dynamic> data) {
+  final conversationId = data['conversationId'] as String?;
+  final peerUid = data['senderUid'] as String?;
+  final peerUsername = data['senderUsername'] as String?;
+  if (conversationId == null || peerUid == null) return;
+  _openChat(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername ?? 'Chat');
+}
+
+void _openChat({required String conversationId, required String peerUid, required String peerUsername}) {
+  // Post-frame so this is safe even if it fires before the first widget
+  // tree (e.g. cold start) has finished building.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    navigatorKey.currentState?.push(
+      MaterialPageRoute(
+        builder: (_) => ChatDetailScreen(
+          conversationId: conversationId,
+          peerUid: peerUid,
+          peerUsername: peerUsername,
+        ),
+      ),
+    );
+  });
 }
 
 /// Starts/stops the Supabase message relay listener and local session setup
@@ -83,6 +148,12 @@ void _setUpMessagingLifecycle() {
 
 void _setUpPushNotifications() {
   FirebaseMessaging.instance.requestPermission();
+
+  // Register this device's token whenever we're signed in, AND whenever
+  // Firebase silently rotates the token (app reinstall, OS-level refresh,
+  // etc) — the old code never listened for that, so a rotated token meant
+  // this device quietly stopped receiving pushes until the next full
+  // sign-in.
   FirebaseAuth.instance.authStateChanges().listen((user) async {
     if (user == null) return;
     final token = await FirebaseMessaging.instance.getToken();
@@ -90,10 +161,45 @@ void _setUpPushNotifications() {
       await AuthService().saveFcmToken(token);
     }
   });
+  FirebaseMessaging.instance.onTokenRefresh.listen((token) async {
+    if (FirebaseAuth.instance.currentUser != null) {
+      await AuthService().saveFcmToken(token);
+    }
+  });
+
+  // Foreground: FCM does NOT show a system notification automatically while
+  // the app is open, so build one ourselves via flutter_local_notifications.
   FirebaseMessaging.onMessage.listen((message) {
-    // Foreground pushes land here; background/terminated pushes get a
-    // system notification automatically once a Cloud Function is sending
-    // them (still a follow-up item, see suggestions).
+    final notification = message.notification;
+    if (notification == null) return;
+    final data = message.data;
+    final payload = [
+      data['conversationId'] ?? '',
+      data['senderUid'] ?? '',
+      data['senderUsername'] ?? 'Chat',
+    ].join('|');
+    _localNotifications.show(
+      notification.hashCode,
+      notification.title,
+      notification.body,
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _androidChannel.id,
+          _androidChannel.name,
+          channelDescription: _androidChannel.description,
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: const DarwinNotificationDetails(),
+      ),
+      payload: payload,
+    );
+  });
+
+  // App was backgrounded (not terminated) and the user tapped the system
+  // notification to bring it back to the foreground.
+  FirebaseMessaging.onMessageOpenedApp.listen((message) {
+    _openChatFromNotificationData(message.data);
   });
 }
 
@@ -105,6 +211,7 @@ class SecureChatApp extends StatelessWidget {
     final themeService = context.watch<ThemeService>();
     final branding = context.watch<BrandingService>();
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Secure Chat',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(branding.accentColor),
