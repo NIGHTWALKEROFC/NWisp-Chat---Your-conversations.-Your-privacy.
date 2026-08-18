@@ -65,7 +65,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   void initState() {
     super.initState();
     _conversationService.ensureConversation(otherUid: widget.peerUid);
-    AuthService().currentUserProfile().then((doc) {
+    // BUGFIX: messageTtlHours/readReceiptsEnabled moved to the owner-only
+    // users/{uid}/private/profile doc (see firestore.rules) — read from
+    // there now instead of the public users/{uid} doc.
+    AuthService().currentUserPrivateProfile().then((doc) {
       if (!mounted) return;
       setState(() {
         _profileTtlHours = (doc.data()?['messageTtlHours'] as num?)?.toInt();
@@ -629,7 +632,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
             stream: PresenceService.watchUser(widget.peerUid),
             builder: (context, snapshot) {
-              final online = (snapshot.data?.data()?['online'] as bool?) ?? false;
+              // A permission-denied error here just means this person has
+              // last-seen sharing off, or has blocked you — the read is
+              // now enforced server-side (see firestore.rules), so treat
+              // any error the same as "presence unknown" rather than
+              // falling back to a default.
+              final online = snapshot.hasError ? false : ((snapshot.data?.data()?['online'] as bool?) ?? false);
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
@@ -664,16 +672,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
               stream: PresenceService.watchUser(widget.peerUid),
               builder: (context, snapshot) {
-                final data = snapshot.data?.data();
+                // Same server-side gating as the avatar dot above: a denied
+                // read (last-seen sharing off, or you're blocked) means we
+                // simply don't show a status line at all, instead of the
+                // old client-side lastSeenVisible check.
+                final data = snapshot.hasError ? null : snapshot.data?.data();
                 final online = (data?['online'] as bool?) ?? false;
-                final lastSeenVisible = (data?['lastSeenVisible'] as bool?) ?? true;
                 final lastSeen = data?['lastSeen'] as Timestamp?;
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(widget.peerUsername, overflow: TextOverflow.ellipsis),
-                    if (lastSeenVisible)
+                    if (data != null)
                       Text(
                         online ? 'Online' : _lastSeenLabel(lastSeen?.toDate()),
                         style: TextStyle(fontSize: 12, color: online ? scheme.primary : scheme.onSurfaceVariant),
