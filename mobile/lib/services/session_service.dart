@@ -58,6 +58,69 @@ class SessionService {
       SetOptions(merge: true),
     );
 
+    await _ensurePrivateDocs(uid);
+
     return publicKey;
+  }
+
+  /// One-time migration for accounts created before private profile/presence
+  /// docs existed: pulls blockedUsers/messageTtlHours/readReceiptsEnabled/
+  /// lastSeenVisible/fcmTokens/online/lastSeen off the old flat `users/{uid}`
+  /// doc (where any signed-in user could previously read them), copies them
+  /// into the new owner-only `private/profile` + `private/presence` docs,
+  /// then deletes them from the public doc so the leak is actually closed —
+  /// not just avoided for new writes. Cheap no-op for every later call once
+  /// the private docs already exist.
+  static Future<void> _ensurePrivateDocs(String uid) async {
+    final db = FirebaseFirestore.instance;
+    final userRef = db.collection('users').doc(uid);
+    final profileRef = userRef.collection('private').doc('profile');
+    final presenceRef = userRef.collection('private').doc('presence');
+
+    final profileSnap = await profileRef.get();
+    if (profileSnap.exists) return; // already migrated / already a new-style account
+
+    final oldSnap = await userRef.get();
+    final old = oldSnap.data() ?? {};
+
+    final batch = db.batch();
+    batch.set(profileRef, {
+      'emailVisible': old['emailVisible'] ?? false,
+      'lastSeenVisible': old['lastSeenVisible'] ?? true,
+      'readReceiptsEnabled': old['readReceiptsEnabled'] ?? true,
+      'blockedUsers': old['blockedUsers'] ?? <String>[],
+      'messageTtlHours': old['messageTtlHours'] ?? 24,
+      'fcmTokens': old['fcmTokens'] ?? <String>[],
+      'lastLoginAt': old['lastLoginAt'] ?? FieldValue.serverTimestamp(),
+    });
+    batch.set(presenceRef, {
+      'online': old['online'] ?? false,
+      'lastSeen': old['lastSeen'] ?? FieldValue.serverTimestamp(),
+    });
+    // Strip the now-migrated fields off the public doc so they stop being
+    // world-readable to every other signed-in user.
+    batch.update(userRef, {
+      'emailVisible': FieldValue.delete(),
+      'lastSeenVisible': FieldValue.delete(),
+      'readReceiptsEnabled': FieldValue.delete(),
+      'blockedUsers': FieldValue.delete(),
+      'messageTtlHours': FieldValue.delete(),
+      'fcmTokens': FieldValue.delete(),
+      'lastLoginAt': FieldValue.delete(),
+      'online': FieldValue.delete(),
+      'lastSeen': FieldValue.delete(),
+    });
+    // Backfill the blocks/{blockerUid}_{blockedUid} lookup docs (see
+    // firestore.rules + ModerationService) so any blocks made before this
+    // migration keep being enforced server-side on send, not just locally.
+    final oldBlocked = List<String>.from(old['blockedUsers'] ?? []);
+    for (final blockedUid in oldBlocked) {
+      batch.set(db.collection('blocks').doc('${uid}_$blockedUid'), {
+        'blockerUid': uid,
+        'blockedUid': blockedUid,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
   }
 }
