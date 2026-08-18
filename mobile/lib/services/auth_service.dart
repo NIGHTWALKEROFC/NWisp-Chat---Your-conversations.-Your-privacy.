@@ -2,6 +2,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'session_service.dart';
 
+/// Field-level privacy note (see firestore.rules): the public `users/{uid}`
+/// doc only ever holds username/photoUrl/publicKey now - anything private
+/// (blockedUsers, messageTtlHours, readReceiptsEnabled, lastSeenVisible,
+/// fcmTokens, lastLoginAt) lives in the owner-only `users/{uid}/private/profile`
+/// doc. `online`/`lastSeen` live in `users/{uid}/private/presence`, which has
+/// its own rule that only allows other people to read it when the owner has
+/// last-seen sharing on AND hasn't blocked them.
 class AuthService {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
@@ -14,6 +21,12 @@ class AuthService {
 
   User? get currentUser => _auth.currentUser;
   String? get currentUserId => _auth.currentUser?.uid;
+
+  DocumentReference<Map<String, dynamic>> _privateProfileRef(String uid) =>
+      _db.collection('users').doc(uid).collection('private').doc('profile');
+
+  DocumentReference<Map<String, dynamic>> _presenceRef(String uid) =>
+      _db.collection('users').doc(uid).collection('private').doc('presence');
 
   /// Real-time-ish username availability check for the signup flow.
   Future<bool> isUsernameAvailable(String username) async {
@@ -65,16 +78,21 @@ class AuthService {
       'username': lowerUsername,
       'usernameLower': lowerUsername,
       'photoUrl': null,
+      'publicKey': publicKey,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    batch.set(_privateProfileRef(cred.user!.uid), {
       'emailVisible': false,
       'lastSeenVisible': true,
       'readReceiptsEnabled': true,
-      'online': false,
-      'lastSeen': FieldValue.serverTimestamp(),
       'blockedUsers': <String>[],
       'messageTtlHours': 24,
-      'publicKey': publicKey,
-      'createdAt': FieldValue.serverTimestamp(),
+      'fcmTokens': <String>[],
       'lastLoginAt': FieldValue.serverTimestamp(),
+    });
+    batch.set(_presenceRef(cred.user!.uid), {
+      'online': false,
+      'lastSeen': FieldValue.serverTimestamp(),
     });
     batch.set(_db.collection('usernames').doc(lowerUsername), {'uid': cred.user!.uid});
     // BUGFIX: registration used to call batch.commit() with nothing
@@ -116,23 +134,23 @@ class AuthService {
   Future<UserCredential> loginWithEmail(String email, String password) async {
     final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
     // Prepares (and, if this device last belonged to a different account,
-    // wipes-then-prepares) this device's keys and local message store.
+    // wipes-then-prepares) this device's keys and local message store, AND
+    // migrates any pre-restructure account onto the new private/profile +
+    // private/presence documents (see SessionService._ensurePrivateDocs).
     final publicKey = await SessionService.prepareForUser(cred.user!.uid);
 
-    final userRef = _db.collection('users').doc(cred.user!.uid);
-    final snap = await userRef.get();
-    final lastLoginAt = (snap.data()?['lastLoginAt'] as Timestamp?)?.toDate();
-    final username = (snap.data()?['username'] as String?) ?? '';
+    final profileSnap = await _privateProfileRef(cred.user!.uid).get();
+    final lastLoginAt = (profileSnap.data()?['lastLoginAt'] as Timestamp?)?.toDate();
+    final userDoc = await _db.collection('users').doc(cred.user!.uid).get();
+    final username = (userDoc.data()?['username'] as String?) ?? '';
     if (lastLoginAt != null && DateTime.now().difference(lastLoginAt).inDays >= 7) {
       pendingWelcomeMessage = 'Welcome back${username.isNotEmpty ? ', $username' : ''}! 👋';
     } else {
       pendingWelcomeMessage = null;
     }
 
-    await userRef.set({
-      'publicKey': publicKey,
-      'lastLoginAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    await _db.collection('users').doc(cred.user!.uid).set({'publicKey': publicKey}, SetOptions(merge: true));
+    await _privateProfileRef(cred.user!.uid).set({'lastLoginAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
     return cred;
   }
 
@@ -192,30 +210,47 @@ class AuthService {
     await batch.commit();
   }
 
+  /// Public profile only (username, photoUrl, publicKey). For your own
+  /// private settings (blockedUsers, messageTtlHours, readReceiptsEnabled,
+  /// lastSeenVisible, fcmTokens) use [currentUserPrivateProfile] instead.
   Future<DocumentSnapshot<Map<String, dynamic>>> currentUserProfile() {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
     return _db.collection('users').doc(uid).get();
   }
 
+  Future<DocumentSnapshot<Map<String, dynamic>>> currentUserPrivateProfile() {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    return _privateProfileRef(uid).get();
+  }
+
   Future<void> updatePrivacySetting(String field, bool value) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
-    await _db.collection('users').doc(uid).update({field: value});
+    await _privateProfileRef(uid).set({field: value}, SetOptions(merge: true));
   }
 
   Future<void> updateMessageTtl(int hours) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
-    await _db.collection('users').doc(uid).update({'messageTtlHours': hours});
+    await _privateProfileRef(uid).set({'messageTtlHours': hours}, SetOptions(merge: true));
   }
 
   Future<void> saveFcmToken(String token) async {
     final uid = currentUserId;
     if (uid == null) return;
-    await _db.collection('users').doc(uid).update({
+    await _privateProfileRef(uid).set({
       'fcmTokens': FieldValue.arrayUnion([token]),
-    });
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> removeFcmToken(String token) async {
+    final uid = currentUserId;
+    if (uid == null) return;
+    await _privateProfileRef(uid).set({
+      'fcmTokens': FieldValue.arrayRemove([token]),
+    }, SetOptions(merge: true));
   }
 
   Future<void> sendPasswordResetEmail(String email) => _auth.sendPasswordResetEmail(email: email);
