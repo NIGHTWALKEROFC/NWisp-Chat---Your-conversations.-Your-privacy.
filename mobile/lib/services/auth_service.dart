@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'session_service.dart';
 
@@ -154,7 +155,23 @@ class AuthService {
     return cred;
   }
 
-  Future<void> logout() => _auth.signOut();
+  Future<void> logout() async {
+    // BUGFIX: without this, this device's FCM token stayed in the account's
+    // fcmTokens list after logout — so if someone logged into a DIFFERENT
+    // account on the same device afterwards, this device could keep
+    // getting the FIRST account's push notifications too.
+    final uid = currentUserId;
+    if (uid != null) {
+      try {
+        final token = await FirebaseMessaging.instance.getToken();
+        if (token != null) await removeFcmToken(token);
+      } catch (_) {
+        // Not worth blocking sign-out over — worst case one stale token
+        // lingers until FCM reports it dead or the account is used again.
+      }
+    }
+    await _auth.signOut();
+  }
 
   Future<void> reauthenticate(String currentPassword) async {
     final user = _auth.currentUser;
