@@ -5,6 +5,15 @@ service cloud.firestore {
     function isSignedIn() { return request.auth != null; }
     function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
 
+    // ---- users/{uid} is now PUBLIC-ONLY data ----------------------------
+    // Anything sensitive (blockedUsers, online/lastSeen, message TTL,
+    // read-receipt toggle, FCM tokens) used to live on this same document,
+    // which any signed-in user could read in full - the app only *hid*
+    // those fields in the UI, it never actually restricted access to them.
+    // They now live under users/{uid}/private/*, which Firestore lets us
+    // gate with real rules (see below). Only username, photoUrl, and
+    // publicKey belong here - every one of those needs to be visible to
+    // other users for search / contacts / encryption to work at all.
     match /users/{uid} {
       allow read: if isSignedIn();
       allow write: if isOwner(uid);
@@ -12,6 +21,28 @@ service cloud.firestore {
       match /contacts/{contactId} {
         allow read: if isOwner(uid);
         allow write: if isSignedIn() && (isOwner(uid) || request.auth.uid == contactId);
+      }
+
+      // Owner-only: blockedUsers, messageTtlHours, readReceiptsEnabled,
+      // lastSeenVisible, fcmTokens, lastLoginAt. Never exposed to anyone
+      // else, full stop - no other rule below grants read access to this.
+      match /private/profile {
+        allow read, write: if isOwner(uid);
+      }
+
+      // Presence (online / lastSeen) is the one piece of "private" data
+      // that legitimately needs to be visible to OTHER people some of the
+      // time - that's the whole point of a last-seen feature. This rule
+      // enforces, server-side, exactly the same two conditions the old
+      // client-only check tried to enforce: the owner has last-seen
+      // sharing turned on, AND the reader isn't someone the owner blocked.
+      match /private/presence {
+        allow read: if isOwner(uid) || (
+          isSignedIn() &&
+          get(/databases/$(database)/documents/users/$(uid)/private/profile).data.lastSeenVisible == true &&
+          !(request.auth.uid in get(/databases/$(database)/documents/users/$(uid)/private/profile).data.blockedUsers)
+        );
+        allow write: if isOwner(uid);
       }
     }
 
@@ -61,6 +92,21 @@ service cloud.firestore {
         allow read: if isSignedIn();
         allow write: if isOwner(viewerId);
       }
+    }
+
+    // Lets the WOULD-BE SENDER check "has this specific person blocked me?"
+    // (message_relay_service._checkNotBlocked) without exposing anyone's
+    // full block list. Doc id is "<blockerUid>_<blockedUid>", so this is
+    // only ever a targeted get() by two specific uids - never an
+    // enumerable list of who's blocked whom.
+    match /blocks/{blockId} {
+      allow read: if isSignedIn() &&
+        (request.auth.uid == resource.data.blockerUid || request.auth.uid == resource.data.blockedUid);
+      allow create: if isSignedIn() &&
+        request.resource.data.blockerUid == request.auth.uid &&
+        blockId == request.resource.data.blockerUid + '_' + request.resource.data.blockedUid;
+      allow delete: if isSignedIn() && resource.data.blockerUid == request.auth.uid;
+      allow update: if false;
     }
 
     match /reports/{reportId} {
