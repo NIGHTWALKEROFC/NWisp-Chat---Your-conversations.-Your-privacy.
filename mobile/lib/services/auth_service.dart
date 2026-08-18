@@ -77,7 +77,31 @@ class AuthService {
       'lastLoginAt': FieldValue.serverTimestamp(),
     });
     batch.set(_db.collection('usernames').doc(lowerUsername), {'uid': cred.user!.uid});
-    await batch.commit();
+    // BUGFIX: registration used to call batch.commit() with nothing
+    // guarding it. The initial "is this username taken" check above and
+    // the actual reservation here are two separate round-trips, so two
+    // people signing up with the same username at nearly the same moment
+    // could both pass the check and both reach this point. Firestore's
+    // security rules correctly reject the *second* writer's `usernames`
+    // create (it's a create-only doc), which fails the whole batch — but
+    // by then their Firebase Auth account already exists. Without this
+    // try/catch, that user would be left with a working Auth login and no
+    // Firestore profile document at all, breaking the app for them
+    // permanently. Now we delete the just-created Auth account and surface
+    // a clear, retryable error instead.
+    try {
+      await batch.commit();
+    } catch (e) {
+      try {
+        await cred.user!.delete();
+      } catch (_) {
+        // Best-effort cleanup — if this also fails (e.g. requires recent
+        // login, which it doesn't right after creation, or no network),
+        // the account may still be orphaned. Rare, but surfacing the
+        // original error is still the right call either way.
+      }
+      throw Exception('That username was just taken by someone else — please choose another and try again.');
+    }
 
     // Best-effort — the account still works even if this fails (e.g. no
     // network right at that instant); it's not required for sign-in.
