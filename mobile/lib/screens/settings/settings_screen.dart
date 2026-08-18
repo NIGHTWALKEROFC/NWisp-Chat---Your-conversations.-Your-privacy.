@@ -43,15 +43,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final appLock = await AppLockService.isEnabled();
     final doc = await _authService.currentUserProfile();
     final data = doc.data() ?? {};
+    // BUGFIX: lastSeenVisible/readReceiptsEnabled/messageTtlHours moved to
+    // the owner-only users/{uid}/private/profile doc (see firestore.rules)
+    // so they're no longer readable by every other signed-in user.
+    final privateDoc = await _authService.currentUserPrivateProfile();
+    final privateData = privateDoc.data() ?? {};
     if (!mounted) return;
     setState(() {
       _stayLoggedIn = stay;
       _appLockEnabled = appLock;
       _username = (data['username'] as String?) ?? '';
       _email = _authService.currentUser?.email ?? '';
-      _lastSeenVisible = (data['lastSeenVisible'] as bool?) ?? true;
-      _readReceiptsEnabled = (data['readReceiptsEnabled'] as bool?) ?? true;
-      _ttlHours = (data['messageTtlHours'] as num?)?.toInt() ?? 24;
+      _lastSeenVisible = (privateData['lastSeenVisible'] as bool?) ?? true;
+      _readReceiptsEnabled = (privateData['readReceiptsEnabled'] as bool?) ?? true;
+      _ttlHours = (privateData['messageTtlHours'] as num?)?.toInt() ?? 24;
       _loadingProfile = false;
     });
   }
