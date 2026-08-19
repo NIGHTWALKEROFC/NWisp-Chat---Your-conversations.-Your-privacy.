@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'crypto_service.dart';
+import 'local_media_files.dart';
 import 'local_message_store.dart';
+import 'media_service.dart';
 
 class BlockedException implements Exception {
   final String message;
@@ -39,6 +42,13 @@ class MessageRelayService {
 
   static RealtimeChannel? _channel;
   static Timer? _reconnectTimer;
+
+  /// Same bucket StoryService already uses — no new Supabase bucket setup
+  /// needed. Chat media lives under chat_media/{senderUid}/{uuid}.enc so
+  /// the get-signed-url edge function's existing "path must start with the
+  /// caller's own uid" upload check just works, unchanged.
+  static const _mediaBucket = 'media';
+  static const _mediaTypes = {'image', 'video', 'voice'};
 
   /// A safe accessor instead of a bare `!` null-check — a null session here
   /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
@@ -186,20 +196,24 @@ class MessageRelayService {
       default:
         final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 24;
         final createdAt = DateTime.now();
-        await LocalMessageStore.insert(
-          id: row['client_id'] as String,
-          conversationId: row['conversation_id'] as String,
-          peerUid: senderUid,
-          senderUid: senderUid,
-          isMine: false,
-          text: payload,
-          messageType: messageType,
-          mediaPath: row['media_path'] as String?,
-          replyToId: row['reply_to_id'] as String?,
-          status: 'delivered',
-          createdAt: createdAt,
-          expiresAt: createdAt.add(Duration(hours: ttlHours)),
-        );
+        if (_mediaTypes.contains(messageType)) {
+          await _receiveMediaMessage(row: row, senderUid: senderUid, payload: payload, createdAt: createdAt, ttlHours: ttlHours);
+        } else {
+          await LocalMessageStore.insert(
+            id: row['client_id'] as String,
+            conversationId: row['conversation_id'] as String,
+            peerUid: senderUid,
+            senderUid: senderUid,
+            isMine: false,
+            text: payload,
+            messageType: messageType,
+            mediaPath: null,
+            replyToId: row['reply_to_id'] as String?,
+            status: 'delivered',
+            createdAt: createdAt,
+            expiresAt: createdAt.add(Duration(hours: ttlHours)),
+          );
+        }
         await _sendReceipt(
           conversationId: row['conversation_id'] as String,
           toUid: senderUid,
@@ -209,6 +223,58 @@ class MessageRelayService {
     }
 
     await _client.from('message_relay').delete().eq('id', row['id']);
+  }
+
+  /// Handles an incoming image/video/voice message. [payload] is the small
+  /// JSON blob (fileKey, nonce, mime, extension, fileName, plus optional
+  /// width/height/durationMs) that was itself already decrypted via the
+  /// normal X25519 peer scheme in [_decryptRow] — the actual media bytes
+  /// are separately encrypted under the random key inside that JSON.
+  static Future<void> _receiveMediaMessage({
+    required Map<String, dynamic> row,
+    required String senderUid,
+    required String payload,
+    required DateTime createdAt,
+    required int ttlHours,
+  }) async {
+    final meta = jsonDecode(payload) as Map<String, dynamic>;
+    final remotePath = row['media_path'] as String?;
+    if (remotePath == null) {
+      throw Exception('Media message is missing its storage path.');
+    }
+
+    final encryptedBytes = await MediaService.downloadBytes(_mediaBucket, remotePath);
+    final plainBytes = await CryptoService.decryptFileBytes(
+      encryptedBytes,
+      meta['nonce'] as String,
+      meta['fileKey'] as String,
+    );
+    final extension = (meta['extension'] as String?) ?? 'bin';
+    final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
+
+    await LocalMessageStore.insert(
+      id: row['client_id'] as String,
+      conversationId: row['conversation_id'] as String,
+      peerUid: senderUid,
+      senderUid: senderUid,
+      isMine: false,
+      text: (meta['caption'] as String?) ?? '',
+      messageType: row['message_type'] as String,
+      mediaPath: localPath,
+      replyToId: row['reply_to_id'] as String?,
+      status: 'delivered',
+      createdAt: createdAt,
+      expiresAt: createdAt.add(Duration(hours: ttlHours)),
+    );
+
+    // Forward-only: now that our own local copy is safely saved, the
+    // encrypted blob has no reason to keep sitting in Supabase Storage.
+    // Best-effort — a failure here just means the nightly cleanup job
+    // (scripts/cleanup.js) removes it later instead; it never blocks
+    // the message from showing up for the recipient.
+    try {
+      await MediaService.deleteRemote(_mediaBucket, remotePath);
+    } catch (_) {}
   }
 
   /// Reads the narrow blocks/{recipientUid}_{myUid} lookup doc (see
@@ -271,6 +337,82 @@ class MessageRelayService {
       messageType: messageType,
       mediaPath: mediaPath,
       replyToId: replyToId,
+      status: 'sent',
+      createdAt: createdAt,
+      expiresAt: createdAt.add(Duration(hours: ttlHours)),
+    );
+    return clientId;
+  }
+
+  /// Sends an image/video/voice message. [plainBytes] must already be
+  /// compressed to fit the app's size limit (see MediaCompressionService) —
+  /// this method only handles encryption, upload, and the relay/local-store
+  /// bookkeeping, not compression itself.
+  ///
+  /// The file gets a brand-new random AES-256 key (see
+  /// CryptoService.generateFileKey); only the encrypted bytes are uploaded
+  /// to Supabase, and only that random key (32 bytes) travels through the
+  /// existing X25519 peer-encryption pipeline as part of a small JSON blob —
+  /// Supabase never has anything it could decrypt on its own.
+  static Future<String> sendMediaMessage({
+    required String conversationId,
+    required String recipientUid,
+    required List<int> plainBytes,
+    required String messageType, // 'image' | 'video' | 'voice'
+    required String extension,
+    required String mime,
+    String? caption,
+    int? durationMs,
+    required int ttlHours,
+  }) async {
+    if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
+    await _checkNotBlocked(recipientUid);
+
+    final clientId = _uuid.v4();
+    final fileKey = await CryptoService.generateFileKey();
+    final (encryptedBytes, fileNonce) = await CryptoService.encryptFileBytes(plainBytes, fileKey);
+
+    final remotePath = 'chat_media/$_myUid/${_uuid.v4()}.enc';
+    await MediaService.uploadBytes(Uint8List.fromList(encryptedBytes), _mediaBucket, remotePath);
+
+    final metaPayload = jsonEncode({
+      'fileKey': fileKey,
+      'nonce': fileNonce,
+      'mime': mime,
+      'extension': extension,
+      if (caption != null && caption.isNotEmpty) 'caption': caption,
+      if (durationMs != null) 'durationMs': durationMs,
+    });
+
+    final recipientKey = await _publicKeyFor(recipientUid, forceRefresh: true);
+    final (ciphertext, nonce) = await CryptoService.encryptForPeer(metaPayload, recipientKey);
+
+    await _client.from('message_relay').insert({
+      'conversation_id': conversationId,
+      'sender_uid': _myUid,
+      'recipient_uid': recipientUid,
+      'ciphertext': ciphertext,
+      'nonce': nonce,
+      'message_type': messageType,
+      'media_path': remotePath,
+      'client_id': clientId,
+      'ttl_hours': ttlHours,
+    });
+
+    // Keep our OWN plaintext copy locally too — we already have the bytes
+    // in memory, no need to round-trip through Supabase to see our own
+    // sent photo/video.
+    final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
+    final createdAt = DateTime.now();
+    await LocalMessageStore.insert(
+      id: clientId,
+      conversationId: conversationId,
+      peerUid: recipientUid,
+      senderUid: _myUid,
+      isMine: true,
+      text: caption ?? '',
+      messageType: messageType,
+      mediaPath: localPath,
       status: 'sent',
       createdAt: createdAt,
       expiresAt: createdAt.add(Duration(hours: ttlHours)),
