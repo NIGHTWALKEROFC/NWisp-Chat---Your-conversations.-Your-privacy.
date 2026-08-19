@@ -109,6 +109,39 @@ class CryptoService {
     final clear = await _aesGcm.decrypt(box, secretKey: _localStorageKey!);
     return utf8.decode(clear);
   }
+
+  // --- Chat media (images/video/voice) --------------------------------
+  //
+  // Media gets its own random, single-use AES-256-GCM key per file — NOT
+  // the X25519 peer scheme directly, and NOT the local storage key. The
+  // file itself (usually hundreds of KB to a few MB) is encrypted once
+  // with this random key; only the *key* (32 bytes) travels through the
+  // existing X25519 encryptForPeer/decryptFromPeer pipeline inside the
+  // message_relay row. Supabase Storage therefore only ever holds bytes
+  // it cannot decrypt — the encryption key never touches Supabase at all.
+
+  /// A fresh random 256-bit key for encrypting one file. Base64-encoded so
+  /// it can be embedded directly in the small JSON payload that gets
+  /// encrypted for the recipient via [encryptForPeer].
+  static Future<String> generateFileKey() async {
+    final key = await _aesGcm.newSecretKey();
+    return base64Encode(await key.extractBytes());
+  }
+
+  static Future<(List<int>, String)> encryptFileBytes(List<int> plaintext, String fileKeyB64) async {
+    final key = SecretKey(base64Decode(fileKeyB64));
+    final nonce = _randomNonce();
+    final box = await _aesGcm.encrypt(plaintext, secretKey: key, nonce: nonce);
+    return ([...box.cipherText, ...box.mac.bytes], base64Encode(nonce));
+  }
+
+  static Future<List<int>> decryptFileBytes(List<int> combined, String nonceB64, String fileKeyB64) async {
+    final key = SecretKey(base64Decode(fileKeyB64));
+    final cipherBytes = combined.sublist(0, combined.length - 16);
+    final macBytes = combined.sublist(combined.length - 16);
+    final box = SecretBox(cipherBytes, nonce: base64Decode(nonceB64), mac: Mac(macBytes));
+    return _aesGcm.decrypt(box, secretKey: key);
+  }
 }
 
 typedef Uint8ListLike = List<int>;
