@@ -35,7 +35,7 @@ class MediaCompressionService {
         minWidth: 1920,
         minHeight: 1920,
       );
-      return compressed.lengthBytes <= maxBytes ? compressed : Uint8List.fromList(compressed);
+      return compressed.length <= maxBytes ? compressed : Uint8List.fromList(compressed);
     }
 
     for (final attempt in [
