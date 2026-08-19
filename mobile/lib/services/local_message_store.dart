@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import '../models/local_message.dart';
 import 'crypto_service.dart';
+import 'local_media_files.dart';
 
 /// On-device store for message content. This is now the ONLY place message
 /// text lives long-term — Supabase only ever holds a message transiently in
@@ -123,12 +124,21 @@ class LocalMessageStore {
     final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
     if (rows.isEmpty) return;
     await _db!.delete('messages', where: 'id = ?', whereArgs: [id]);
+    // BUGFIX: media files used to be orphaned on disk forever whenever
+    // their message was deleted (delete-for-me, delete-for-everyone, or
+    // expiry) — only the SQLite row was removed, never the actual
+    // image/video/voice file it pointed to.
+    await LocalMediaFiles.delete(rows.first['media_path'] as String?);
     _notifyConversation(rows.first['conversation_id'] as String);
     _notifySummaries();
   }
 
   static Future<void> clearConversation(String conversationId) async {
+    final rows = await _db!.query('messages', columns: ['media_path'], where: 'conversation_id = ?', whereArgs: [conversationId]);
     await _db!.delete('messages', where: 'conversation_id = ?', whereArgs: [conversationId]);
+    for (final r in rows) {
+      await LocalMediaFiles.delete(r['media_path'] as String?);
+    }
     _notifyConversation(conversationId);
     _notifySummaries();
   }
@@ -146,10 +156,14 @@ class LocalMessageStore {
 
   static Future<void> purgeExpired() async {
     final now = DateTime.now().millisecondsSinceEpoch;
-    final rows = await _db!.query('messages', columns: ['conversation_id'], where: 'expires_at IS NOT NULL AND expires_at <= ?', whereArgs: [now]);
+    final rows = await _db!.query('messages', columns: ['conversation_id', 'media_path'], where: 'expires_at IS NOT NULL AND expires_at <= ?', whereArgs: [now]);
     if (rows.isEmpty) return;
     await _db!.delete('messages', where: 'expires_at IS NOT NULL AND expires_at <= ?', whereArgs: [now]);
-    final affected = rows.map((r) => r['conversation_id'] as String).toSet();
+    final affected = <String>{};
+    for (final r in rows) {
+      affected.add(r['conversation_id'] as String);
+      await LocalMediaFiles.delete(r['media_path'] as String?);
+    }
     for (final c in affected) {
       _notifyConversation(c);
     }
@@ -164,6 +178,7 @@ class LocalMessageStore {
   /// orphaned rows.
   static Future<void> resetForNewUser() async {
     await _db!.delete('messages');
+    await LocalMediaFiles.deleteAll();
     for (final controller in _convoControllers.values) {
       if (!controller.isClosed) controller.add([]);
     }
