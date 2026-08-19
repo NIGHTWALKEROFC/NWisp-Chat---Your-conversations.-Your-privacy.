@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:chewie/chewie.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
 import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
 import '../../services/conversation_service.dart';
 import '../../services/local_message_store.dart';
+import '../../services/media_compression_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../../services/pin_service.dart';
@@ -45,6 +50,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   int _pinnedBannerIndex = 0;
   bool _readReceiptsEnabled = true;
   bool _peerBlockedByMe = false;
+  bool _sendingMedia = false;
 
   // WhatsApp-style long-press-to-select: long-pressing a bubble enters
   // selection mode and highlights it; the app bar swaps to show the
@@ -163,6 +169,124 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message could not be sent')));
     }
     await _conversationService.setTyping(widget.conversationId, false);
+  }
+
+  void _showAttachSheet() {
+    if (_peerBlockedByMe) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unblock ${widget.peerUsername} first to send media.')),
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Take a photo'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _pickAndSendImage(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_outlined),
+              title: const Text('Choose a photo'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _pickAndSendImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined),
+              title: const Text('Record a video'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _pickAndSendVideo(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('Choose a video'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _pickAndSendVideo(ImageSource.gallery);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndSendImage(ImageSource source) async {
+    final picked = await ImagePicker().pickImage(source: source, imageQuality: 100);
+    if (picked == null) return;
+    await _sendMedia(
+      file: File(picked.path),
+      messageType: 'image',
+      mime: 'image/jpeg',
+      compress: (file) => MediaCompressionService.compressImage(file),
+    );
+  }
+
+  Future<void> _pickAndSendVideo(ImageSource source) async {
+    // Cap recording/selection length at 2 minutes — a longer clip is very
+    // unlikely to compress under the 5MB cap at any watchable quality, so
+    // it's better to stop the user before they wait through a compression
+    // pass that's doomed to fail than after.
+    final picked = await ImagePicker().pickVideo(source: source, maxDuration: const Duration(minutes: 2));
+    if (picked == null) return;
+    await _sendMedia(
+      file: File(picked.path),
+      messageType: 'video',
+      mime: 'video/mp4',
+      compress: (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync(),
+    );
+  }
+
+  Future<void> _sendMedia({
+    required File file,
+    required String messageType,
+    required String mime,
+    required Future<List<int>> Function(File) compress,
+  }) async {
+    if (_myUid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("You're not signed in. Please sign in again.")),
+      );
+      return;
+    }
+    setState(() => _sendingMedia = true);
+    try {
+      final bytes = await compress(file);
+      await MessageRelayService.sendMediaMessage(
+        conversationId: widget.conversationId,
+        recipientUid: widget.peerUid,
+        plainBytes: bytes,
+        messageType: messageType,
+        extension: messageType == 'image' ? 'jpg' : 'mp4',
+        mime: mime,
+        ttlHours: _effectiveTtlHours,
+      );
+    } on MediaTooLargeException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } on NotSignedInException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } on BlockedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not send that — please try again.')));
+    } finally {
+      if (mounted) setState(() => _sendingMedia = false);
+    }
   }
 
   void _showReactionPicker(LocalMessage message) {
@@ -424,6 +548,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                           child: _MessageBubble(
                             isMine: msg.isMine,
                             text: msg.text,
+                            messageType: msg.messageType,
+                            mediaPath: msg.mediaPath,
                             replyPreview: replySource?.text,
                             reactions: msg.reactions.values.toList(),
                             myReaction: uid != null ? msg.reactions[uid] : null,
@@ -498,6 +624,17 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
+                        IconButton(
+                          onPressed: _sendingMedia ? null : _showAttachSheet,
+                          icon: _sendingMedia
+                              ? SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: scheme.primary),
+                                )
+                              : Icon(Icons.add_circle_outline, color: scheme.primary),
+                          tooltip: 'Attach photo or video',
+                        ),
                         Expanded(
                           child: Container(
                             decoration: BoxDecoration(
@@ -785,6 +922,8 @@ class _ReactionOption extends StatelessWidget {
 class _MessageBubble extends StatelessWidget {
   final bool isMine;
   final String text;
+  final String messageType;
+  final String? mediaPath;
   final String? replyPreview;
   final List<String> reactions;
   final String? myReaction;
@@ -799,6 +938,8 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.isMine,
     required this.text,
+    this.messageType = 'text',
+    this.mediaPath,
     required this.replyPreview,
     required this.reactions,
     required this.myReaction,
@@ -897,10 +1038,21 @@ class _MessageBubble extends StatelessWidget {
                               ),
                             ),
                           ),
-                        Text(
-                          text,
-                          style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
-                        ),
+                        if (messageType == 'image' && mediaPath != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _ImageBubbleContent(path: mediaPath!),
+                          )
+                        else if (messageType == 'video' && mediaPath != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _VideoBubbleContent(path: mediaPath!),
+                          ),
+                        if (text.isNotEmpty)
+                          Text(
+                            text,
+                            style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
+                          ),
                         if (isMine && status != null)
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
@@ -1020,4 +1172,141 @@ class _DotGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DotGridPainter oldDelegate) => oldDelegate.color != color;
+}
+
+/// Image bubble content: a rounded thumbnail that opens a pinch-to-zoom
+/// full-screen viewer on tap. [path] is always a LOCAL file path — either
+/// the sender's own compressed copy, or the copy the recipient's device
+/// already downloaded, decrypted, and saved (see
+/// MessageRelayService._receiveMediaMessage). Nothing here ever talks to
+/// Supabase directly; by the time a message exists in the local store, its
+/// media is already sitting on this device.
+class _ImageBubbleContent extends StatelessWidget {
+  final String path;
+  const _ImageBubbleContent({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    final file = File(path);
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => _FullscreenImagePage(path: path)),
+        );
+      },
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 240, minWidth: 160),
+          child: file.existsSync()
+              ? Image.file(file, fit: BoxFit.cover)
+              : Container(
+                  color: Colors.black12,
+                  height: 160,
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.broken_image_outlined),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FullscreenImagePage extends StatelessWidget {
+  final String path;
+  const _FullscreenImagePage({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)),
+      body: Center(
+        child: InteractiveViewer(
+          minScale: 0.8,
+          maxScale: 5,
+          child: Image.file(File(path)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Video bubble content: a thumbnail with a play overlay. The actual
+/// player only loads once tapped — building a VideoPlayerController for
+/// every video bubble in a long chat history up front would be wasteful.
+class _VideoBubbleContent extends StatelessWidget {
+  final String path;
+  const _VideoBubbleContent({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => _FullscreenVideoPage(path: path)),
+        );
+      },
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: 220,
+          height: 160,
+          color: Colors.black87,
+          alignment: Alignment.center,
+          child: const Icon(Icons.play_circle_fill, color: Colors.white, size: 52),
+        ),
+      ),
+    );
+  }
+}
+
+class _FullscreenVideoPage extends StatefulWidget {
+  final String path;
+  const _FullscreenVideoPage({required this.path});
+
+  @override
+  State<_FullscreenVideoPage> createState() => _FullscreenVideoPageState();
+}
+
+class _FullscreenVideoPageState extends State<_FullscreenVideoPage> {
+  VideoPlayerController? _controller;
+  ChewieController? _chewie;
+
+  @override
+  void initState() {
+    super.initState();
+    final controller = VideoPlayerController.file(File(widget.path));
+    _controller = controller;
+    controller.initialize().then((_) {
+      if (!mounted) return;
+      setState(() {
+        _chewie = ChewieController(
+          videoPlayerController: controller,
+          autoPlay: true,
+          looping: false,
+        );
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _chewie?.dispose();
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)),
+      body: Center(
+        child: _chewie == null
+            ? const CircularProgressIndicator(color: Colors.white)
+            : Chewie(controller: _chewie!),
+      ),
+    );
+  }
 }
