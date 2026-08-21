@@ -6,6 +6,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:uuid/uuid.dart';
 import 'package:video_player/video_player.dart';
 import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
@@ -51,6 +56,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   bool _readReceiptsEnabled = true;
   bool _peerBlockedByMe = false;
   bool _sendingMedia = false;
+
+  final _voiceRecorder = AudioRecorder();
+  bool _isRecordingVoice = false;
+  int _recordSeconds = 0;
+  Timer? _recordTimer;
+  String? _recordingPath;
+  static const _maxVoiceSeconds = 300; // 5 minutes — see note on _startVoiceRecording
 
   // WhatsApp-style long-press-to-select: long-pressing a bubble enters
   // selection mode and highlights it; the app bar swaps to show the
@@ -102,11 +114,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _blockSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
+    _recordTimer?.cancel();
+    _voiceRecorder.dispose();
     super.dispose();
   }
 
   void _onTextChanged(String value) {
     _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
+    setState(() {}); // toggles the compose bar between the mic icon and the send icon
   }
 
   GlobalKey _bubbleKeyFor(String id) => _bubbleKeys.putIfAbsent(id, () => GlobalKey());
@@ -285,6 +300,128 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not send that — please try again.')));
     } finally {
+      if (mounted) setState(() => _sendingMedia = false);
+    }
+  }
+
+  /// Compression approach for voice, compared to photo/video: instead of
+  /// recording at full quality and shrinking the file afterwards, we
+  /// record directly at a low, speech-appropriate bitrate (64kbps mono
+  /// AAC) and cap length at 5 minutes — that combination mathematically
+  /// can't exceed ~2.3MB, comfortably under the 5MB limit, with no
+  /// separate post-processing pass needed (and no quality surprises the
+  /// way transcoding a video after the fact can have).
+  Future<void> _startVoiceRecording() async {
+    if (_peerBlockedByMe) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unblock ${widget.peerUsername} first to send voice messages.')),
+      );
+      return;
+    }
+    if (!await _voiceRecorder.hasPermission()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission is needed to record a voice message.')),
+      );
+      return;
+    }
+    final dir = await getTemporaryDirectory();
+    final path = p.join(dir.path, '${const Uuid().v4()}.m4a');
+    await _voiceRecorder.start(
+      const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000, sampleRate: 44100, numChannels: 1),
+      path: path,
+    );
+    setState(() {
+      _isRecordingVoice = true;
+      _recordingPath = path;
+      _recordSeconds = 0;
+    });
+    _recordTimer?.cancel();
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _recordSeconds++);
+      if (_recordSeconds >= _maxVoiceSeconds) {
+        _stopAndSendVoiceRecording();
+      }
+    });
+  }
+
+  Future<void> _cancelVoiceRecording() async {
+    _recordTimer?.cancel();
+    try {
+      await _voiceRecorder.stop();
+    } catch (_) {}
+    final path = _recordingPath;
+    if (path != null) {
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+    setState(() {
+      _isRecordingVoice = false;
+      _recordingPath = null;
+      _recordSeconds = 0;
+    });
+  }
+
+  Future<void> _stopAndSendVoiceRecording() async {
+    _recordTimer?.cancel();
+    final durationMs = _recordSeconds * 1000;
+    String? path;
+    try {
+      path = await _voiceRecorder.stop();
+    } catch (_) {}
+    path ??= _recordingPath;
+    setState(() {
+      _isRecordingVoice = false;
+      _recordingPath = null;
+      _recordSeconds = 0;
+    });
+    if (path == null) return;
+    final file = File(path);
+    // A recording under ~1 second is almost always an accidental tap, not
+    // a real voice message — quietly discard it instead of sending
+    // something with no audible content.
+    if (durationMs < 800) {
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+      return;
+    }
+
+    if (_myUid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("You're not signed in. Please sign in again.")),
+      );
+      return;
+    }
+    setState(() => _sendingMedia = true);
+    try {
+      final bytes = await file.readAsBytes();
+      await MessageRelayService.sendMediaMessage(
+        conversationId: widget.conversationId,
+        recipientUid: widget.peerUid,
+        plainBytes: bytes,
+        messageType: 'voice',
+        extension: 'm4a',
+        mime: 'audio/mp4',
+        durationMs: durationMs,
+        ttlHours: _effectiveTtlHours,
+      );
+    } on NotSignedInException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } on BlockedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not send that — please try again.')));
+    } finally {
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
       if (mounted) setState(() => _sendingMedia = false);
     }
   }
@@ -617,6 +754,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 ),
               if (_peerBlockedByMe)
                 _buildBlockedBar(scheme)
+              else if (_isRecordingVoice)
+                _buildRecordingBar(scheme)
               else
                 SafeArea(
                   child: Padding(
@@ -667,8 +806,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             ),
                           ),
                           child: IconButton(
-                            onPressed: _send,
-                            icon: Icon(Icons.arrow_upward_rounded, color: scheme.onPrimary),
+                            onPressed: _sendingMedia
+                                ? null
+                                : (_textController.text.trim().isEmpty ? _startVoiceRecording : _send),
+                            icon: Icon(
+                              _textController.text.trim().isEmpty ? Icons.mic : Icons.arrow_upward_rounded,
+                              color: scheme.onPrimary,
+                            ),
                           ),
                         ),
                       ],
@@ -678,6 +822,48 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  /// Shown in place of the normal compose row while a voice message is
+  /// being recorded — a live timer, a cancel (discard) button, and a
+  /// confirm (stop + send) button. No hold-to-record gesture — a plain
+  /// tap-to-start / tap-to-stop flow is easier to get right reliably than
+  /// a press-and-hold-with-slide-to-cancel gesture, at the cost of one
+  /// extra tap compared to WhatsApp-style recording.
+  Widget _buildRecordingBar(ColorScheme scheme) {
+    final minutes = (_recordSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_recordSeconds % 60).toString().padLeft(2, '0');
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        child: Row(
+          children: [
+            IconButton(
+              onPressed: _cancelVoiceRecording,
+              icon: Icon(Icons.delete_outline, color: scheme.error),
+              tooltip: 'Cancel recording',
+            ),
+            Container(width: 10, height: 10, decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.red)),
+            const SizedBox(width: 8),
+            Text('$minutes:$seconds', style: const TextStyle(fontWeight: FontWeight.w600)),
+            const Spacer(),
+            Text('Recording voice message…', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12)),
+            const Spacer(),
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(colors: [scheme.primary, scheme.primary.withValues(alpha: 0.7)]),
+              ),
+              child: IconButton(
+                onPressed: _stopAndSendVoiceRecording,
+                icon: Icon(Icons.check, color: scheme.onPrimary),
+                tooltip: 'Send voice message',
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1047,6 +1233,11 @@ class _MessageBubble extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 6),
                             child: _VideoBubbleContent(path: mediaPath!),
+                          )
+                        else if (messageType == 'voice' && mediaPath != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: _VoiceBubbleContent(path: mediaPath!, isMine: isMine),
                           ),
                         if (text.isNotEmpty)
                           Text(
@@ -1306,6 +1497,120 @@ class _FullscreenVideoPageState extends State<_FullscreenVideoPage> {
         child: _chewie == null
             ? const CircularProgressIndicator(color: Colors.white)
             : Chewie(controller: _chewie!),
+      ),
+    );
+  }
+}
+
+/// Inline play/pause + scrubber for a voice message, using just_audio
+/// directly against the local decrypted file (see
+/// MessageRelayService._receiveMediaMessage / sendMediaMessage) — no
+/// network access at playback time at all, same as images/video.
+class _VoiceBubbleContent extends StatefulWidget {
+  final String path;
+  final bool isMine;
+  const _VoiceBubbleContent({required this.path, required this.isMine});
+
+  @override
+  State<_VoiceBubbleContent> createState() => _VoiceBubbleContentState();
+}
+
+class _VoiceBubbleContentState extends State<_VoiceBubbleContent> {
+  final _player = AudioPlayer();
+  Duration _duration = Duration.zero;
+  Duration _position = Duration.zero;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _player.setFilePath(widget.path).then((duration) {
+      if (!mounted) return;
+      setState(() {
+        _duration = duration ?? Duration.zero;
+        _loaded = true;
+      });
+    }).catchError((_) {
+      if (mounted) setState(() => _loaded = true); // show a disabled control rather than spin forever
+    });
+    _player.positionStream.listen((pos) {
+      if (mounted) setState(() => _position = pos);
+    });
+    _player.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.completed) {
+        _player.seek(Duration.zero);
+        _player.pause();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fg = widget.isMine ? scheme.onPrimary : scheme.onSurface;
+    final total = _duration.inMilliseconds == 0 ? 1 : _duration.inMilliseconds;
+    final progress = (_position.inMilliseconds / total).clamp(0.0, 1.0);
+
+    return SizedBox(
+      width: 220,
+      child: Row(
+        children: [
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: !_loaded
+                ? null
+                : () {
+                    if (_player.playing) {
+                      _player.pause();
+                    } else {
+                      _player.play();
+                    }
+                  },
+            icon: StreamBuilder<PlayerState>(
+              stream: _player.playerStateStream,
+              builder: (context, snapshot) {
+                final playing = snapshot.data?.playing ?? false;
+                return Icon(playing ? Icons.pause_circle_filled : Icons.play_circle_fill, color: fg, size: 32);
+              },
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: progress,
+                    minHeight: 4,
+                    backgroundColor: fg.withValues(alpha: 0.25),
+                    valueColor: AlwaysStoppedAnimation(fg),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _fmt(_position.inMilliseconds > 0 ? _position : _duration),
+                  style: TextStyle(fontSize: 11, color: fg.withValues(alpha: 0.8)),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
