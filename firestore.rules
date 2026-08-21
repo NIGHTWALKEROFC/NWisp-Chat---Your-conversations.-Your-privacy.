@@ -100,8 +100,22 @@ service cloud.firestore {
     // only ever a targeted get() by two specific uids - never an
     // enumerable list of who's blocked whom.
     match /blocks/{blockId} {
-      allow read: if isSignedIn() &&
-        (request.auth.uid == resource.data.blockerUid || request.auth.uid == resource.data.blockedUid);
+      // BUGFIX: the very common case is that NO block doc exists between
+      // two given people at all — and Firestore's rule engine treats
+      // `resource` as null for a get() on a nonexistent document. Without
+      // the `resource == null ||` clause here, referencing
+      // `resource.data.blockerUid` on that null resource caused a rule
+      // evaluation error, which Firestore denies just like an explicit
+      // `false` — meaning EVERY message send failed at the
+      // "am I blocked?" pre-check, even between two people who never
+      // blocked each other. `resource == null` short-circuits the rest of
+      // the OR, so a nonexistent doc reads as "allowed, nothing there"
+      // instead of erroring.
+      allow read: if isSignedIn() && (
+        resource == null ||
+        request.auth.uid == resource.data.blockerUid ||
+        request.auth.uid == resource.data.blockedUid
+      );
       allow create: if isSignedIn() &&
         request.resource.data.blockerUid == request.auth.uid &&
         blockId == request.resource.data.blockerUid + '_' + request.resource.data.blockedUid;
