@@ -13,7 +13,7 @@ import 'help_center_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_screen.dart';
 
-const _ttlOptions = [1, 6, 24, 72, 168];
+const _ttlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never auto-delete (the default)
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -27,7 +27,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _lastSeenVisible = true;
   bool _readReceiptsEnabled = true;
   bool _appLockEnabled = false;
-  int _ttlHours = 24;
+  int _ttlHours = 0; // 0 = never auto-delete — the default; disappearing messages are opt-in
   String _username = '';
   String _email = '';
   bool _loadingProfile = true;
@@ -56,7 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _email = _authService.currentUser?.email ?? '';
       _lastSeenVisible = (privateData['lastSeenVisible'] as bool?) ?? true;
       _readReceiptsEnabled = (privateData['readReceiptsEnabled'] as bool?) ?? true;
-      _ttlHours = (privateData['messageTtlHours'] as num?)?.toInt() ?? 24;
+      _ttlHours = (privateData['messageTtlHours'] as num?)?.toInt() ?? 0;
       _loadingProfile = false;
     });
   }
@@ -120,7 +120,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  "This is the app-wide default. Any single chat can override it from that chat's settings.",
+                  "Off by default — your messages stay on this phone until you delete them yourself. "
+                  "Turning this on here sets the app-wide default; any single chat can still override it "
+                  "from that chat's settings.",
                   style: TextStyle(fontSize: 12.5),
                 ),
               ),
@@ -145,6 +147,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   String _ttlLabel(int hours) {
+    if (hours == 0) return 'Never';
     if (hours < 24) return '$hours hour${hours == 1 ? '' : 's'}';
     final days = hours ~/ 24;
     return '$days day${days == 1 ? '' : 's'}';
@@ -260,7 +263,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.timer_outlined),
                   title: const Text('Auto-delete messages'),
-                  subtitle: Text('After ${_ttlLabel(_ttlHours)} (app-wide default)'),
+                  subtitle: Text(_ttlHours == 0 ? 'Off — messages stay until you delete them' : 'After ${_ttlLabel(_ttlHours)} (app-wide default)'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openTtlPicker,
                 ),
