@@ -68,18 +68,17 @@ class AuthService {
     if (existing.exists) throw Exception('Username already taken');
 
     final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-    // SessionService both prepares this device's keys AND — if a different
-    // account was last active on this device — wipes that previous
-    // account's local state first (old messages, old keys) so it's never
-    // visible to this new one.
-    final publicKey = await SessionService.prepareForUser(cred.user!.uid);
+    // SessionService both prepares this device's Signal Protocol identity
+    // AND — if a different account was last active on this device — wipes
+    // that previous account's local state first (old messages, old keys)
+    // so it's never visible to this new one.
+    await SessionService.prepareForUser(cred.user!.uid);
 
     final batch = _db.batch();
     batch.set(_db.collection('users').doc(cred.user!.uid), {
       'username': lowerUsername,
       'usernameLower': lowerUsername,
       'photoUrl': null,
-      'publicKey': publicKey,
       'createdAt': FieldValue.serverTimestamp(),
     });
     batch.set(_privateProfileRef(cred.user!.uid), {
@@ -87,7 +86,7 @@ class AuthService {
       'lastSeenVisible': true,
       'readReceiptsEnabled': true,
       'blockedUsers': <String>[],
-      'messageTtlHours': 24,
+      'messageTtlHours': 0, // never auto-delete — disappearing messages are opt-in (see settings_screen.dart)
       'fcmTokens': <String>[],
       'lastLoginAt': FieldValue.serverTimestamp(),
     });
@@ -135,10 +134,11 @@ class AuthService {
   Future<UserCredential> loginWithEmail(String email, String password) async {
     final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
     // Prepares (and, if this device last belonged to a different account,
-    // wipes-then-prepares) this device's keys and local message store, AND
-    // migrates any pre-restructure account onto the new private/profile +
-    // private/presence documents (see SessionService._ensurePrivateDocs).
-    final publicKey = await SessionService.prepareForUser(cred.user!.uid);
+    // wipes-then-prepares) this device's Signal Protocol identity and local
+    // message store, AND migrates any pre-restructure account onto the new
+    // private/profile + private/presence documents (see
+    // SessionService._ensurePrivateDocs).
+    await SessionService.prepareForUser(cred.user!.uid);
 
     final profileSnap = await _privateProfileRef(cred.user!.uid).get();
     final lastLoginAt = (profileSnap.data()?['lastLoginAt'] as Timestamp?)?.toDate();
@@ -150,7 +150,6 @@ class AuthService {
       pendingWelcomeMessage = null;
     }
 
-    await _db.collection('users').doc(cred.user!.uid).set({'publicKey': publicKey}, SetOptions(merge: true));
     await _privateProfileRef(cred.user!.uid).set({'lastLoginAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
     return cred;
   }
