@@ -7,23 +7,19 @@ import 'package:sqflite/sqflite.dart';
 
 // VERIFICATION NOTE — please read before relying on this file:
 //
-// This wiring is checked against libsignal_protocol_dart's published
-// example (MixinNetwork/libsignal_protocol_dart, pub.dev v0.8.2) for the
-// core flow: generateIdentityKeyPair/generateRegistrationId/generatePreKeys/
-// generateSignedPreKey, SignalProtocolAddress, SessionBuilder,
-// PreKeyBundle's constructor argument order, SessionCipher.encrypt, and
-// CiphertextMessage.prekeyType — those are solid.
-//
-// A handful of deserialization constructors below (IdentityKeyPair.
-// fromSerialized, PreKeyRecord.fromSerialized, IdentityKey.fromBytes) are
-// my best-match guess based on the sibling SignedPreKeyRecord/SessionRecord
-// constructors that ARE confirmed in the example, and on this package's
-// close parity with libsignal-protocol-java — but I could not compile this
-// against the real package in this environment to confirm those exact
-// names. If `flutter analyze` or a build flags any of them, it's almost
-// certainly a rename to the equivalent constructor shown in this package's
-// generated API docs (pub.dev → libsignal_protocol_dart → API reference) —
-// paste me the exact error and I'll fix the one line.
+// Checked against libsignal_protocol_dart's published example (v0.8.2) for
+// the core flow, PLUS a real build error from this exact app (which caught
+// two wrong guesses) and a real crash stack trace from another project
+// using this same package. Current state:
+//   - IdentityKeyPair.fromSerialized, SignedPreKeyRecord.fromSerialized,
+//     SessionRecord.fromSerialized: confirmed correct (no build error).
+//   - PreKeyRecord.fromBuffer: PreKeyRecord.fromSerialized was confirmed
+//     WRONG by a real build error. .fromBuffer is the standard Dart
+//     `protobuf` package deserialization convention (this library depends
+//     on `protobuf`, and PreKeyRecord almost certainly wraps a generated
+//     protobuf structure), which is why it's the current best guess — but
+//     it's still not compiler-verified. If a build error names this line,
+//     paste it and it's a one-line fix.
 
 /// Thrown when a contact's identity key doesn't match the one we trusted
 /// the first time we ever talked to them (see IdentityKeyStore.saveIdentity
@@ -236,7 +232,7 @@ class PersistentSignalProtocolStore
     await open();
     final rows = await _db!.query('prekeys', where: 'id = ?', whereArgs: [preKeyId], limit: 1);
     if (rows.isEmpty) throw InvalidKeyIdException('No such prekey: $preKeyId');
-    return PreKeyRecord.fromSerialized(rows.first['record'] as Uint8List);
+    return PreKeyRecord.fromBuffer(rows.first['record'] as Uint8List);
   }
 
   @override
