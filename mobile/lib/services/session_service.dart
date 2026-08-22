@@ -1,14 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'crypto_service.dart';
 import 'local_message_store.dart';
-import 'message_relay_service.dart';
 import 'pin_service.dart';
 import 'secure_storage_service.dart';
+import 'signal_session_service.dart';
 
-/// Makes sure this device's local, per-account state (identity keys, the
-/// on-device message store, pinned messages, cached peer public keys)
-/// belongs to whoever is CURRENTLY signed in — and never to whoever was
-/// signed in before them on this same device.
+/// Makes sure this device's local, per-account state (the on-device
+/// message store, pinned messages, the Signal Protocol identity/session
+/// store) belongs to whoever is CURRENTLY signed in — and never to
+/// whoever was signed in before them on this same device.
 ///
 /// Call this once for every sign-in/sign-up (AuthService) and once per app
 /// cold start with an already-persisted session (main.dart). It's safe to
@@ -16,9 +16,9 @@ import 'secure_storage_service.dart';
 /// no-ops once the account already matches.
 class SessionService {
   static String? _preparingUid;
-  static Future<String>? _preparingFuture;
+  static Future<void>? _preparingFuture;
 
-  static Future<String> prepareForUser(String uid) {
+  static Future<void> prepareForUser(String uid) {
     if (_preparingUid == uid && _preparingFuture != null) return _preparingFuture!;
     _preparingUid = uid;
     final future = _prepare(uid);
@@ -26,41 +26,35 @@ class SessionService {
     return future;
   }
 
-  static Future<String> _prepare(String uid) async {
+  static Future<void> _prepare(String uid) async {
     final activeUid = await SecureStorageService.getActiveUid();
     final switchedAccount = activeUid != null && activeUid != uid;
 
     if (switchedAccount) {
       // A different account is signing in on this device. Wipe every bit
-      // of the previous account's local state first — identity keys, the
-      // on-device message database, pinned-message ids, and the in-memory
-      // public-key cache — so it's never visible to, or reused by, the new
-      // one. Without this, a second account signing in on the same device
-      // would silently inherit the first account's keys and see the first
-      // account's messages.
+      // of the previous account's local state first — the on-device
+      // message database, pinned-message ids, and the Signal Protocol
+      // store (identity/sessions/prekeys) — so it's never visible to, or
+      // reused by, the new one. Without this, a second account signing in
+      // on the same device would silently inherit the first account's
+      // keys and see the first account's messages.
       await SecureStorageService.clearAll();
       CryptoService.clearInMemoryKeys();
       await LocalMessageStore.resetForNewUser();
       await PinService.clearAll();
-      MessageRelayService.resetPublicKeyCache();
+      await SignalSessionService.instance.wipe();
     }
 
     await SecureStorageService.setActiveUid(uid);
-    final publicKey = await CryptoService.ensureIdentityKeyPair();
+    SignalSessionService.setCurrentUid(uid);
     await CryptoService.ensureLocalStorageKey();
     await LocalMessageStore.init();
-
-    // Keep Firestore's copy of the public key in sync with whatever this
-    // device is actually holding — cheap, and it's exactly what fixes a
-    // stale key left over from before an account switch or a reinstall.
-    await FirebaseFirestore.instance.collection('users').doc(uid).set(
-      {'publicKey': publicKey},
-      SetOptions(merge: true),
-    );
+    // Generates (once) or verifies this account's Double Ratchet identity
+    // and prekeys, and republishes/replenishes the public prekey bundle
+    // other people need to start a session with this account.
+    await SignalSessionService.instance.install();
 
     await _ensurePrivateDocs(uid);
-
-    return publicKey;
   }
 
   /// One-time migration for accounts created before private profile/presence
@@ -89,7 +83,7 @@ class SessionService {
       'lastSeenVisible': old['lastSeenVisible'] ?? true,
       'readReceiptsEnabled': old['readReceiptsEnabled'] ?? true,
       'blockedUsers': old['blockedUsers'] ?? <String>[],
-      'messageTtlHours': old['messageTtlHours'] ?? 24,
+      'messageTtlHours': old['messageTtlHours'] ?? 0, // never, unless they already had a value set
       'fcmTokens': old['fcmTokens'] ?? <String>[],
       'lastLoginAt': old['lastLoginAt'] ?? FieldValue.serverTimestamp(),
     });
