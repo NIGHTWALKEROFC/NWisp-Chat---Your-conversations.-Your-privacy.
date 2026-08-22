@@ -21,6 +21,7 @@ import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../../services/pin_service.dart';
 import '../../services/presence_service.dart';
+import '../../services/signal_session_service.dart';
 import 'chat_settings_screen.dart';
 
 // Expanded quick-reaction set (was 6, now 12) — tapping the same emoji you
@@ -77,7 +78,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _blockSub;
 
-  int get _effectiveTtlHours => _chatTtlOverride ?? _profileTtlHours ?? 24;
+  int get _effectiveTtlHours => _chatTtlOverride ?? _profileTtlHours ?? 0; // 0 = never — opt-in disappearing messages
 
   @override
   void initState() {
@@ -147,6 +148,41 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     });
   }
 
+  /// Shown when SignalSessionService reports that a contact's encryption
+  /// keys have changed since the last time a session was established with
+  /// them — usually a reinstall or new device, but exactly the kind of
+  /// thing a real secure messenger asks about rather than silently
+  /// re-trusting. Returns true if the person explicitly chose to trust the
+  /// new key and retry.
+  Future<bool> _confirmIdentityChangeAndRetry() async {
+    final trust = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Security code changed'),
+        content: Text(
+          "${widget.peerUsername}'s encryption keys have changed since you last talked. "
+          "This usually just means they reinstalled the app or got a new device — but it's "
+          "also what it would look like if something were wrong. Send anyway?",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Trust & send')),
+        ],
+      ),
+    );
+    if (trust != true) return false;
+    try {
+      await SignalSessionService.instance.acceptChangedIdentityAndRetry(widget.peerUid);
+      return true;
+    } catch (_) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't confirm the new key — please try again.")),
+      );
+      return false;
+    }
+  }
+
   Future<void> _send() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -165,14 +201,29 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _textController.clear();
     final replyId = _replyingTo?.id;
     setState(() => _replyingTo = null);
+    Future<void> attemptSend() => MessageRelayService.sendMessage(
+          conversationId: widget.conversationId,
+          recipientUid: widget.peerUid,
+          text: text,
+          replyToId: replyId,
+          ttlHours: _effectiveTtlHours,
+        );
     try {
-      await MessageRelayService.sendMessage(
-        conversationId: widget.conversationId,
-        recipientUid: widget.peerUid,
-        text: text,
-        replyToId: replyId,
-        ttlHours: _effectiveTtlHours,
-      );
+      await attemptSend();
+    } on IdentityChangedException catch (_) {
+      if (!mounted) return;
+      final trusted = await _confirmIdentityChangeAndRetry();
+      if (!trusted) {
+        // Give the text back rather than silently discarding what they typed.
+        if (mounted) _textController.text = text;
+        return;
+      }
+      try {
+        await attemptSend();
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message could not be sent')));
+      }
     } on NotSignedInException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -278,15 +329,23 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     setState(() => _sendingMedia = true);
     try {
       final bytes = await compress(file);
-      await MessageRelayService.sendMediaMessage(
-        conversationId: widget.conversationId,
-        recipientUid: widget.peerUid,
-        plainBytes: bytes,
-        messageType: messageType,
-        extension: messageType == 'image' ? 'jpg' : 'mp4',
-        mime: mime,
-        ttlHours: _effectiveTtlHours,
-      );
+      Future<void> attemptSend() => MessageRelayService.sendMediaMessage(
+            conversationId: widget.conversationId,
+            recipientUid: widget.peerUid,
+            plainBytes: bytes,
+            messageType: messageType,
+            extension: messageType == 'image' ? 'jpg' : 'mp4',
+            mime: mime,
+            ttlHours: _effectiveTtlHours,
+          );
+      try {
+        await attemptSend();
+      } on IdentityChangedException catch (_) {
+        if (!mounted) return;
+        if (await _confirmIdentityChangeAndRetry()) {
+          await attemptSend();
+        }
+      }
     } on MediaTooLargeException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -399,16 +458,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     setState(() => _sendingMedia = true);
     try {
       final bytes = await file.readAsBytes();
-      await MessageRelayService.sendMediaMessage(
-        conversationId: widget.conversationId,
-        recipientUid: widget.peerUid,
-        plainBytes: bytes,
-        messageType: 'voice',
-        extension: 'm4a',
-        mime: 'audio/mp4',
-        durationMs: durationMs,
-        ttlHours: _effectiveTtlHours,
-      );
+      Future<void> attemptSend() => MessageRelayService.sendMediaMessage(
+            conversationId: widget.conversationId,
+            recipientUid: widget.peerUid,
+            plainBytes: bytes,
+            messageType: 'voice',
+            extension: 'm4a',
+            mime: 'audio/mp4',
+            durationMs: durationMs,
+            ttlHours: _effectiveTtlHours,
+          );
+      try {
+        await attemptSend();
+      } on IdentityChangedException catch (_) {
+        if (!mounted) return;
+        if (await _confirmIdentityChangeAndRetry()) {
+          await attemptSend();
+        }
+      }
     } on NotSignedInException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -610,23 +677,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           Column(
             children: [
               if (_pinnedIds.isNotEmpty) _buildPinnedBanner(scheme),
-              Container(
-                width: double.infinity,
-                color: scheme.surfaceContainerHigh,
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.timer_outlined, size: 13, color: scheme.onSurfaceVariant),
-                    const SizedBox(width: 6),
-                    Text(
-                      'New messages disappear after ${_ttlLabel(_effectiveTtlHours)}'
-                      '${_chatTtlOverride != null ? ' (set for this chat)' : ''}',
-                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-                    ),
-                  ],
+              if (_effectiveTtlHours > 0)
+                Container(
+                  width: double.infinity,
+                  color: scheme.surfaceContainerHigh,
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.timer_outlined, size: 13, color: scheme.onSurfaceVariant),
+                      const SizedBox(width: 6),
+                      Text(
+                        'New messages disappear after ${_ttlLabel(_effectiveTtlHours)}'
+                        '${_chatTtlOverride != null ? ' (set for this chat)' : ''}',
+                        style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
               Expanded(
                 child: StreamBuilder<List<LocalMessage>>(
                   stream: LocalMessageStore.watchConversation(widget.conversationId),
