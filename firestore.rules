@@ -44,6 +44,28 @@ service cloud.firestore {
         );
         allow write: if isOwner(uid);
       }
+
+      // Signal Protocol (Double Ratchet) key bundle — see
+      // SignalSessionService. registrationId/identityKey/signedPreKey are
+      // meant to be public by design (that's how X3DH lets you message
+      // someone who's offline right now), same trust model as the
+      // publicKey field above.
+      match /signal/bundle {
+        allow read: if isSignedIn();
+        allow write: if isOwner(uid);
+
+        // One-time prekeys are a "claim one and it's gone" pool: any
+        // signed-in user can read (to pick a candidate) and delete (to
+        // claim it — see SignalSessionService._claimOneTimePreKey), but
+        // only the owning device can add new ones during replenishment.
+        // Delete-only claiming means a claimer can never tamper with a
+        // prekey's data, only remove it.
+        match /oneTimePreKeys/{prekeyId} {
+          allow read: if isSignedIn();
+          allow delete: if isSignedIn();
+          allow create, update: if isOwner(uid);
+        }
+      }
     }
 
     match /usernames/{name} {
