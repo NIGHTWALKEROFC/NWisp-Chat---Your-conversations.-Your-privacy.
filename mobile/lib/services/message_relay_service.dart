@@ -9,6 +9,8 @@ import 'crypto_service.dart';
 import 'local_media_files.dart';
 import 'local_message_store.dart';
 import 'media_service.dart';
+import 'signal_session_service.dart';
+export 'signal_store.dart' show IdentityChangedException;
 
 class BlockedException implements Exception {
   final String message;
@@ -32,14 +34,6 @@ class MessageRelayService {
   static final _db = FirebaseFirestore.instance;
   static final _uuid = const Uuid();
 
-  /// Public keys are cached briefly (not forever, not never) — long enough
-  /// to avoid a Firestore read on every keystroke-adjacent action, short
-  /// enough that a contact who rotated their identity key pair (reinstall,
-  /// switching accounts on a device — see SessionService) is picked up
-  /// again within a few minutes even without any explicit invalidation.
-  static final Map<String, _CachedKey> _publicKeyCache = {};
-  static const _keyCacheTtl = Duration(minutes: 3);
-
   static RealtimeChannel? _channel;
   static Timer? _reconnectTimer;
 
@@ -53,28 +47,25 @@ class MessageRelayService {
   /// A safe accessor instead of a bare `!` null-check — a null session here
   /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
   /// NotSignedInException instead of an unhandled null-check crash.
+  /// A safe accessor instead of a bare `!` null-check — a null session here
+  /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
+  /// NotSignedInException instead of an unhandled null-check crash.
   static String get _myUid {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) throw NotSignedInException();
     return uid;
   }
 
-  static Future<String> _publicKeyFor(String uid, {bool forceRefresh = false}) async {
-    final cached = _publicKeyCache[uid];
-    if (!forceRefresh && cached != null && DateTime.now().difference(cached.fetchedAt) < _keyCacheTtl) {
-      return cached.key;
-    }
-    final doc = await _db.collection('users').doc(uid).get();
-    final key = doc.data()?['publicKey'] as String?;
-    if (key == null) throw Exception('That user has not set up encryption keys yet.');
-    _publicKeyCache[uid] = _CachedKey(key, DateTime.now());
-    return key;
+  /// ttlHours == 0 means "never auto-delete" (the new default — see the
+  /// settings/chat-settings TTL pickers) rather than "expires instantly".
+  /// A null expiresAt is what LocalMessageStore.purgeExpired() already
+  /// treats as "keep forever" (its WHERE clause only matches non-null,
+  /// past expiresAt rows), so this is the only place that needs to know
+  /// about the 0-means-never convention.
+  static DateTime? _expiryFor(DateTime createdAt, int ttlHours) {
+    if (ttlHours <= 0) return null;
+    return createdAt.add(Duration(hours: ttlHours));
   }
-
-  /// Clears every cached public key on this device — used when a different
-  /// account signs in (see SessionService), and safe to call any other
-  /// time too since keys just get refetched on demand afterward.
-  static void resetPublicKeyCache() => _publicKeyCache.clear();
 
   /// Call once after sign-in (see main.dart). Subscribes to incoming rows
   /// and also catches up on anything that arrived while the app was closed.
@@ -145,25 +136,17 @@ class MessageRelayService {
     }
   }
 
+  /// [row]'s `nonce` column now carries the Signal message type marker
+  /// ('3' = first message in a session, carries the X3DH handshake; '1' =
+  /// every message after, pure ratchet-advanced ciphertext) rather than a
+  /// literal crypto nonce — the Double Ratchet manages nonces/counters
+  /// internally, so there's nothing else that column needs to hold.
   static Future<String> _decryptRow(Map<String, dynamic> row, String senderUid) async {
-    try {
-      final key = await _publicKeyFor(senderUid);
-      return await CryptoService.decryptFromPeer(
-        ciphertextB64: row['ciphertext'] as String,
-        nonceB64: row['nonce'] as String,
-        senderPublicKeyB64: key,
-      );
-    } catch (_) {
-      // The sender may have rotated their identity key pair since we
-      // cached it (reinstall, or an account switch on their device).
-      // Refetch once, live, before giving up.
-      final freshKey = await _publicKeyFor(senderUid, forceRefresh: true);
-      return await CryptoService.decryptFromPeer(
-        ciphertextB64: row['ciphertext'] as String,
-        nonceB64: row['nonce'] as String,
-        senderPublicKeyB64: freshKey,
-      );
-    }
+    return SignalSessionService.instance.decryptFromPeer(
+      senderUid,
+      row['ciphertext'] as String,
+      row['nonce'] as String,
+    );
   }
 
   /// Processes one relay row. The row is only deleted from `message_relay`
@@ -194,7 +177,7 @@ class MessageRelayService {
         await LocalMessageStore.setReaction(data['ref'] as String, senderUid, data['emoji'] as String?);
         break;
       default:
-        final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 24;
+        final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 0;
         final createdAt = DateTime.now();
         if (_mediaTypes.contains(messageType)) {
           await _receiveMediaMessage(row: row, senderUid: senderUid, payload: payload, createdAt: createdAt, ttlHours: ttlHours);
@@ -211,7 +194,7 @@ class MessageRelayService {
             replyToId: row['reply_to_id'] as String?,
             status: 'delivered',
             createdAt: createdAt,
-            expiresAt: createdAt.add(Duration(hours: ttlHours)),
+            expiresAt: _expiryFor(createdAt, ttlHours),
           );
         }
         await _sendReceipt(
@@ -264,7 +247,7 @@ class MessageRelayService {
       replyToId: row['reply_to_id'] as String?,
       status: 'delivered',
       createdAt: createdAt,
-      expiresAt: createdAt.add(Duration(hours: ttlHours)),
+      expiresAt: _expiryFor(createdAt, ttlHours),
     );
 
     // Forward-only: now that our own local copy is safely saved, the
@@ -310,8 +293,7 @@ class MessageRelayService {
     // silently encrypted with a stale cached key here, the recipient would
     // never be able to decrypt it and we'd have no way to know the send
     // "failed", since the Supabase insert itself always succeeds.
-    final recipientKey = await _publicKeyFor(recipientUid, forceRefresh: true);
-    final (ciphertext, nonce) = await CryptoService.encryptForPeer(text, recipientKey);
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, text);
 
     await _client.from('message_relay').insert({
       'conversation_id': conversationId,
@@ -339,7 +321,7 @@ class MessageRelayService {
       replyToId: replyToId,
       status: 'sent',
       createdAt: createdAt,
-      expiresAt: createdAt.add(Duration(hours: ttlHours)),
+      expiresAt: _expiryFor(createdAt, ttlHours),
     );
     return clientId;
   }
@@ -352,8 +334,8 @@ class MessageRelayService {
   /// The file gets a brand-new random AES-256 key (see
   /// CryptoService.generateFileKey); only the encrypted bytes are uploaded
   /// to Supabase, and only that random key (32 bytes) travels through the
-  /// existing X25519 peer-encryption pipeline as part of a small JSON blob —
-  /// Supabase never has anything it could decrypt on its own.
+  /// Double Ratchet as part of a small JSON blob — Supabase never has
+  /// anything it could decrypt on its own.
   static Future<String> sendMediaMessage({
     required String conversationId,
     required String recipientUid,
@@ -384,8 +366,7 @@ class MessageRelayService {
       if (durationMs != null) 'durationMs': durationMs,
     });
 
-    final recipientKey = await _publicKeyFor(recipientUid, forceRefresh: true);
-    final (ciphertext, nonce) = await CryptoService.encryptForPeer(metaPayload, recipientKey);
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
 
     await _client.from('message_relay').insert({
       'conversation_id': conversationId,
@@ -415,7 +396,7 @@ class MessageRelayService {
       mediaPath: localPath,
       status: 'sent',
       createdAt: createdAt,
-      expiresAt: createdAt.add(Duration(hours: ttlHours)),
+      expiresAt: _expiryFor(createdAt, ttlHours),
     );
     return clientId;
   }
@@ -426,8 +407,7 @@ class MessageRelayService {
     required String ref,
     required String status,
   }) async {
-    final key = await _publicKeyFor(toUid);
-    final (ciphertext, nonce) = await CryptoService.encryptForPeer(jsonEncode({'ref': ref, 'status': status}), key);
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': ref, 'status': status}));
     await _client.from('message_relay').insert({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
@@ -450,8 +430,7 @@ class MessageRelayService {
     required String messageId,
     required String? emoji,
   }) async {
-    final key = await _publicKeyFor(toUid);
-    final (ciphertext, nonce) = await CryptoService.encryptForPeer(jsonEncode({'ref': messageId, 'emoji': emoji}), key);
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': messageId, 'emoji': emoji}));
     await _client.from('message_relay').insert({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
@@ -468,8 +447,7 @@ class MessageRelayService {
   /// AND tells the peer's device to remove it from theirs. Nothing to
   /// un-send server-side because nothing stays server-side.
   static Future<void> deleteForEveryone({required String conversationId, required String toUid, required String messageId}) async {
-    final key = await _publicKeyFor(toUid);
-    final (ciphertext, nonce) = await CryptoService.encryptForPeer(jsonEncode({'ref': messageId}), key);
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': messageId}));
     await _client.from('message_relay').insert({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
@@ -487,8 +465,7 @@ class MessageRelayService {
 
   /// "Clear chat" — tells the peer's device to wipe it locally too.
   static Future<void> clearForBoth({required String conversationId, required String toUid}) async {
-    final key = await _publicKeyFor(toUid);
-    final (ciphertext, nonce) = await CryptoService.encryptForPeer(jsonEncode({'conversationId': conversationId}), key);
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'conversationId': conversationId}));
     await _client.from('message_relay').insert({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
@@ -501,10 +478,4 @@ class MessageRelayService {
     });
     await LocalMessageStore.clearConversation(conversationId);
   }
-}
-
-class _CachedKey {
-  final String key;
-  final DateTime fetchedAt;
-  _CachedKey(this.key, this.fetchedAt);
 }
