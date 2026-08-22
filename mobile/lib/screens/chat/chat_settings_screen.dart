@@ -4,7 +4,7 @@ import '../../services/conversation_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 
-const _chatTtlOptions = [1, 6, 24, 72, 168]; // hours: 1h, 6h, 1d, 3d, 7d
+const _chatTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never for THIS chat specifically, hours after that
 
 class ChatSettingsScreen extends StatefulWidget {
   final String conversationId;
@@ -29,6 +29,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
   String _ttlLabel(int? hours) {
     if (hours == null) return 'Use app default';
+    if (hours == 0) return 'Never (this chat only)';
     if (hours < 24) return '$hours hour${hours == 1 ? '' : 's'}';
     final days = hours ~/ 24;
     return '$days day${days == 1 ? '' : 's'}';
