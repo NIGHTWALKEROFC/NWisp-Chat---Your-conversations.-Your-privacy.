@@ -219,26 +219,22 @@ class SignalSessionService {
     final cipher = SessionCipher(_store, _store, _store, _store, address);
     final bytes = b64ToBytes(ciphertextB64);
 
-    if (typeMarker == '3') {
-      final message = PreKeySignalMessage(bytes);
-      Uint8List? plaintext;
-      await cipher.decryptWithCallback(message, (pt) {
-        plaintext = pt;
-      });
-      if (plaintext == null) throw Exception('Could not decrypt message.');
-      return utf8.decode(plaintext!);
-    } else {
-      // NOTE: SignalMessage.fromSerialized is the best-match name for
-      // deserializing wire bytes back into a SignalMessage, mirrored from
-      // the same pattern this package uses for SessionRecord/
-      // SignedPreKeyRecord (see signal_store.dart's verification note).
-      // If this doesn't match the installed version, the fix is a
-      // one-line rename here to whatever this package's generated docs
-      // show for "construct a SignalMessage from serialized bytes".
-      final message = SignalMessage.fromSerialized(bytes);
-      final plaintext2 = await cipher.decrypt(message);
-      return utf8.decode(plaintext2);
-    }
+    // decryptWithCallback is the general entry point for BOTH message
+    // types here — its parameter is typed to the shared CiphertextMessage
+    // supertype, so it accepts a PreKeySignalMessage (establishing the
+    // session first, via X3DH) just as well as a plain SignalMessage
+    // (decrypting against an already-established ratchet). The plain
+    // `decrypt()` method is prekey-only, which is why it's not used for
+    // the '1' branch below.
+    final CiphertextMessage message =
+        typeMarker == '3' ? PreKeySignalMessage(bytes) : SignalMessage.fromSerialized(bytes);
+
+    Uint8List? plaintext;
+    await cipher.decryptWithCallback(message, (pt) {
+      plaintext = pt;
+    });
+    if (plaintext == null) throw Exception('Could not decrypt message.');
+    return utf8.decode(plaintext!);
   }
 
   String _myUidOrThrow() {
