@@ -10,6 +10,7 @@ import 'firebase_options.dart';
 import 'services/theme_service.dart';
 import 'services/branding_service.dart';
 import 'services/auth_service.dart';
+import 'services/device_session_service.dart';
 import 'services/local_message_store.dart';
 import 'services/message_relay_service.dart';
 import 'services/session_service.dart';
@@ -135,6 +136,7 @@ void _setUpMessagingLifecycle() {
   FirebaseAuth.instance.authStateChanges().listen((user) async {
     if (user == null) {
       MessageRelayService.stop();
+      DeviceSessionService.instance.stopWatching();
       sweepTimer?.cancel();
       return;
     }
@@ -143,6 +145,32 @@ void _setUpMessagingLifecycle() {
     await MessageRelayService.start();
     sweepTimer?.cancel();
     sweepTimer = Timer.periodic(const Duration(seconds: 30), (_) => LocalMessageStore.purgeExpired());
+
+    // Single-active-device enforcement (see DeviceSessionService): if a
+    // different device claims this account (a real new login elsewhere,
+    // not this same device reconnecting), sign this one out immediately
+    // with a clear explanation instead of silently leaving two devices
+    // both able to act on the account.
+    DeviceSessionService.instance.watchForRemoteLogout(user.uid, () async {
+      await AuthService().logout();
+      final context = navigatorKey.currentContext;
+      if (context == null) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Signed out'),
+          content: const Text(
+            'Your account was signed in on another device, so this device has been '
+            'signed out for your security. If this wasn\'t you, change your password '
+            'right away from Account Security after signing back in.',
+          ),
+          actions: [
+            FilledButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('OK')),
+          ],
+        ),
+      );
+    });
   });
 }
 
