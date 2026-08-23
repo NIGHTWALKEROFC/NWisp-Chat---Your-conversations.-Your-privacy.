@@ -66,6 +66,19 @@ service cloud.firestore {
           allow create, update: if isOwner(uid);
         }
       }
+
+      // Single-active-device enforcement + security activity log — see
+      // DeviceSessionService. Entirely owner-only: no one else has any
+      // reason to see or touch this.
+      match /private/session {
+        allow read, write: if isOwner(uid);
+
+        match /history/{eventId} {
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid);
+          allow update, delete: if false; // append-only audit log
+        }
+      }
     }
 
     match /usernames/{name} {
