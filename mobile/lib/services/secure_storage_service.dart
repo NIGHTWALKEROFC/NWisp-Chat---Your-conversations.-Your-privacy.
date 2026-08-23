@@ -19,5 +19,14 @@ class SecureStorageService {
 
   static Future<String?> getActiveUid() => _storage.read(key: 'active_uid');
 
+  /// Stable per-install identifier for THIS device — used by
+  /// DeviceSessionService to tell "is this still the device the account is
+  /// active on, or has a different device signed in since." Persists
+  /// across app restarts, but not across an uninstall/reinstall (a fresh
+  /// install is treated as a new device, which is the correct behaviour).
+  static Future<void> saveDeviceId(String id) => _storage.write(key: 'device_id', value: id);
+
+  static Future<String?> getDeviceId() => _storage.read(key: 'device_id');
+
   static Future<void> clearAll() => _storage.deleteAll();
 }
