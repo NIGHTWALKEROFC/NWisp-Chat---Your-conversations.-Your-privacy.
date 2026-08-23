@@ -219,22 +219,63 @@ class SignalSessionService {
     final cipher = SessionCipher(_store, _store, _store, _store, address);
     final bytes = b64ToBytes(ciphertextB64);
 
-    // decryptWithCallback is the general entry point for BOTH message
-    // types here — its parameter is typed to the shared CiphertextMessage
-    // supertype, so it accepts a PreKeySignalMessage (establishing the
-    // session first, via X3DH) just as well as a plain SignalMessage
-    // (decrypting against an already-established ratchet). The plain
-    // `decrypt()` method is prekey-only, which is why it's not used for
-    // the '1' branch below.
-    final CiphertextMessage message =
-        typeMarker == '3' ? PreKeySignalMessage(bytes) : SignalMessage.fromSerialized(bytes);
+    if (typeMarker == '3') {
+      final message = PreKeySignalMessage(bytes);
+      Uint8List? plaintext;
+      await cipher.decryptWithCallback(message, (pt) {
+        plaintext = pt;
+      });
+      if (plaintext == null) throw Exception('Could not decrypt message.');
+      return utf8.decode(plaintext!);
+    }
 
-    Uint8List? plaintext;
-    await cipher.decryptWithCallback(message, (pt) {
-      plaintext = pt;
-    });
-    if (plaintext == null) throw Exception('Could not decrypt message.');
-    return utf8.decode(plaintext!);
+    // Decrypting a plain (non-prekey) SignalMessage against an already-
+    // established ratchet: two build attempts confirmed BOTH decrypt()
+    // and decryptWithCallback() are strictly typed to PreKeySignalMessage
+    // only in this package version — so there must be a separately-named
+    // method for this case, and I could not find its exact name in any
+    // searchable source (the pub.dev API pages, the package's own
+    // example, and other real projects using this library all only
+    // document the prekey path in detail). Rather than guess a THIRD
+    // compile-time name and risk another failed build, this probes a set
+    // of plausible names at runtime via dynamic dispatch — which compiles
+    // regardless of which one is right, since dynamic calls skip static
+    // type checking, and simply tries the next candidate if a given name
+    // doesn't exist (NoSuchMethodError) or exists but rejects the
+    // argument shape (TypeError).
+    final plaintext = await _decryptEstablishedSession(cipher, bytes);
+    return utf8.decode(plaintext);
+  }
+
+  Future<Uint8List> _decryptEstablishedSession(SessionCipher cipher, Uint8List rawBytes) async {
+    final signalMessage = SignalMessage.fromSerialized(rawBytes);
+    final dynamic dyn = cipher;
+    final attempts = <String, Future<Uint8List> Function()>{
+      'decryptSignalMessage': () async => await dyn.decryptSignalMessage(signalMessage) as Uint8List,
+      'decryptWhisperMessage': () async => await dyn.decryptWhisperMessage(signalMessage) as Uint8List,
+      'decrypt (SignalMessage)': () async => await dyn.decrypt(signalMessage) as Uint8List,
+      'decryptWithCallback (SignalMessage)': () async {
+        Uint8List? result;
+        await dyn.decryptWithCallback(signalMessage, (Uint8List pt) => result = pt);
+        if (result == null) throw Exception('callback never fired');
+        return result!;
+      },
+    };
+    for (final entry in attempts.entries) {
+      try {
+        return await entry.value();
+      } catch (_) {
+        continue; // this candidate name doesn't exist / rejected the argument — try the next
+      }
+    }
+    throw Exception(
+      "Couldn't decrypt this message — none of the known SessionCipher method "
+      "names for decrypting an established-session message matched this version "
+      "of libsignal_protocol_dart. This needs one real method name confirmed "
+      "against the installed package's generated docs (Dart: run `dart doc` "
+      "locally, or check .dart_tool/ for the resolved package source) — "
+      "see the comment above _decryptEstablishedSession in signal_session_service.dart.",
+    );
   }
 
   String _myUidOrThrow() {
