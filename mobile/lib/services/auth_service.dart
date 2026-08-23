@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'device_session_service.dart';
 import 'session_service.dart';
 
 /// Field-level privacy note (see firestore.rules): the public `users/{uid}`
@@ -128,6 +129,7 @@ class AuthService {
     } catch (_) {}
 
     pendingWelcomeMessage = 'Welcome to NWisp, $lowerUsername! 🎉';
+    await DeviceSessionService.instance.claimThisDevice(cred.user!.uid);
     return cred;
   }
 
@@ -151,6 +153,10 @@ class AuthService {
     }
 
     await _privateProfileRef(cred.user!.uid).set({'lastLoginAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
+    // Makes this device the account's sole active device — any other
+    // device previously signed in gets signed out (see
+    // DeviceSessionService and its listener wired up in main.dart).
+    await DeviceSessionService.instance.claimThisDevice(cred.user!.uid);
     return cred;
   }
 
@@ -170,6 +176,7 @@ class AuthService {
       }
     }
     await _auth.signOut();
+    DeviceSessionService.instance.stopWatching();
   }
 
   Future<void> reauthenticate(String currentPassword) async {
@@ -194,6 +201,7 @@ class AuthService {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No signed-in user');
     await user.updatePassword(newPassword);
+    await DeviceSessionService.instance.logPasswordChanged(user.uid);
   }
 
   Future<void> updatePhotoUrl(String photoUrl) async {
