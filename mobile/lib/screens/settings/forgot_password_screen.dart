@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
+import '../../services/device_session_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -86,6 +87,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       // password right now — i.e. the reset link was actually used.
       await _authService.reauthenticate(newPassword);
       await AppLockService.resetAfterAccountVerification();
+      final uid = _authService.currentUserId;
+      if (uid != null) await DeviceSessionService.instance.logPasswordChanged(uid);
       if (!mounted) return;
       setState(() {
         _confirming = false;
