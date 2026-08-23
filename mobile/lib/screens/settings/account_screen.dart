@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
+import 'account_security_screen.dart';
 import 'forgot_password_screen.dart';
 
 class AccountScreen extends StatefulWidget {
@@ -181,6 +182,16 @@ class _AccountScreenState extends State<AccountScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.shield_outlined),
+                  title: const Text('Account security'),
+                  subtitle: const Text('Active device, login activity, password history'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AccountSecurityScreen()),
                   ),
                 ),
                 const Divider(height: 32),
