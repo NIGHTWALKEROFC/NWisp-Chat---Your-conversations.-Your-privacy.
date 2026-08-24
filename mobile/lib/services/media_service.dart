@@ -99,4 +99,17 @@ class MediaService {
         .upload(path, file, fileOptions: const FileOptions(upsert: true));
     return Supabase.instance.client.storage.from('avatars').getPublicUrl(path);
   }
+
+  /// Group avatars use the same public 'avatars' bucket as user avatars —
+  /// a group photo isn't secret, every member already sees it the moment
+  /// they're a member (same reasoning as [uploadAvatar] above). Filed
+  /// under its own 'groups/' prefix so a group id and a uid can never
+  /// collide on the same object path.
+  static Future<String> uploadGroupAvatar(File file, String groupId) async {
+    final path = 'avatars/groups/$groupId.jpg';
+    await Supabase.instance.client.storage
+        .from('avatars')
+        .upload(path, file, fileOptions: const FileOptions(upsert: true));
+    return Supabase.instance.client.storage.from('avatars').getPublicUrl(path);
+  }
 }
