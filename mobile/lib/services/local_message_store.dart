@@ -11,10 +11,20 @@ import 'local_media_files.dart';
 /// transit, and Firestore never sees message content at all. Every row's
 /// `enc_text` column is AES-GCM ciphertext under a device-local key (see
 /// CryptoService.encryptLocal) — plaintext only ever exists in memory.
+///
+/// Phase 7 (group chats) adds one more table, `group_meta` — a local cache
+/// of each group's name/avatar/member list, kept fresh by
+/// GroupService.startCaching(). It exists purely so the chat list can show
+/// a group's name/avatar even before (or without) a live Firestore read;
+/// the `messages` table itself needed NO schema change for groups — a
+/// group message row looks exactly like a 1:1 row, just with
+/// conversation_id set to a "group_..." id instead of two sorted uids.
 class LocalMessageStore {
   static Database? _db;
   static final Map<String, StreamController<List<LocalMessage>>> _convoControllers = {};
   static final _summaryController = StreamController<List<ConversationSummary>>.broadcast();
+
+  static const _groupPrefix = 'group_';
 
   static Future<void> init() async {
     if (_db != null) return;
@@ -22,7 +32,7 @@ class LocalMessageStore {
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -44,9 +54,59 @@ class LocalMessageStore {
         ''');
         await db.execute('CREATE INDEX idx_conv ON messages(conversation_id, created_at)');
         await db.execute('CREATE INDEX idx_expiry ON messages(expires_at)');
+        await _createGroupMetaTable(db);
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // v1 -> v2: adds the group_meta cache table for Phase 7 (group
+        // chats) — see GroupService.startCaching(). Existing `messages`
+        // rows are untouched by this migration.
+        if (oldVersion < 2) {
+          await _createGroupMetaTable(db);
+        }
       },
     );
     await purgeExpired();
+  }
+
+  static Future<void> _createGroupMetaTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS group_meta (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        avatar_url TEXT,
+        member_uids TEXT NOT NULL DEFAULT '[]',
+        updated_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  // ---- group metadata cache (see GroupService.startCaching) ------------
+
+  static Future<void> upsertGroupMeta({
+    required String id,
+    required String name,
+    String? avatarUrl,
+    required List<String> memberUids,
+  }) async {
+    await _db!.insert('group_meta', {
+      'id': id,
+      'name': name,
+      'avatar_url': avatarUrl,
+      'member_uids': jsonEncode(memberUids),
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    _notifySummaries();
+  }
+
+  static Future<List<String>> cachedGroupMemberUids(String groupId) async {
+    final rows = await _db!.query('group_meta', columns: ['member_uids'], where: 'id = ?', whereArgs: [groupId], limit: 1);
+    if (rows.isEmpty) return [];
+    return List<String>.from(jsonDecode(rows.first['member_uids'] as String));
+  }
+
+  static Future<void> removeGroupMeta(String groupId) async {
+    await _db!.delete('group_meta', where: 'id = ?', whereArgs: [groupId]);
+    _notifySummaries();
   }
 
   static Future<LocalMessage> insert({
@@ -175,9 +235,11 @@ class LocalMessageStore {
   /// signs in on this device (see SessionService). The messages would be
   /// undecryptable garbage anyway once the local storage key is wiped
   /// alongside this, so they're cleared outright rather than left as
-  /// orphaned rows.
+  /// orphaned rows. Also wipes the group_meta cache — it belonged to the
+  /// previous account's groups.
   static Future<void> resetForNewUser() async {
     await _db!.delete('messages');
+    await _db!.delete('group_meta');
     await LocalMediaFiles.deleteAll();
     for (final controller in _convoControllers.values) {
       if (!controller.isClosed) controller.add([]);
@@ -235,23 +297,29 @@ class LocalMessageStore {
 
   static Future<List<ConversationSummary>> _loadSummaries() async {
     final rows = await _db!.rawQuery('''
-      SELECT conversation_id, peer_uid, enc_text, enc_nonce, created_at,
+      SELECT m1.conversation_id, m1.peer_uid, m1.enc_text, m1.enc_nonce, m1.created_at,
+        gm.name AS group_name, gm.avatar_url AS group_avatar_url,
         (SELECT COUNT(*) FROM messages m2
           WHERE m2.conversation_id = m1.conversation_id AND m2.is_mine = 0 AND m2.status != 'read') AS unread
       FROM messages m1
-      WHERE created_at = (SELECT MAX(created_at) FROM messages m3 WHERE m3.conversation_id = m1.conversation_id)
-      GROUP BY conversation_id
-      ORDER BY created_at DESC
+      LEFT JOIN group_meta gm ON gm.id = m1.conversation_id
+      WHERE m1.created_at = (SELECT MAX(created_at) FROM messages m3 WHERE m3.conversation_id = m1.conversation_id)
+      GROUP BY m1.conversation_id
+      ORDER BY m1.created_at DESC
     ''');
     final result = <ConversationSummary>[];
     for (final r in rows) {
       final text = await CryptoService.decryptLocal(r['enc_text'] as String, r['enc_nonce'] as String);
+      final conversationId = r['conversation_id'] as String;
       result.add(ConversationSummary(
-        conversationId: r['conversation_id'] as String,
+        conversationId: conversationId,
         peerUid: r['peer_uid'] as String,
         lastText: text,
         lastAt: DateTime.fromMillisecondsSinceEpoch(r['created_at'] as int),
         unreadCount: r['unread'] as int,
+        isGroup: conversationId.startsWith(_groupPrefix),
+        groupName: r['group_name'] as String?,
+        groupAvatarUrl: r['group_avatar_url'] as String?,
       ));
     }
     return result;
