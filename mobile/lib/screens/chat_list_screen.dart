@@ -4,18 +4,24 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
 import '../services/auth_service.dart';
+import '../services/group_service.dart';
 import '../services/local_message_store.dart';
 import 'chat/chat_detail_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
+import 'groups/create_group_screen.dart';
+import 'groups/group_chat_screen.dart';
 import 'settings/settings_screen.dart';
 
 /// A row shown on the home screen — either a real ConversationSummary (has
-/// at least one local message) or a placeholder for a conversation you've
-/// opened but haven't sent anything in yet.
+/// at least one local message) or a placeholder for a conversation/group
+/// you've opened/created but haven't sent anything in yet.
 class _ChatRow {
   final String conversationId;
   final String peerUid;
+  final bool isGroup;
+  final String? title; // group name — null for 1:1 rows (resolved via _usernameFor instead)
+  final String? avatarUrl; // group avatar — null for 1:1 rows
   final String lastText;
   final DateTime lastAt;
   final int unreadCount;
@@ -24,6 +30,9 @@ class _ChatRow {
   _ChatRow({
     required this.conversationId,
     required this.peerUid,
+    this.isGroup = false,
+    this.title,
+    this.avatarUrl,
     required this.lastText,
     required this.lastAt,
     required this.unreadCount,
@@ -43,11 +52,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   List<ConversationSummary> _localSummaries = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _convoDocs = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _groupDocs = [];
   bool _localLoaded = false;
   bool _convoLoaded = false;
+  bool _groupsLoaded = false;
 
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
+  late final StreamSubscription _groupsSub;
 
   @override
   void initState() {
@@ -73,6 +85,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
       });
     });
 
+    _groupsSub = GroupService.instance.myGroupsStream().listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _groupDocs = snap.docs;
+        _groupsLoaded = true;
+      });
+    });
+
     // Show a one-time welcome / welcome-back message set by AuthService
     // right after sign-in or sign-up.
     final welcome = AuthService.pendingWelcomeMessage;
@@ -91,6 +111,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void dispose() {
     _localSub.cancel();
     _convoSub.cancel();
+    _groupsSub.cancel();
     super.dispose();
   }
 
@@ -102,15 +123,19 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return name;
   }
 
-  /// Merges real message-backed summaries with any conversation you've
-  /// opened but not messaged in yet, so a chat shows up on the home screen
-  /// the moment you start it — not only after the first message is sent.
+  /// Merges real message-backed summaries with any 1:1 conversation or
+  /// group you've opened/created but not messaged in yet, so a chat shows
+  /// up on the home screen the moment you start it — not only after the
+  /// first message is sent.
   List<_ChatRow> _mergedRows(String myUid) {
     final byConvo = <String, _ChatRow>{};
     for (final s in _localSummaries) {
       byConvo[s.conversationId] = _ChatRow(
         conversationId: s.conversationId,
         peerUid: s.peerUid,
+        isGroup: s.isGroup,
+        title: s.isGroup ? (s.groupName ?? 'Group') : null,
+        avatarUrl: s.isGroup ? s.groupAvatarUrl : null,
         lastText: s.lastText,
         lastAt: s.lastAt,
         unreadCount: s.unreadCount,
@@ -132,8 +157,55 @@ class _ChatListScreenState extends State<ChatListScreen> {
         isPlaceholder: true,
       );
     }
+    for (final doc in _groupDocs) {
+      if (byConvo.containsKey(doc.id)) continue;
+      final data = doc.data();
+      final members = List<String>.from(data['members'] ?? []);
+      if (!members.contains(myUid)) continue;
+      final createdAt = (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+      byConvo[doc.id] = _ChatRow(
+        conversationId: doc.id,
+        peerUid: myUid,
+        isGroup: true,
+        title: (data['name'] as String?) ?? 'Group',
+        avatarUrl: data['avatarUrl'] as String?,
+        lastText: 'Group created — say hi 👋',
+        lastAt: createdAt,
+        unreadCount: 0,
+        isPlaceholder: true,
+      );
+    }
     final rows = byConvo.values.toList()..sort((a, b) => b.lastAt.compareTo(a.lastAt));
     return rows;
+  }
+
+  void _showNewChatSheet() {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.chat_bubble_outline_rounded),
+              title: const Text('New chat'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.groups_rounded),
+              title: const Text('New group'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateGroupScreen()));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -165,7 +237,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       ),
       body: Builder(
         builder: (context) {
-          if (myUid == null || !_localLoaded || !_convoLoaded) {
+          if (myUid == null || !_localLoaded || !_convoLoaded || !_groupsLoaded) {
             return const Center(child: CircularProgressIndicator());
           }
           final rows = _mergedRows(myUid);
@@ -181,7 +253,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     Text('No conversations yet', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 8),
                     Text(
-                      'Tap the button below to message a contact.',
+                      'Tap the button below to message a contact or start a group.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
@@ -194,6 +266,42 @@ class _ChatListScreenState extends State<ChatListScreen> {
             itemCount: rows.length,
             itemBuilder: (context, i) {
               final row = rows[i];
+
+              if (row.isGroup) {
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: scheme.primaryContainer,
+                    backgroundImage: row.avatarUrl != null ? NetworkImage(row.avatarUrl!) : null,
+                    child: row.avatarUrl == null ? const Icon(Icons.groups_rounded) : null,
+                  ),
+                  title: Text(row.title ?? 'Group'),
+                  subtitle: row.isPlaceholder
+                      ? Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic))
+                      : FutureBuilder<String>(
+                          future: _usernameFor(row.peerUid),
+                          builder: (context, nameSnap) {
+                            final sender = nameSnap.data;
+                            final prefix = sender != null ? '$sender: ' : '';
+                            return Text('$prefix${row.lastText}', maxLines: 1, overflow: TextOverflow.ellipsis);
+                          },
+                        ),
+                  trailing: row.unreadCount > 0
+                      ? CircleAvatar(
+                          radius: 11,
+                          backgroundColor: scheme.primary,
+                          child: Text(
+                            '${row.unreadCount}',
+                            style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700),
+                          ),
+                        )
+                      : null,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId)),
+                  ),
+                );
+              }
+
               return FutureBuilder<String>(
                 future: _usernameFor(row.peerUid),
                 builder: (context, nameSnap) {
@@ -238,10 +346,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const ContactsScreen()),
-        ),
+        onPressed: _showNewChatSheet,
         child: const Icon(Icons.chat_rounded),
       ),
     );
