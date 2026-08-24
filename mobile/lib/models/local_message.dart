@@ -37,11 +37,23 @@ class ConversationSummary {
   final DateTime lastAt;
   final int unreadCount;
 
+  /// Phase 7 (group chats): true when `conversationId` is a group id (see
+  /// GroupService.newGroupId). For a group row, [peerUid] is whoever sent
+  /// the LAST message (see LocalMessageStore — group rows always set
+  /// peer_uid == sender_uid), not "the other person" the way it means for
+  /// a 1:1 row.
+  final bool isGroup;
+  final String? groupName;
+  final String? groupAvatarUrl;
+
   const ConversationSummary({
     required this.conversationId,
     required this.peerUid,
     required this.lastText,
     required this.lastAt,
     required this.unreadCount,
+    this.isGroup = false,
+    this.groupName,
+    this.groupAvatarUrl,
   });
 }
