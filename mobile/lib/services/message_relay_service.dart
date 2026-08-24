@@ -29,6 +29,14 @@ class NotSignedInException implements Exception {
 /// insert -> the recipient's device picks it up over Realtime (or on
 /// reconnect) -> decrypts -> saves locally -> deletes the row. Nothing about
 /// message content is meant to sit in the `message_relay` table for long.
+///
+/// This class is ALSO, unmodified, the receive path for group messages
+/// (Phase 7 — see GroupMessageRelayService for the send/fan-out side). A
+/// row fanned out to a group member looks exactly like a 1:1 row to
+/// everything below: same columns, same realtime subscription (filtered
+/// only by `recipient_uid`), same decrypt/store/react logic. The one place
+/// that genuinely needed to know the difference is _receiveMediaMessage's
+/// Storage cleanup — see its comment.
 class MessageRelayService {
   static final _client = Supabase.instance.client;
   static final _db = FirebaseFirestore.instance;
@@ -44,9 +52,11 @@ class MessageRelayService {
   static const _mediaBucket = 'media';
   static const _mediaTypes = {'image', 'video', 'voice'};
 
-  /// A safe accessor instead of a bare `!` null-check — a null session here
-  /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
-  /// NotSignedInException instead of an unhandled null-check crash.
+  /// Group conversation ids are always "group_<uuid>" (see
+  /// GroupService.newGroupId) — a 1:1 id is always two sorted uids joined
+  /// with "_" and can never itself start with that literal prefix.
+  static const _groupIdPrefix = 'group_';
+
   /// A safe accessor instead of a bare `!` null-check — a null session here
   /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
   /// NotSignedInException instead of an unhandled null-check crash.
@@ -211,7 +221,7 @@ class MessageRelayService {
   /// Handles an incoming image/video/voice message. [payload] is the small
   /// JSON blob (fileKey, nonce, mime, extension, fileName, plus optional
   /// width/height/durationMs) that was itself already decrypted via the
-  /// normal X25519 peer scheme in [_decryptRow] — the actual media bytes
+  /// normal Signal peer scheme in [_decryptRow] — the actual media bytes
   /// are separately encrypted under the random key inside that JSON.
   static Future<void> _receiveMediaMessage({
     required Map<String, dynamic> row,
@@ -250,14 +260,24 @@ class MessageRelayService {
       expiresAt: _expiryFor(createdAt, ttlHours),
     );
 
-    // Forward-only: now that our own local copy is safely saved, the
-    // encrypted blob has no reason to keep sitting in Supabase Storage.
-    // Best-effort — a failure here just means the nightly cleanup job
-    // (scripts/cleanup.js) removes it later instead; it never blocks
-    // the message from showing up for the recipient.
-    try {
-      await MediaService.deleteRemote(_mediaBucket, remotePath);
-    } catch (_) {}
+    // Forward-only for 1:1 chats: now that our own local copy is safely
+    // saved, the encrypted blob has no reason to keep sitting in Supabase
+    // Storage. Group chats are the one exception (Phase 7): the SAME
+    // media_path is shared by every fanned-out copy of a group media
+    // message (see GroupMessageRelayService.sendGroupMediaMessage), so an
+    // early recipient deleting it would 404 the download for every other
+    // member who hasn't opened the chat yet. For groups, the blob is left
+    // in Storage and cleaned up later by scripts/cleanup.js's normal
+    // TTL-based sweep instead.
+    // UNVERIFIED: this branch (the group half) hasn't been exercised on a
+    // real device with 3+ accounts — please test a group photo/voice send
+    // with multiple recipients before relying on it.
+    final isGroupConversation = (row['conversation_id'] as String).startsWith(_groupIdPrefix);
+    if (!isGroupConversation) {
+      try {
+        await MediaService.deleteRemote(_mediaBucket, remotePath);
+      } catch (_) {}
+    }
   }
 
   /// Reads the narrow blocks/{recipientUid}_{myUid} lookup doc (see
