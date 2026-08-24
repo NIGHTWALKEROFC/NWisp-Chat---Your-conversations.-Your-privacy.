@@ -220,9 +220,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       }
       try {
         await attemptSend();
-      } catch (_) {
+      } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message could not be sent')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
       }
     } on NotSignedInException catch (e) {
       if (!mounted) return;
@@ -232,7 +232,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message could not be sent')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
     }
     await _conversationService.setTyping(widget.conversationId, false);
   }
@@ -357,7 +357,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not send that — please try again.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
     } finally {
       if (mounted) setState(() => _sendingMedia = false);
     }
@@ -484,7 +484,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not send that — please try again.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
     } finally {
       try {
         if (await file.exists()) await file.delete();
