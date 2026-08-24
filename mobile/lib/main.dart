@@ -11,12 +11,14 @@ import 'services/theme_service.dart';
 import 'services/branding_service.dart';
 import 'services/auth_service.dart';
 import 'services/device_session_service.dart';
+import 'services/group_service.dart';
 import 'services/local_message_store.dart';
 import 'services/message_relay_service.dart';
 import 'services/session_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
 import 'screens/chat/chat_detail_screen.dart';
+import 'screens/groups/group_chat_screen.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -104,10 +106,21 @@ void _openChatFromNotificationData(Map<String, dynamic> data) {
   _openChat(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername ?? 'Chat');
 }
 
+/// Group ids are always "group_<uuid>" (see GroupService.newGroupId) — a
+/// tapped push/local notification for a group message routes to
+/// GroupChatScreen instead of the 1:1 ChatDetailScreen. [peerUid] is
+/// unused in that branch (the group screen resolves its own member list
+/// from Firestore) but is still required by the shared call sites above.
 void _openChat({required String conversationId, required String peerUid, required String peerUsername}) {
   // Post-frame so this is safe even if it fires before the first widget
   // tree (e.g. cold start) has finished building.
   WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (conversationId.startsWith('group_')) {
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: conversationId)),
+      );
+      return;
+    }
     navigatorKey.currentState?.push(
       MaterialPageRoute(
         builder: (_) => ChatDetailScreen(
@@ -120,11 +133,12 @@ void _openChat({required String conversationId, required String peerUid, require
   });
 }
 
-/// Starts/stops the Supabase message relay listener and local session setup
-/// whenever the Firebase auth state changes, and runs a light periodic
-/// sweep to delete any local messages whose auto-delete timer has expired
-/// while the app is in the foreground (see the "disappearing messages"
-/// note in the writeup for the background-execution caveat).
+/// Starts/stops the Supabase message relay listener, the group-metadata
+/// cache, and local session setup whenever the Firebase auth state
+/// changes, and runs a light periodic sweep to delete any local messages
+/// whose auto-delete timer has expired while the app is in the foreground
+/// (see the "disappearing messages" note in the writeup for the
+/// background-execution caveat).
 ///
 /// SessionService.prepareForUser is idempotent for a given uid (it just
 /// reloads existing keys once the account matches), so re-running it here
@@ -136,6 +150,7 @@ void _setUpMessagingLifecycle() {
   FirebaseAuth.instance.authStateChanges().listen((user) async {
     if (user == null) {
       MessageRelayService.stop();
+      GroupService.instance.stopCaching();
       DeviceSessionService.instance.stopWatching();
       sweepTimer?.cancel();
       return;
@@ -143,6 +158,7 @@ void _setUpMessagingLifecycle() {
     await SessionService.prepareForUser(user.uid);
     await LocalMessageStore.purgeExpired();
     await MessageRelayService.start();
+    GroupService.instance.startCaching();
     sweepTimer?.cancel();
     sweepTimer = Timer.periodic(const Duration(seconds: 30), (_) => LocalMessageStore.purgeExpired());
 
