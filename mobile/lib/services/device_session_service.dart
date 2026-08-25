@@ -56,7 +56,7 @@ class DeviceSessionService {
       'activeDeviceId': deviceId,
       'activeDeviceLabel': label,
       'activeSince': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
     await _historyRef(uid).add({
       'event': 'login',
       'deviceId': deviceId,
@@ -102,9 +102,32 @@ class DeviceSessionService {
     _watchSub = null;
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> historyStream(String uid) {
-    return _historyRef(uid).orderBy('timestamp', descending: true).limit(50).snapshots();
+  /// [after] is normally the account's `historyClearedAt` timestamp (see
+  /// [clearHistoryView]) — pass it to hide everything at or before that
+  /// point. The underlying documents are never actually removed (see this
+  /// class's own header comment, and firestore.rules' history block: it's
+  /// append-only by design).
+  Stream<QuerySnapshot<Map<String, dynamic>>> historyStream(String uid, {DateTime? after}) {
+    Query<Map<String, dynamic>> query = _historyRef(uid).orderBy('timestamp', descending: true).limit(50);
+    if (after != null) {
+      query = _historyRef(uid)
+          .where('timestamp', isGreaterThan: Timestamp.fromDate(after))
+          .orderBy('timestamp', descending: true)
+          .limit(50);
+    }
+    return query.snapshots();
   }
 
   Stream<DocumentSnapshot<Map<String, dynamic>>> sessionStream(String uid) => _sessionRef(uid).snapshots();
+
+  /// "Clear activity" on the Account Security screen. Doesn't delete the
+  /// underlying history documents — firestore.rules makes that collection
+  /// append-only on purpose, so an attacker who got hold of the account
+  /// couldn't erase evidence of their own login. This just stamps a
+  /// cutoff time on the (owner-only) session doc; [historyStream]'s
+  /// `after` param uses it to hide anything older, from THIS device's
+  /// point of view, without touching the underlying record.
+  Future<void> clearHistoryView(String uid) async {
+    await _sessionRef(uid).set({'historyClearedAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
+  }
 }
