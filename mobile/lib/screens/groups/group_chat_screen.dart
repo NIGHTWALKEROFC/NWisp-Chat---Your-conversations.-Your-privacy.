@@ -22,6 +22,25 @@ import 'group_info_screen.dart';
 
 const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉', '😍', '👏', '💯', '😡'];
 
+String _mediaLabel(String type) {
+  switch (type) {
+    case 'image':
+      return '📷 Photo';
+    case 'video':
+      return '🎥 Video';
+    case 'voice':
+      return '🎤 Voice message';
+    default:
+      return type;
+  }
+}
+
+String _fmtSeconds(int totalSeconds) {
+  final m = (totalSeconds ~/ 60).toString().padLeft(2, '0');
+  final s = (totalSeconds % 60).toString().padLeft(2, '0');
+  return '$m:$s';
+}
+
 class GroupChatScreen extends StatefulWidget {
   final String groupId;
   const GroupChatScreen({super.key, required this.groupId});
@@ -59,6 +78,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    _textController.addListener(() => setState(() {}));
     _msgSub = LocalMessageStore.watchConversation(widget.groupId).listen((list) {
       if (!mounted) return;
       setState(() => _messages = list);
@@ -126,8 +146,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _onTextChanged(String value) {
-    GroupService.instance.setTyping(widget.groupId, value.isNotEmpty);
-    setState(() {});
+    GroupService.instance.setTyping(widget.groupId, value.trim().isNotEmpty);
   }
 
   List<String> get _otherMembers => _memberUids.where((u) => u != _myUid).toList();
@@ -373,25 +392,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   void _showMessageActions(LocalMessage message) {
     final mine = message.isMine;
+    final scheme = Theme.of(context).colorScheme;
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
         child: Wrap(
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Wrap(
-                alignment: WrapAlignment.center,
-                children: _quickReactions.map((e) {
-                  return IconButton(
-                    onPressed: () {
-                      Navigator.pop(sheetContext);
-                      _react(message, e);
-                    },
-                    icon: Text(e, style: const TextStyle(fontSize: 22)),
-                  );
-                }).toList(),
+            SizedBox(
+              height: 52,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: _quickReactions.map((e) {
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(24),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        _react(message, e);
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                        child: Text(e, style: const TextStyle(fontSize: 24)),
+                      ),
+                    );
+                  }).toList(),
+                ),
               ),
             ),
             const Divider(height: 1),
@@ -422,8 +449,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ),
             if (mine)
               ListTile(
-                leading: Icon(Icons.delete_forever_outlined, color: Theme.of(context).colorScheme.error),
-                title: Text('Delete for everyone', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                leading: Icon(Icons.delete_forever_outlined, color: scheme.error),
+                title: Text('Delete for everyone', style: TextStyle(color: scheme.error)),
                 onTap: () {
                   Navigator.pop(sheetContext);
                   GroupMessageRelayService.deleteForEveryone(
@@ -433,6 +460,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   );
                 },
               ),
+            const SizedBox(height: 4),
           ],
         ),
       ),
@@ -447,74 +475,160 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return null;
   }
 
+  Widget _replyPreviewChip(LocalMessage target, bool mine, ColorScheme scheme) {
+    final accent = mine ? scheme.onPrimary : scheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(left: BorderSide(color: accent, width: 3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(_nameFor(target.senderUid), style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: accent)),
+          Text(
+            target.messageType == 'text' ? target.text : _mediaLabel(target.messageType),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: (mine ? scheme.onPrimary : scheme.onSurfaceVariant).withValues(alpha: 0.9)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _reactionsPill(LocalMessage message, ColorScheme scheme, bool mine) {
+    final counts = <String, int>{};
+    for (final e in message.reactions.values) {
+      counts[e] = (counts[e] ?? 0) + 1;
+    }
+    final accent = mine ? scheme.onPrimary : scheme.primary;
+    return Wrap(
+      spacing: 4,
+      runSpacing: 4,
+      children: counts.entries.map((entry) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          decoration: BoxDecoration(color: accent.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(10)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(entry.key, style: const TextStyle(fontSize: 12)),
+              if (entry.value > 1) ...[
+                const SizedBox(width: 3),
+                Text('${entry.value}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: accent)),
+              ],
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   Widget _bubbleFor(LocalMessage message) {
     final scheme = Theme.of(context).colorScheme;
     final mine = message.isMine;
     final replyTarget = _findMessage(message.replyToId);
+    final showsHeader = !mine || replyTarget != null;
+    final isMedia = message.messageType == 'image' || message.messageType == 'video';
 
-    Widget content;
-    switch (message.messageType) {
-      case 'image':
-        content = message.mediaPath == null ? const Text('Photo unavailable') : _ImageBubble(path: message.mediaPath!);
-        break;
-      case 'video':
-        content = message.mediaPath == null ? const Text('Video unavailable') : _VideoBubble(path: message.mediaPath!);
-        break;
-      case 'voice':
-        content = message.mediaPath == null ? const Text('Voice message unavailable') : _VoiceBubble(path: message.mediaPath!, isMine: mine);
-        break;
-      default:
-        content = Text(message.text, style: TextStyle(color: mine ? scheme.onPrimary : scheme.onSurface));
+    Widget? mediaWidget;
+    if (message.messageType == 'image') {
+      mediaWidget = message.mediaPath == null
+          ? _brokenMediaTile(scheme, 'Photo unavailable')
+          : _ImageBubble(path: message.mediaPath!);
+    } else if (message.messageType == 'video') {
+      mediaWidget = message.mediaPath == null
+          ? _brokenMediaTile(scheme, 'Video unavailable')
+          : _VideoBubble(path: message.mediaPath!);
     }
+
+    final radius = BorderRadius.only(
+      topLeft: const Radius.circular(18),
+      topRight: const Radius.circular(18),
+      bottomLeft: Radius.circular(mine ? 18 : 4),
+      bottomRight: Radius.circular(mine ? 4 : 18),
+    );
 
     return GestureDetector(
       onLongPress: () => _showMessageActions(message),
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
         child: Container(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
           margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 10),
-          padding: const EdgeInsets.all(10),
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            color: mine ? scheme.primary : scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(14),
+            color: mine ? scheme.primary : scheme.surfaceContainerHigh,
+            borderRadius: radius,
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 4, offset: const Offset(0, 1))],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (!mine)
+              if (showsHeader)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 3),
-                  child: Text(_nameFor(message.senderUid), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: scheme.primary)),
-                ),
-              if (replyTarget != null)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 6),
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: (mine ? scheme.onPrimary : scheme.primary).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${_nameFor(replyTarget.senderUid)}: ${replyTarget.messageType == 'text' ? replyTarget.text : replyTarget.messageType}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: mine ? scheme.onPrimary : scheme.onSurfaceVariant),
+                  padding: EdgeInsets.fromLTRB(12, 8, 12, mediaWidget != null ? 6 : 2),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!mine)
+                        Padding(
+                          padding: EdgeInsets.only(bottom: replyTarget != null ? 4 : 0),
+                          child: Text(_nameFor(message.senderUid), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: scheme.primary)),
+                        ),
+                      if (replyTarget != null) _replyPreviewChip(replyTarget, mine, scheme),
+                    ],
                   ),
                 ),
-              content,
+              if (mediaWidget != null) mediaWidget,
+              if (message.messageType == 'voice')
+                Padding(
+                  padding: EdgeInsets.fromLTRB(10, showsHeader ? 0 : 8, 14, 8),
+                  child: message.mediaPath == null
+                      ? Text('Voice message unavailable', style: TextStyle(color: mine ? scheme.onPrimary : scheme.onSurface))
+                      : _VoiceBubble(path: message.mediaPath!, isMine: mine),
+                ),
+              if (message.messageType == 'text' || (isMedia && message.text.isNotEmpty))
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    12,
+                    (mediaWidget != null) ? 8 : (showsHeader ? 0 : 8),
+                    12,
+                    message.reactions.isEmpty ? 8 : 2,
+                  ),
+                  child: Text(message.text, style: TextStyle(color: mine ? scheme.onPrimary : scheme.onSurface, fontSize: 15, height: 1.3)),
+                ),
               if (message.reactions.isNotEmpty)
                 Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Wrap(
-                    spacing: 2,
-                    children: message.reactions.values.toSet().map((e) => Text(e, style: const TextStyle(fontSize: 13))).toList(),
-                  ),
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                  child: _reactionsPill(message, scheme, mine),
                 ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _brokenMediaTile(ColorScheme scheme, String label) {
+    return Container(
+      height: 140,
+      alignment: Alignment.center,
+      color: scheme.surfaceContainerHighest,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.broken_image_outlined, color: scheme.onSurfaceVariant),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+        ],
       ),
     );
   }
@@ -556,28 +670,59 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? Center(child: Text('No messages yet — say hi 👋', style: TextStyle(color: scheme.onSurfaceVariant)))
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.groups_rounded, size: 56, color: scheme.primary.withValues(alpha: 0.4)),
+                          const SizedBox(height: 12),
+                          Text('No messages yet — say hi 👋', style: TextStyle(color: scheme.onSurfaceVariant)),
+                        ],
+                      ),
+                    ),
+                  )
                 : ListView.builder(
                     controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
                     itemCount: _messages.length,
                     itemBuilder: (context, i) => _bubbleFor(_messages[i]),
                   ),
           ),
           if (_replyingTo != null)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              color: scheme.surfaceContainerHighest,
+              margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(12),
+                border: Border(left: BorderSide(color: scheme.primary, width: 3)),
+              ),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Expanded(
-                    child: Text(
-                      'Replying to ${_nameFor(_replyingTo!.senderUid)}: ${_replyingTo!.messageType == 'text' ? _replyingTo!.text : _replyingTo!.messageType}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('Replying to ${_nameFor(_replyingTo!.senderUid)}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: scheme.primary)),
+                        Text(
+                          _replyingTo!.messageType == 'text' ? _replyingTo!.text : _mediaLabel(_replyingTo!.messageType),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                        ),
+                      ],
                     ),
                   ),
-                  IconButton(icon: const Icon(Icons.close, size: 18), onPressed: () => setState(() => _replyingTo = null)),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => setState(() => _replyingTo = null),
+                  ),
                 ],
               ),
             ),
@@ -592,48 +737,96 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Widget _buildRecordingBar(ColorScheme scheme) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        children: [
-          IconButton(icon: const Icon(Icons.delete_outline), onPressed: _cancelVoiceRecording),
-          Icon(Icons.fiber_manual_record, color: scheme.error, size: 14),
-          const SizedBox(width: 6),
-          Text('Recording voice message… ${_recordSeconds}s', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12)),
-          const Spacer(),
-          IconButton(icon: Icon(Icons.send, color: scheme.primary), onPressed: _stopAndSendVoiceRecording, tooltip: 'Send voice message'),
-        ],
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(26)),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Icon(Icons.fiber_manual_record, color: scheme.error, size: 14),
+            const SizedBox(width: 8),
+            Text('Recording  ${_fmtSeconds(_recordSeconds)}', style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
+            const Spacer(),
+            IconButton(icon: Icon(Icons.delete_outline, color: scheme.error), onPressed: _cancelVoiceRecording, tooltip: 'Cancel'),
+            Material(
+              color: scheme.primary,
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: _stopAndSendVoiceRecording,
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Icon(Icons.send_rounded, color: scheme.onPrimary, size: 18),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildComposeBar(ColorScheme scheme) {
+    final hasText = _textController.text.trim().isNotEmpty;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          IconButton(icon: const Icon(Icons.attach_file_outlined), onPressed: _sendingMedia ? null : _showAttachSheet),
           Expanded(
-            child: TextField(
-              controller: _textController,
-              onChanged: _onTextChanged,
-              minLines: 1,
-              maxLines: 5,
-              decoration: const InputDecoration(
-                hintText: 'Message',
-                border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(24))),
-                contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 46),
+              decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(26)),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.attach_file_outlined, color: scheme.onSurfaceVariant),
+                    onPressed: _sendingMedia ? null : _showAttachSheet,
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 12, bottom: 12, right: 8),
+                      child: TextField(
+                        controller: _textController,
+                        onChanged: _onTextChanged,
+                        minLines: 1,
+                        maxLines: 5,
+                        textCapitalization: TextCapitalization.sentences,
+                        decoration: const InputDecoration(
+                          hintText: 'Message',
+                          isCollapsed: true,
+                          filled: false,
+                          contentPadding: EdgeInsets.zero,
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 8),
           _sendingMedia
-              ? const Padding(
-                  padding: EdgeInsets.all(8),
-                  child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+              ? Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.2, color: scheme.primary)),
                 )
-              : IconButton(
-                  icon: Icon(_textController.text.trim().isEmpty ? Icons.mic : Icons.send, color: scheme.primary),
-                  onPressed: _textController.text.trim().isEmpty ? _startVoiceRecording : _send,
+              : Material(
+                  color: scheme.primary,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: hasText ? _send : _startVoiceRecording,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Icon(hasText ? Icons.send_rounded : Icons.mic_rounded, color: scheme.onPrimary, size: 22),
+                    ),
+                  ),
                 ),
         ],
       ),
@@ -643,6 +836,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
 // ---- inline media bubble widgets — kept local to this screen since the
 // equivalents in chat_detail_screen.dart are library-private to that file --
+// These render edge-to-edge inside the parent bubble's own rounded/clipped
+// Container (see _bubbleFor) — they deliberately have NO rounding or
+// padding of their own, so there's only ever one border radius per bubble
+// instead of a visible "ring" between an inner and outer radius.
 
 class _ImageBubble extends StatelessWidget {
   final String path;
@@ -652,14 +849,12 @@ class _ImageBubble extends StatelessWidget {
     final file = File(path);
     return GestureDetector(
       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => _FullscreenImage(path: path))),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 240, minWidth: 160),
-          child: file.existsSync()
-              ? Image.file(file, fit: BoxFit.cover)
-              : Container(color: Colors.black12, height: 160, alignment: Alignment.center, child: const Icon(Icons.broken_image_outlined)),
-        ),
+      child: SizedBox(
+        width: double.infinity,
+        height: 220,
+        child: file.existsSync()
+            ? Image.file(file, fit: BoxFit.cover)
+            : Container(color: Colors.black12, alignment: Alignment.center, child: const Icon(Icons.broken_image_outlined)),
       ),
     );
   }
@@ -685,25 +880,25 @@ class _VideoBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => _FullscreenVideo(path: path))),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: 220,
-          height: 160,
-          color: Colors.black87,
-          alignment: Alignment.center,
-          child: const Icon(Icons.play_circle_fill, color: Colors.white, size: 52),
+      child: SizedBox(
+        width: double.infinity,
+        height: 200,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Container(color: Colors.black87),
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.35), shape: BoxShape.circle),
+                child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 34),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
-}
-
-class _FullscreenVideo extends StatefulWidget {
-  final String path;
-  const _FullscreenVideo({required this.path});
-  @override
-  State<_FullscreenVideo> createState() => _FullscreenVideoState();
 }
 
 class _FullscreenVideoState extends State<_FullscreenVideo> {
@@ -738,6 +933,13 @@ class _FullscreenVideoState extends State<_FullscreenVideo> {
   }
 }
 
+class _FullscreenVideo extends StatefulWidget {
+  final String path;
+  const _FullscreenVideo({required this.path});
+  @override
+  State<_FullscreenVideo> createState() => _FullscreenVideoState();
+}
+
 class _VoiceBubble extends StatefulWidget {
   final String path;
   final bool isMine;
@@ -751,10 +953,20 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
   bool _loaded = false;
+  late final List<double> _bars;
 
   @override
   void initState() {
     super.initState();
+    // A stable pseudo-waveform derived from the file path's hash — purely
+    // decorative (this app doesn't analyze real audio amplitude). It just
+    // needs to look the same every time this exact message re-renders, not
+    // represent the actual recorded waveform.
+    final seed = widget.path.hashCode;
+    _bars = List.generate(26, (i) {
+      final v = ((seed >> (i % 20)) & 0xF) / 15.0;
+      return 0.28 + v * 0.72;
+    });
     _player.setFilePath(widget.path).then((d) {
       if (!mounted) return;
       setState(() {
@@ -764,8 +976,8 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
     }).catchError((_) {
       if (mounted) setState(() => _loaded = true);
     });
-    _player.positionStream.listen((p) {
-      if (mounted) setState(() => _position = p);
+    _player.positionStream.listen((pos) {
+      if (mounted) setState(() => _position = pos);
     });
     _player.playerStateStream.listen((s) {
       if (s.processingState == ProcessingState.completed) {
@@ -791,34 +1003,56 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final fg = widget.isMine ? scheme.onPrimary : scheme.onSurface;
+    final dim = fg.withValues(alpha: 0.32);
     final total = _duration.inMilliseconds == 0 ? 1 : _duration.inMilliseconds;
     final progress = (_position.inMilliseconds / total).clamp(0.0, 1.0);
+    final playedBars = (progress * _bars.length).round();
+
     return SizedBox(
-      width: 200,
+      width: 190,
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          IconButton(
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            onPressed: !_loaded ? null : () => _player.playing ? _player.pause() : _player.play(),
-            icon: StreamBuilder<PlayerState>(
-              stream: _player.playerStateStream,
-              builder: (context, snap) =>
-                  Icon(snap.data?.playing ?? false ? Icons.pause_circle_filled : Icons.play_circle_fill, color: fg, size: 30),
-            ),
+          StreamBuilder<PlayerState>(
+            stream: _player.playerStateStream,
+            builder: (context, snap) {
+              final playing = snap.data?.playing ?? false;
+              return InkWell(
+                customBorder: const CircleBorder(),
+                onTap: !_loaded ? null : () => playing ? _player.pause() : _player.play(),
+                child: Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(color: fg.withValues(alpha: 0.15), shape: BoxShape.circle),
+                  child: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: fg, size: 20),
+                ),
+              );
+            },
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(value: progress, minHeight: 4, backgroundColor: fg.withValues(alpha: 0.25), valueColor: AlwaysStoppedAnimation(fg)),
+                SizedBox(
+                  height: 22,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: List.generate(_bars.length, (i) {
+                      final played = i < playedBars;
+                      return Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 0.8),
+                          height: 22 * _bars[i],
+                          decoration: BoxDecoration(color: played ? fg : dim, borderRadius: BorderRadius.circular(2)),
+                        ),
+                      );
+                    }),
+                  ),
                 ),
-                const SizedBox(height: 4),
-                Text(_fmt(_position.inMilliseconds > 0 ? _position : _duration), style: TextStyle(fontSize: 11, color: fg.withValues(alpha: 0.8))),
+                const SizedBox(height: 3),
+                Text(_fmt(_position.inMilliseconds > 0 ? _position : _duration), style: TextStyle(fontSize: 10.5, color: fg.withValues(alpha: 0.75))),
               ],
             ),
           ),
