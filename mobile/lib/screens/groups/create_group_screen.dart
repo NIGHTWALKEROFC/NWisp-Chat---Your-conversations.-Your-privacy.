@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
 import '../../services/media_service.dart';
+import '../contacts/find_users_screen.dart';
 import 'group_chat_screen.dart';
 
 class CreateGroupScreen extends StatefulWidget {
@@ -125,10 +126,21 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                   return Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
-                      child: Text(
-                        'Add some contacts first — a group is built from your contacts.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'A group is built from your contacts — you don\'t have any yet.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FindUsersScreen())),
+                            icon: const Icon(Icons.search),
+                            label: const Text('Find people by username'),
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -157,8 +169,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                 );
               },
             ),
-          ),
-        ],
+          );
       ),
     );
   }
