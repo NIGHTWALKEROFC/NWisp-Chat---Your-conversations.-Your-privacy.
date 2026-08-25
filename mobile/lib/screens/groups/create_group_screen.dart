@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../services/contact_service.dart';
@@ -10,7 +9,13 @@ import '../contacts/find_users_screen.dart';
 import 'group_chat_screen.dart';
 
 class CreateGroupScreen extends StatefulWidget {
-  const CreateGroupScreen({super.key});
+  /// Pre-checks these uids when arriving from ContactsScreen's long-press
+  /// multi-select (see contacts_screen.dart) — usernames for them are
+  /// resolved the normal way once this screen's own contacts stream loads,
+  /// so nothing extra needs to be passed in for that.
+  final Set<String> initialSelectedUids;
+
+  const CreateGroupScreen({super.key, this.initialSelectedUids = const {}});
 
   @override
   State<CreateGroupScreen> createState() => _CreateGroupScreenState();
@@ -19,7 +24,7 @@ class CreateGroupScreen extends StatefulWidget {
 class _CreateGroupScreenState extends State<CreateGroupScreen> {
   final _contactService = ContactService();
   final _nameController = TextEditingController();
-  final Set<String> _selectedUids = {};
+  late final Set<String> _selectedUids = Set<String>.from(widget.initialSelectedUids);
   File? _avatarFile;
   bool _creating = false;
 
@@ -130,7 +135,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
-                            'A group is built from your contacts — you don\'t have any yet.',
+                            "A group is built from your contacts — you don't have any yet.",
                             textAlign: TextAlign.center,
                             style: TextStyle(color: scheme.onSurfaceVariant),
                           ),
@@ -169,7 +174,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                 );
               },
             ),
-          );
+          ),
+        ],
       ),
     );
   }
