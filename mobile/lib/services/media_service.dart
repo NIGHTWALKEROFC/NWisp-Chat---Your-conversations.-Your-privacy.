@@ -5,12 +5,28 @@ import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+/// If uploads/downloads/deletes here keep failing while text messages work
+/// fine, it's almost certainly ONE of these two dashboard settings, not a
+/// bug in this file:
+///  1. Supabase dashboard -> Edge Functions -> get-signed-url -> Settings
+///     -> "Enforce JWT Verification" must be OFF. This function verifies
+///     the caller's FIREBASE token itself (see its own file) - Supabase's
+///     platform-level JWT gate expects a SUPABASE token instead and will
+///     reject a Firebase one before the function code ever runs.
+///  2. Supabase dashboard -> Storage -> a bucket literally named "media"
+///     (private) must exist.
+/// Every exception below now includes the real HTTP status + response body
+/// so whichever it is shows up directly in the app's own error snackbar.
 class MediaService {
   static const _edgeFunctionUrl =
       'https://bgbmrtwbndoewwwjxnxa.supabase.co/functions/v1/get-signed-url';
 
   static Future<String> _idToken() async {
     return (await FirebaseAuth.instance.currentUser!.getIdToken())!;
+  }
+
+  static Never _throwWithDetail(String action, http.Response res) {
+    throw Exception('$action failed (HTTP ${res.statusCode}): ${res.body}');
   }
 
   /// Private, signed-URL bucket — used for chat media and stories, where
@@ -22,7 +38,7 @@ class MediaService {
       headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'upload'}),
     );
-    if (res.statusCode != 200) throw Exception('Failed to get upload URL');
+    if (res.statusCode != 200) _throwWithDetail('Failed to get upload URL', res);
     final data = jsonDecode(res.body);
 
     await Supabase.instance.client.storage
@@ -42,7 +58,7 @@ class MediaService {
       headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'upload'}),
     );
-    if (res.statusCode != 200) throw Exception('Failed to get upload URL');
+    if (res.statusCode != 200) _throwWithDetail('Failed to get upload URL', res);
     final data = jsonDecode(res.body);
 
     await Supabase.instance.client.storage
@@ -59,14 +75,14 @@ class MediaService {
       headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'download'}),
     );
-    if (res.statusCode != 200) throw Exception('Failed to get download URL');
+    if (res.statusCode != 200) _throwWithDetail('Failed to get download URL', res);
     return jsonDecode(res.body)['signedUrl'];
   }
 
   static Future<Uint8List> downloadBytes(String bucket, String path) async {
     final signedUrl = await getDownloadUrl(bucket, path);
     final res = await http.get(Uri.parse(signedUrl));
-    if (res.statusCode != 200) throw Exception('Failed to download media');
+    if (res.statusCode != 200) _throwWithDetail('Failed to download media', res);
     return res.bodyBytes;
   }
 
@@ -83,7 +99,7 @@ class MediaService {
       headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'delete'}),
     );
-    if (res.statusCode != 200) throw Exception('Failed to delete remote media');
+    if (res.statusCode != 200) _throwWithDetail('Failed to delete remote media', res);
   }
 
   /// Avatars are shown to everyone a user chats with, so unlike chat media
