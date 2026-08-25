@@ -11,6 +11,8 @@ import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
 import 'groups/create_group_screen.dart';
 import 'groups/group_chat_screen.dart';
+import 'settings/account_security_screen.dart';
+import 'settings/edit_profile_screen.dart';
 import 'settings/settings_screen.dart';
 
 /// A row shown on the home screen — either a real ConversationSummary (has
@@ -179,33 +181,31 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return rows;
   }
 
-  void _showNewChatSheet() {
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.chat_bubble_outline_rounded),
-              title: const Text('New chat'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen()));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.groups_rounded),
-              title: const Text('New group'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateGroupScreen()));
-              },
-            ),
-          ],
-        ),
-      ),
-    );
+  Future<void> _openProfile() async {
+    final doc = await AuthService().currentUserProfile();
+    final username = (doc.data()?['username'] as String?) ?? '';
+    if (!mounted) return;
+    Navigator.push(context, MaterialPageRoute(builder: (_) => EditProfileScreen(currentUsername: username)));
+  }
+
+  void _onMenuSelected(String value) {
+    switch (value) {
+      case 'new_chat':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const FindUsersScreen()));
+        break;
+      case 'new_group':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateGroupScreen()));
+        break;
+      case 'profile':
+        _openProfile();
+        break;
+      case 'login_activity':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const AccountSecurityScreen()));
+        break;
+      case 'settings':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+        break;
+    }
   }
 
   @override
@@ -220,18 +220,34 @@ class _ChatListScreenState extends State<ChatListScreen> {
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'Search people',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const FindUsersScreen()),
-            ),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FindUsersScreen())),
           ),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Settings',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: _onMenuSelected,
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'new_chat',
+                child: ListTile(leading: Icon(Icons.chat_bubble_outline_rounded), title: Text('New chat'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'new_group',
+                child: ListTile(leading: Icon(Icons.groups_rounded), title: Text('New group'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'profile',
+                child: ListTile(leading: Icon(Icons.person_outline), title: Text('Profile'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'login_activity',
+                child: ListTile(leading: Icon(Icons.security_outlined), title: Text('Login activity'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'settings',
+                child: ListTile(leading: Icon(Icons.settings_outlined), title: Text('Settings'), contentPadding: EdgeInsets.zero),
+              ),
+            ],
           ),
         ],
       ),
@@ -253,7 +269,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     Text('No conversations yet', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 8),
                     Text(
-                      'Tap the button below to message a contact or start a group.',
+                      'Tap the button below to message a contact, or use the menu above for a new chat or group.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
@@ -289,16 +305,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       ? CircleAvatar(
                           radius: 11,
                           backgroundColor: scheme.primary,
-                          child: Text(
-                            '${row.unreadCount}',
-                            style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700),
-                          ),
+                          child: Text('${row.unreadCount}', style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700)),
                         )
                       : null,
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId)),
-                  ),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId))),
                 );
               }
 
@@ -322,20 +332,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         ? CircleAvatar(
                             radius: 11,
                             backgroundColor: scheme.primary,
-                            child: Text(
-                              '${row.unreadCount}',
-                              style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700),
-                            ),
+                            child: Text('${row.unreadCount}', style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700)),
                           )
                         : null,
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ChatDetailScreen(
-                          conversationId: row.conversationId,
-                          peerUid: row.peerUid,
-                          peerUsername: username,
-                        ),
+                        builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
                       ),
                     ),
                   );
@@ -346,7 +349,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _showNewChatSheet,
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen())),
+        tooltip: 'Message a contact',
         child: const Icon(Icons.chat_rounded),
       ),
     );
