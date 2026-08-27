@@ -278,6 +278,34 @@ class SignalSessionService {
     );
   }
 
+  /// This device's own identity public key — used only to build the
+  /// safety-number / fingerprint comparison (see SafetyNumberService).
+  /// This is already public information by design (it's the same key
+  /// published at users/{uid}/signal/bundle.identityKey, see
+  /// _publishBundle) — exposing it here just saves a round trip through
+  /// Firestore to read back our own value.
+  Future<Uint8List> myIdentityPublicKeyBytes() async {
+    final pair = await _store.getIdentityKeyPair();
+    return pair.getPublicKey().serialize();
+  }
+
+  /// [uid]'s identity public key. Prefers whatever this device currently
+  /// has PINNED as trusted for them (see PersistentSignalProtocolStore) —
+  /// so verifying shows the key actually in effect for this session, not
+  /// necessarily whatever happens to be live in Firestore right this
+  /// second (those two only ever differ right after a real key change,
+  /// which is exactly the case the separate "Security code changed"
+  /// dialog already covers). Falls back to fetching their published
+  /// bundle directly if no session has been established with them yet.
+  Future<Uint8List?> peerIdentityPublicKeyBytes(String uid) async {
+    final pinned = await _store.getIdentity(_addressFor(uid));
+    if (pinned != null) return pinned.serialize();
+    final bundleDoc = await _bundleRef(uid).get();
+    final data = bundleDoc.data();
+    if (data == null) return null;
+    return b64ToBytes(data['identityKey'] as String);
+  }
+
   String _myUidOrThrow() {
     final uid = _currentUid;
     if (uid == null) throw StateError('Not signed in.');
