@@ -178,6 +178,18 @@ class MessageRelayService {
         final data = jsonDecode(payload) as Map<String, dynamic>;
         await LocalMessageStore.deleteMessage(data['ref'] as String);
         break;
+      case 'edit':
+        // Shared receive path for BOTH 1:1 and group edits (see
+        // GroupMessageRelayService.editGroupMessage — it fans this same
+        // message_type out to every other member, and this generic
+        // handler picks it up on each of their devices exactly like a
+        // 1:1 edit). The sender already enforced the edit-time-window
+        // check before sending (see editMessage below); the receive side
+        // trusts that the same way it already trusts a 'delete' or
+        // 'reaction' row without re-verifying timing itself.
+        final data = jsonDecode(payload) as Map<String, dynamic>;
+        await LocalMessageStore.editMessage(data['ref'] as String, data['text'] as String);
+        break;
       case 'clear':
         final data = jsonDecode(payload) as Map<String, dynamic>;
         await LocalMessageStore.clearConversation(data['conversationId'] as String);
@@ -419,6 +431,49 @@ class MessageRelayService {
       expiresAt: _expiryFor(createdAt, ttlHours),
     );
     return clientId;
+  }
+
+  /// How long after the ORIGINAL send a text message can still be edited
+  /// — matches the spirit of WhatsApp/Telegram's own edit windows. Past
+  /// this, "editing" stops being "I made a typo" and starts being able to
+  /// rewrite something the recipient may have already read, screenshotted,
+  /// or replied to. Enforced here (send side) — see the 'edit' case in
+  /// _handleRow for the (trusting) receive side.
+  static const editWindow = Duration(minutes: 15);
+
+  /// Edits a previously sent TEXT message. Media/voice messages can't be
+  /// edited the same way (there's no meaningful "corrected" version of a
+  /// photo already sent) — chat_detail_screen.dart only offers this
+  /// action for messageType == 'text' in the first place.
+  static Future<void> editMessage({
+    required String conversationId,
+    required String toUid,
+    required String messageId,
+    required String newText,
+    required DateTime originalCreatedAt,
+  }) async {
+    if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
+    if (DateTime.now().difference(originalCreatedAt) > editWindow) {
+      throw Exception('This message is too old to edit.');
+    }
+    final trimmed = newText.trim();
+    if (trimmed.isEmpty) throw Exception('Message text cannot be empty.');
+
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(
+      toUid,
+      jsonEncode({'ref': messageId, 'text': trimmed}),
+    );
+    await _client.from('message_relay').insert({
+      'conversation_id': conversationId,
+      'sender_uid': _myUid,
+      'recipient_uid': toUid,
+      'ciphertext': ciphertext,
+      'nonce': nonce,
+      'message_type': 'edit',
+      'client_id': _uuid.v4(),
+      'ttl_hours': 1,
+    });
+    await LocalMessageStore.editMessage(messageId, trimmed);
   }
 
   static Future<void> _sendReceipt({
