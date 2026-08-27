@@ -50,6 +50,9 @@ class GroupService {
       'members': members,
       'createdAt': FieldValue.serverTimestamp(),
       'chatTtlHours': null,
+      'mutedBy': <String>[],
+      'archivedBy': <String>[],
+      'description': '',
     });
     await LocalMessageStore.upsertGroupMeta(id: groupId, name: cleanName, avatarUrl: avatarUrl, memberUids: members);
   }
@@ -64,6 +67,41 @@ class GroupService {
   Future<void> updateAvatar(String groupId, String? avatarUrl) => _ref(groupId).update({'avatarUrl': avatarUrl});
 
   Future<void> setChatTtlHours(String groupId, int? hours) => _ref(groupId).update({'chatTtlHours': hours});
+
+  /// Mute/archive, same per-person model as ConversationService's 1:1
+  /// versions — a "mutedBy"/"archivedBy" array on the group doc rather
+  /// than one shared flag, so muting or archiving a group on your device
+  /// has no effect on any other member. Any member can mute/archive
+  /// (not just admins) — see firestore.rules' isSelfMutingOrArchiving()
+  /// for the matching server-side permission, since the normal group
+  /// update rule is otherwise admin-only.
+  bool isMutedByMe(Map<String, dynamic> data) {
+    final muted = List<String>.from(data['mutedBy'] ?? []);
+    return muted.contains(_myUid);
+  }
+
+  Future<void> setMuted(String groupId, bool muted) {
+    return _ref(groupId).update({
+      'mutedBy': muted ? FieldValue.arrayUnion([_myUid]) : FieldValue.arrayRemove([_myUid]),
+    });
+  }
+
+  bool isArchivedByMe(Map<String, dynamic> data) {
+    final archived = List<String>.from(data['archivedBy'] ?? []);
+    return archived.contains(_myUid);
+  }
+
+  Future<void> setArchived(String groupId, bool archived) {
+    return _ref(groupId).update({
+      'archivedBy': archived ? FieldValue.arrayUnion([_myUid]) : FieldValue.arrayRemove([_myUid]),
+    });
+  }
+
+  /// Admin-only, like renameGroup/updateAvatar — a group's description is
+  /// shared context for the whole group, not personal preference like
+  /// mute/archive above.
+  Future<void> updateDescription(String groupId, String description) =>
+      _ref(groupId).update({'description': description.trim()});
 
   Future<void> addMembers(String groupId, List<String> uids) =>
       _ref(groupId).update({'members': FieldValue.arrayUnion(uids)});
