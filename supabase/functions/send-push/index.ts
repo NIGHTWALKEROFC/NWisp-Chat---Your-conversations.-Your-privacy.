@@ -120,6 +120,23 @@ Deno.serve(async (req) => {
     }
 
     const accessToken = await getAccessToken();
+
+    // Respect the recipient's mute setting (see ConversationService/
+    // GroupService's setMuted — a "mutedBy" array on the conversation or
+    // group doc) before doing anything else. Group ids are always
+    // "group_<uuid>" (see GroupService.newGroupId in the app), so that
+    // prefix is what decides which collection to read.
+    const conversationId = String(record.conversation_id ?? "");
+    const isGroupConversation = conversationId.startsWith("group_");
+    const convoDoc = await getDoc(
+      isGroupConversation ? `groups/${conversationId}` : `conversations/${conversationId}`,
+      accessToken,
+    );
+    const mutedBy: string[] = (convoDoc?.mutedBy as string[] | undefined) ?? [];
+    if (mutedBy.includes(record.recipient_uid)) {
+      return new Response("Muted", { status: 200 });
+    }
+
     const [recipientProfile, sender] = await Promise.all([
       getDoc(`users/${record.recipient_uid}/private/profile`, accessToken),
       getDoc(`users/${record.sender_uid}`, accessToken),
