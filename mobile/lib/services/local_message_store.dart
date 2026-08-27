@@ -32,7 +32,7 @@ class LocalMessageStore {
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -49,7 +49,8 @@ class LocalMessageStore {
             reactions TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'sent',
             created_at INTEGER NOT NULL,
-            expires_at INTEGER
+            expires_at INTEGER,
+            edited_at INTEGER
           )
         ''');
         await db.execute('CREATE INDEX idx_conv ON messages(conversation_id, created_at)');
@@ -62,6 +63,14 @@ class LocalMessageStore {
         // rows are untouched by this migration.
         if (oldVersion < 2) {
           await _createGroupMetaTable(db);
+        }
+        // v2 -> v3: adds edited_at, used by the new "edit sent message"
+        // feature (see MessageRelayService.editMessage /
+        // GroupMessageRelayService's shared receive path). Existing rows
+        // simply get a NULL edited_at, which the UI already treats as
+        // "never edited".
+        if (oldVersion < 3) {
+          await db.execute('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
         }
       },
     );
@@ -139,6 +148,7 @@ class LocalMessageStore {
       'status': status,
       'created_at': createdAt.millisecondsSinceEpoch,
       'expires_at': expiresAt?.millisecondsSinceEpoch,
+      'edited_at': null,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     final msg = LocalMessage(
@@ -178,6 +188,53 @@ class LocalMessageStore {
     }
     await _db!.update('messages', {'reactions': jsonEncode(reactions)}, where: 'id = ?', whereArgs: [id]);
     _notifyConversation(rows.first['conversation_id'] as String);
+  }
+
+  /// Applies an edit to an existing message's text — used both when WE
+  /// edit our own sent message (see MessageRelayService.editMessage /
+  /// GroupMessageRelayService's edit fan-out) and when an edit arrives
+  /// FROM a peer for a message they sent us. Re-encrypts under the same
+  /// local-at-rest scheme as a normal insert; sets `edited_at` so the UI
+  /// can show an "(edited)" label. No-ops quietly if the message no
+  /// longer exists locally (e.g. already deleted) — same "leave it, don't
+  /// throw" approach the rest of this store takes for stale references.
+  static Future<void> editMessage(String id, String newText) async {
+    final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return;
+    final (encText, nonce) = await CryptoService.encryptLocal(newText);
+    await _db!.update(
+      'messages',
+      {'enc_text': encText, 'enc_nonce': nonce, 'edited_at': DateTime.now().millisecondsSinceEpoch},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    _notifyConversation(rows.first['conversation_id'] as String);
+    _notifySummaries();
+  }
+
+  /// Single-row lookup, decrypted — used by the "Resend to X" group-send
+  /// retry action (it needs the original text again) and by the edit flow
+  /// (to check the original send time against the edit window).
+  static Future<LocalMessage?> getById(String id) async {
+    final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return null;
+    return _rowToMessage(rows.first);
+  }
+
+  /// In-memory substring search across one conversation's ALREADY-STORED,
+  /// already-decrypted messages — cheap because message text lives fully
+  /// decrypted-on-demand on this device already (see the class doc
+  /// comment), so there's no server-side index to build or maintain for
+  /// this. Case-insensitive; matches message text only (not media
+  /// captions of a different type, though captions are stored in the same
+  /// `text` column so they're naturally included too). Returned oldest
+  /// first, same order as watchConversation, so the search screen can
+  /// show results in the same chronological order as the chat itself.
+  static Future<List<LocalMessage>> searchConversation(String conversationId, String query) async {
+    final needle = query.trim().toLowerCase();
+    if (needle.isEmpty) return [];
+    final all = await _loadConversation(conversationId);
+    return all.where((m) => m.text.toLowerCase().contains(needle)).toList();
   }
 
   static Future<void> deleteMessage(String id) async {
@@ -247,26 +304,31 @@ class LocalMessageStore {
     _notifySummaries();
   }
 
+  static Future<LocalMessage> _rowToMessage(Map<String, dynamic> r) async {
+    final text = await CryptoService.decryptLocal(r['enc_text'] as String, r['enc_nonce'] as String);
+    return LocalMessage(
+      id: r['id'] as String,
+      conversationId: r['conversation_id'] as String,
+      peerUid: r['peer_uid'] as String,
+      senderUid: r['sender_uid'] as String,
+      isMine: (r['is_mine'] as int) == 1,
+      text: text,
+      messageType: r['message_type'] as String,
+      mediaPath: r['media_path'] as String?,
+      replyToId: r['reply_to_id'] as String?,
+      reactions: Map<String, String>.from(jsonDecode(r['reactions'] as String)),
+      status: r['status'] as String,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(r['created_at'] as int),
+      expiresAt: r['expires_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['expires_at'] as int) : null,
+      editedAt: r['edited_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['edited_at'] as int) : null,
+    );
+  }
+
   static Future<List<LocalMessage>> _loadConversation(String conversationId) async {
     final rows = await _db!.query('messages', where: 'conversation_id = ?', whereArgs: [conversationId], orderBy: 'created_at ASC');
     final result = <LocalMessage>[];
     for (final r in rows) {
-      final text = await CryptoService.decryptLocal(r['enc_text'] as String, r['enc_nonce'] as String);
-      result.add(LocalMessage(
-        id: r['id'] as String,
-        conversationId: r['conversation_id'] as String,
-        peerUid: r['peer_uid'] as String,
-        senderUid: r['sender_uid'] as String,
-        isMine: (r['is_mine'] as int) == 1,
-        text: text,
-        messageType: r['message_type'] as String,
-        mediaPath: r['media_path'] as String?,
-        replyToId: r['reply_to_id'] as String?,
-        reactions: Map<String, String>.from(jsonDecode(r['reactions'] as String)),
-        status: r['status'] as String,
-        createdAt: DateTime.fromMillisecondsSinceEpoch(r['created_at'] as int),
-        expiresAt: r['expires_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['expires_at'] as int) : null,
-      ));
+      result.add(await _rowToMessage(r));
     }
     return result;
   }
