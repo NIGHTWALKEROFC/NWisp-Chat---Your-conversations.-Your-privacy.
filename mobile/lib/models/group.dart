@@ -15,6 +15,12 @@ class Group {
   final DateTime createdAt;
   final int? chatTtlHours;
 
+  /// Short shared context for the group ("what this chat is for") — set
+  /// and edited by admins only (see GroupService.updateDescription),
+  /// visible to every member. Empty string, not null, when unset — same
+  /// convention `name` already uses.
+  final String description;
+
   const Group({
     required this.id,
     required this.name,
@@ -24,6 +30,7 @@ class Group {
     required this.members,
     required this.createdAt,
     this.chatTtlHours,
+    this.description = '',
   });
 
   factory Group.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -37,6 +44,7 @@ class Group {
       members: List<String>.from(data['members'] ?? []),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       chatTtlHours: (data['chatTtlHours'] as num?)?.toInt(),
+      description: (data['description'] as String?) ?? '',
     );
   }
 
