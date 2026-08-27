@@ -99,6 +99,16 @@ class ContactService {
         .snapshots();
   }
 
+  /// Looks up a single user by uid — used by the QR-code add-contact flow
+  /// (see QrCodeScreen), since a scanned code encodes the other person's
+  /// uid directly rather than something you'd type into [searchUsers].
+  Future<Map<String, dynamic>?> userByUid(String uid) async {
+    if (uid == _myUid) return null;
+    final doc = await _db.collection('users').doc(uid).get();
+    if (!doc.exists) return null;
+    return {'uid': doc.id, ...?doc.data()};
+  }
+
   Future<void> removeContact(String contactUid) async {
     final batch = _db.batch();
     batch.delete(_db.collection('users').doc(_myUid).collection('contacts').doc(contactUid));
