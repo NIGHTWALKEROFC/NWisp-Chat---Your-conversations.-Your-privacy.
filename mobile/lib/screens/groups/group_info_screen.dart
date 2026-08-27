@@ -8,6 +8,7 @@ import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
 import '../../services/media_service.dart';
 import '../chat_list_screen.dart';
+import '../security/safety_number_screen.dart';
 
 const _groupTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never, hours after that
 
@@ -49,6 +50,30 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     );
     if (name == null || name.isEmpty) return;
     await GroupService.instance.renameGroup(widget.groupId, name);
+  }
+
+  /// Admin-only, like [_rename] — see GroupService.updateDescription.
+  Future<void> _editDescription(Group group) async {
+    final controller = TextEditingController(text: group.description);
+    final description = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Group description'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 3,
+          maxLength: 200,
+          decoration: const InputDecoration(labelText: 'What is this group for?'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (description == null) return;
+    await GroupService.instance.updateDescription(widget.groupId, description);
   }
 
   Future<void> _changeAvatar() async {
@@ -243,6 +268,23 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       ],
                     ),
                     Text('${group.members.length} members', style: TextStyle(color: scheme.onSurfaceVariant)),
+                    const SizedBox(height: 6),
+                    GestureDetector(
+                      onTap: amAdmin ? () => _editDescription(group) : null,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Text(
+                          group.description.isEmpty
+                              ? (amAdmin ? 'Add a group description' : '')
+                              : group.description,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontStyle: group.description.isEmpty ? FontStyle.italic : FontStyle.normal,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -251,6 +293,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 title: const Text('Auto-delete messages'),
                 subtitle: Text(group.chatTtlHours == null || group.chatTtlHours == 0 ? 'Never' : '${group.chatTtlHours} hours'),
                 onTap: amAdmin ? () => _openTtlPicker(group) : null,
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.notifications_off_outlined),
+                title: const Text('Mute notifications'),
+                subtitle: const Text('Turn off alerts for this group only'),
+                value: GroupService.instance.isMutedByMe(snapshot.data!.data() ?? {}),
+                onChanged: (v) => GroupService.instance.setMuted(widget.groupId, v),
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.archive_outlined),
+                title: const Text('Archive group'),
+                subtitle: const Text('Hide from your main chat list — new messages still arrive normally'),
+                value: GroupService.instance.isArchivedByMe(snapshot.data!.data() ?? {}),
+                onChanged: (v) => GroupService.instance.setArchived(widget.groupId, v),
               ),
               const Divider(),
               Padding(
@@ -279,10 +335,19 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       leading: CircleAvatar(child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?')),
                       title: Text(uid == _myUid ? '$username (you)' : username),
                       subtitle: Text(isOwnerRow ? 'Owner' : (isAdminRow ? 'Admin' : 'Member')),
-                      trailing: (amAdmin && uid != _myUid)
-                          ? PopupMenuButton<String>(
+                      trailing: uid == _myUid
+                          ? null
+                          : PopupMenuButton<String>(
                               onSelected: (action) {
                                 switch (action) {
+                                  case 'verify':
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => SafetyNumberScreen(peerUid: uid, peerUsername: username),
+                                      ),
+                                    );
+                                    break;
                                   case 'promote':
                                     GroupService.instance.promoteAdmin(widget.groupId, uid);
                                     break;
@@ -295,12 +360,12 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                 }
                               },
                               itemBuilder: (context) => [
-                                if (!isAdminRow) const PopupMenuItem(value: 'promote', child: Text('Make admin')),
-                                if (isAdminRow && !isOwnerRow) const PopupMenuItem(value: 'demote', child: Text('Remove as admin')),
-                                if (!isOwnerRow) const PopupMenuItem(value: 'remove', child: Text('Remove from group')),
+                                const PopupMenuItem(value: 'verify', child: Text('Verify safety number')),
+                                if (amAdmin && !isAdminRow) const PopupMenuItem(value: 'promote', child: Text('Make admin')),
+                                if (amAdmin && isAdminRow && !isOwnerRow) const PopupMenuItem(value: 'demote', child: Text('Remove as admin')),
+                                if (amAdmin && !isOwnerRow) const PopupMenuItem(value: 'remove', child: Text('Remove from group')),
                               ],
-                            )
-                          : null,
+                            ),
                     );
                   },
                 ),
