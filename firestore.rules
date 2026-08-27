@@ -146,10 +146,22 @@ service cloud.firestore {
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'admins', 'ownerId']) &&
           !(request.auth.uid in request.resource.data.members);
       }
+      // Mute/archive are per-person preferences (see GroupService.setMuted
+      // / setArchived), not group-wide settings like name/avatar/
+      // description — so, unlike the rest of a group's fields, ANY
+      // current member may update these two, not just admins. Restricted
+      // to touching only these two keys so this can't be used as a
+      // backdoor to change membership or anything else without being an
+      // admin.
+      function isSelfMutingOrArchiving() {
+        return isSignedIn() &&
+          request.auth.uid in resource.data.members &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mutedBy', 'archivedBy']);
+      }
 
       allow read: if isGroupMember();
       allow create: if isGroupMemberOnCreate();
-      allow update: if isGroupAdmin() || isSelfLeaving();
+      allow update: if isGroupAdmin() || isSelfLeaving() || isSelfMutingOrArchiving();
       allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
 
       match /typing/{uid} {
