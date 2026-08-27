@@ -34,6 +34,8 @@ dependencies:
   chewie: ^1.8.5
   record: ^6.0.0
   just_audio: ^0.9.40
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^6.0.2
 
 dev_dependencies:
   flutter_test:
