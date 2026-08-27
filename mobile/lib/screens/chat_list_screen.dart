@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
 import '../services/auth_service.dart';
+import '../services/conversation_service.dart';
 import '../services/group_service.dart';
 import '../services/local_message_store.dart';
 import 'chat/chat_detail_screen.dart';
@@ -28,6 +29,8 @@ class _ChatRow {
   final DateTime lastAt;
   final int unreadCount;
   final bool isPlaceholder;
+  final bool muted;
+  final bool archived;
 
   _ChatRow({
     required this.conversationId,
@@ -39,6 +42,8 @@ class _ChatRow {
     required this.lastAt,
     required this.unreadCount,
     required this.isPlaceholder,
+    this.muted = false,
+    this.archived = false,
   });
 }
 
@@ -51,6 +56,7 @@ class ChatListScreen extends StatefulWidget {
 
 class _ChatListScreenState extends State<ChatListScreen> {
   final Map<String, String> _usernameCache = {};
+  final _conversationService = ConversationService();
 
   List<ConversationSummary> _localSummaries = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _convoDocs = [];
@@ -58,6 +64,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
   bool _localLoaded = false;
   bool _convoLoaded = false;
   bool _groupsLoaded = false;
+
+  /// Toggles the main list between normal chats and archived ones — see
+  /// ConversationService/GroupService's setArchived. No separate screen:
+  /// same list, same tap targets, just a different filter and a back
+  /// arrow in the app bar while active.
+  bool _showArchived = false;
 
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
@@ -125,6 +137,31 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return name;
   }
 
+  /// Muted/archived are per-person flags stored on the conversation/group
+  /// doc itself (see ConversationService/GroupService), not on the local
+  /// message-derived summary — so they're looked up here from whichever
+  /// raw Firestore doc matches this row's id, independent of whether the
+  /// row itself came from [_localSummaries] or a placeholder.
+  bool _isMuted(String conversationId) {
+    for (final d in _convoDocs) {
+      if (d.id == conversationId) return _conversationService.isMutedByMe(d.data());
+    }
+    for (final d in _groupDocs) {
+      if (d.id == conversationId) return GroupService.instance.isMutedByMe(d.data());
+    }
+    return false;
+  }
+
+  bool _isArchived(String conversationId) {
+    for (final d in _convoDocs) {
+      if (d.id == conversationId) return _conversationService.isArchivedByMe(d.data());
+    }
+    for (final d in _groupDocs) {
+      if (d.id == conversationId) return GroupService.instance.isArchivedByMe(d.data());
+    }
+    return false;
+  }
+
   /// Merges real message-backed summaries with any 1:1 conversation or
   /// group you've opened/created but not messaged in yet, so a chat shows
   /// up on the home screen the moment you start it — not only after the
@@ -142,6 +179,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         lastAt: s.lastAt,
         unreadCount: s.unreadCount,
         isPlaceholder: false,
+        muted: _isMuted(s.conversationId),
+        archived: _isArchived(s.conversationId),
       );
     }
     for (final doc in _convoDocs) {
@@ -157,6 +196,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         lastAt: createdAt,
         unreadCount: 0,
         isPlaceholder: true,
+        muted: _conversationService.isMutedByMe(doc.data()),
+        archived: _conversationService.isArchivedByMe(doc.data()),
       );
     }
     for (final doc in _groupDocs) {
@@ -175,6 +216,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         lastAt: createdAt,
         unreadCount: 0,
         isPlaceholder: true,
+        muted: GroupService.instance.isMutedByMe(data),
+        archived: GroupService.instance.isArchivedByMe(data),
       );
     }
     final rows = byConvo.values.toList()..sort((a, b) => b.lastAt.compareTo(a.lastAt));
@@ -215,8 +258,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Chats'),
-        actions: [
+        leading: _showArchived
+            ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() => _showArchived = false))
+            : null,
+        title: Text(_showArchived ? 'Archived chats' : 'Chats'),
+        actions: _showArchived
+            ? null
+            : [
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'Search people',
@@ -256,94 +304,57 @@ class _ChatListScreenState extends State<ChatListScreen> {
           if (myUid == null || !_localLoaded || !_convoLoaded || !_groupsLoaded) {
             return const Center(child: CircularProgressIndicator());
           }
-          final rows = _mergedRows(myUid);
-          if (rows.isEmpty) {
+          final allRows = _mergedRows(myUid);
+          final archivedCount = allRows.where((r) => r.archived).length;
+          final rows = allRows.where((r) => r.archived == _showArchived).toList();
+          if (rows.isEmpty && !(_showArchived == false && archivedCount > 0)) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.chat_bubble_outline_rounded, size: 72, color: scheme.primary.withValues(alpha: 0.5)),
-                    const SizedBox(height: 16),
-                    Text('No conversations yet', style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Tap the button below to message a contact, or use the menu above for a new chat or group.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: scheme.onSurfaceVariant),
+                    Icon(
+                      _showArchived ? Icons.archive_outlined : Icons.chat_bubble_outline_rounded,
+                      size: 72,
+                      color: scheme.primary.withValues(alpha: 0.5),
                     ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _showArchived ? 'No archived chats' : 'No conversations yet',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    if (!_showArchived) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Tap the button below to message a contact, or use the menu above for a new chat or group.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
                   ],
                 ),
               ),
             );
           }
           return ListView.builder(
-            itemCount: rows.length,
+            itemCount: rows.length + (!_showArchived && archivedCount > 0 ? 1 : 0),
             itemBuilder: (context, i) {
-              final row = rows[i];
-
-              if (row.isGroup) {
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: scheme.primaryContainer,
-                    backgroundImage: row.avatarUrl != null ? NetworkImage(row.avatarUrl!) : null,
-                    child: row.avatarUrl == null ? const Icon(Icons.groups_rounded) : null,
-                  ),
-                  title: Text(row.title ?? 'Group'),
-                  subtitle: row.isPlaceholder
-                      ? Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic))
-                      : FutureBuilder<String>(
-                          future: _usernameFor(row.peerUid),
-                          builder: (context, nameSnap) {
-                            final sender = nameSnap.data;
-                            final prefix = sender != null ? '$sender: ' : '';
-                            return Text('$prefix${row.lastText}', maxLines: 1, overflow: TextOverflow.ellipsis);
-                          },
-                        ),
-                  trailing: row.unreadCount > 0
-                      ? CircleAvatar(
-                          radius: 11,
-                          backgroundColor: scheme.primary,
-                          child: Text('${row.unreadCount}', style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700)),
-                        )
-                      : null,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId))),
-                );
-              }
-
-              return FutureBuilder<String>(
-                future: _usernameFor(row.peerUid),
-                builder: (context, nameSnap) {
-                  final username = nameSnap.data ?? '…';
+              if (!_showArchived && archivedCount > 0) {
+                if (i == 0) {
                   return ListTile(
                     leading: CircleAvatar(
-                      backgroundColor: scheme.primaryContainer,
-                      child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
+                      backgroundColor: scheme.surfaceContainerHighest,
+                      child: Icon(Icons.archive_outlined, color: scheme.onSurfaceVariant),
                     ),
-                    title: Text(username),
-                    subtitle: Text(
-                      row.lastText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: row.isPlaceholder ? TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic) : null,
-                    ),
-                    trailing: row.unreadCount > 0
-                        ? CircleAvatar(
-                            radius: 11,
-                            backgroundColor: scheme.primary,
-                            child: Text('${row.unreadCount}', style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700)),
-                          )
-                        : null,
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
-                      ),
-                    ),
+                    title: const Text('Archived chats'),
+                    trailing: Text('$archivedCount', style: TextStyle(color: scheme.onSurfaceVariant)),
+                    onTap: () => setState(() => _showArchived = true),
                   );
-                },
-              );
+                }
+                return _chatRowTile(context, scheme, rows[i - 1]);
+              }
+              return _chatRowTile(context, scheme, rows[i]);
             },
           );
         },
@@ -353,6 +364,71 @@ class _ChatListScreenState extends State<ChatListScreen> {
         tooltip: 'Message a contact',
         child: const Icon(Icons.chat_rounded),
       ),
+    );
+  }
+
+  Widget _chatRowTile(BuildContext context, ColorScheme scheme, _ChatRow row) {
+    final trailing = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (row.muted) Padding(padding: const EdgeInsets.only(right: 6), child: Icon(Icons.notifications_off, size: 16, color: scheme.onSurfaceVariant)),
+        if (row.unreadCount > 0)
+          CircleAvatar(
+            radius: 11,
+            backgroundColor: scheme.primary,
+            child: Text('${row.unreadCount}', style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700)),
+          ),
+      ],
+    );
+
+    if (row.isGroup) {
+      return ListTile(
+        leading: CircleAvatar(
+          backgroundColor: scheme.primaryContainer,
+          backgroundImage: row.avatarUrl != null ? NetworkImage(row.avatarUrl!) : null,
+          child: row.avatarUrl == null ? const Icon(Icons.groups_rounded) : null,
+        ),
+        title: Text(row.title ?? 'Group'),
+        subtitle: row.isPlaceholder
+            ? Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic))
+            : FutureBuilder<String>(
+                future: _usernameFor(row.peerUid),
+                builder: (context, nameSnap) {
+                  final sender = nameSnap.data;
+                  final prefix = sender != null ? '$sender: ' : '';
+                  return Text('$prefix${row.lastText}', maxLines: 1, overflow: TextOverflow.ellipsis);
+                },
+              ),
+        trailing: trailing,
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId))),
+      );
+    }
+
+    return FutureBuilder<String>(
+      future: _usernameFor(row.peerUid),
+      builder: (context, nameSnap) {
+        final username = nameSnap.data ?? '…';
+        return ListTile(
+          leading: CircleAvatar(
+            backgroundColor: scheme.primaryContainer,
+            child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
+          ),
+          title: Text(username),
+          subtitle: Text(
+            row.lastText,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: row.isPlaceholder ? TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic) : null,
+          ),
+          trailing: trailing,
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
+            ),
+          ),
+        );
+      },
     );
   }
 }
