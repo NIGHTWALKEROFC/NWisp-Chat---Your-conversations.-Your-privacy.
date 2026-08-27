@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
+import '../security/safety_number_screen.dart';
 
 const _chatTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never for THIS chat specifically, hours after that
 
@@ -154,6 +155,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
         builder: (context, snapshot) {
           final data = snapshot.data?.data() ?? {};
           final muted = _conversationService.isMutedByMe(data);
+          final archived = _conversationService.isArchivedByMe(data);
           final chatTtl = (data['chatTtlHours'] as num?)?.toInt();
 
           return ListView(
@@ -166,12 +168,31 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 title: Text(widget.peerUsername, style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
               const Divider(height: 24),
+              ListTile(
+                leading: const Icon(Icons.verified_user_outlined),
+                title: const Text('Verify safety number'),
+                subtitle: const Text("Confirm you're really talking to this person"),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SafetyNumberScreen(peerUid: widget.peerUid, peerUsername: widget.peerUsername),
+                  ),
+                ),
+              ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
                 title: const Text('Mute notifications'),
                 subtitle: const Text('Turn off alerts for this chat only'),
                 value: muted,
                 onChanged: (v) => _conversationService.setMuted(widget.conversationId, v),
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.archive_outlined),
+                title: const Text('Archive chat'),
+                subtitle: const Text('Hide from your main chat list — new messages still arrive normally'),
+                value: archived,
+                onChanged: (v) => _conversationService.setArchived(widget.conversationId, v),
               ),
               ListTile(
                 leading: const Icon(Icons.timer_outlined),
