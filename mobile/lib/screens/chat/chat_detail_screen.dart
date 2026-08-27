@@ -21,7 +21,9 @@ import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../../services/pin_service.dart';
 import '../../services/presence_service.dart';
+import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
+import 'chat_search_screen.dart';
 import 'chat_settings_screen.dart';
 
 // Expanded quick-reaction set (was 6, now 12) — tapping the same emoji you
@@ -52,6 +54,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
   LocalMessage? _replyingTo;
+
+  /// Non-null while composing an edit to a previously-sent text message
+  /// (see _editSelected / MessageRelayService.editMessage) — mutually
+  /// exclusive with [_replyingTo], the same way WhatsApp/Telegram only
+  /// let you do one or the other at a time.
+  LocalMessage? _editingMessage;
   List<String> _pinnedIds = [];
   int _pinnedBannerIndex = 0;
   bool _readReceiptsEnabled = true;
@@ -83,6 +91,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   @override
   void initState() {
     super.initState();
+    // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
+    // see ScreenshotGuardService. Released in dispose() below.
+    ScreenshotGuardService.acquire();
     _conversationService.ensureConversation(otherUid: widget.peerUid);
     // BUGFIX: messageTtlHours/readReceiptsEnabled moved to the owner-only
     // users/{uid}/private/profile doc (see firestore.rules) — read from
@@ -110,6 +121,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   void dispose() {
+    ScreenshotGuardService.release();
     _conversationService.setTyping(widget.conversationId, false);
     _convoSub?.cancel();
     _blockSub?.cancel();
@@ -198,6 +210,28 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       );
       return;
     }
+
+    // Editing an existing message takes a completely separate path from
+    // sending a new one — no reply/TTL/media handling applies to an edit.
+    final editing = _editingMessage;
+    if (editing != null) {
+      _textController.clear();
+      setState(() => _editingMessage = null);
+      try {
+        await MessageRelayService.editMessage(
+          conversationId: widget.conversationId,
+          toUid: widget.peerUid,
+          messageId: editing.id,
+          newText: text,
+          originalCreatedAt: editing.createdAt,
+        );
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't save edit — $e")));
+      }
+      return;
+    }
+
     _textController.clear();
     final replyId = _replyingTo?.id;
     setState(() => _replyingTo = null);
@@ -222,7 +256,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         await attemptSend();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Message not sent — $e'), duration: const Duration(seconds: 6)));
       }
     } on NotSignedInException catch (e) {
       if (!mounted) return;
@@ -232,9 +266,49 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Message not sent — $e'), duration: const Duration(seconds: 6)));
     }
     await _conversationService.setTyping(widget.conversationId, false);
+  }
+
+  /// Entry point for the "Edit" selection-app-bar action — only offered
+  /// (see the selection app bar below) for a single selected message that
+  /// is ours, is plain text, and is still inside
+  /// MessageRelayService.editWindow. Pre-fills the compose bar with the
+  /// current text, same as WhatsApp/Telegram's edit flow.
+  void _editSelected() {
+    if (_selectedIds.length != 1) return;
+    LocalMessage? message;
+    for (final m in _messages) {
+      if (m.id == _selectedIds.first) {
+        message = m;
+        break;
+      }
+    }
+    if (message == null) return;
+    setState(() {
+      _editingMessage = message;
+      _replyingTo = null;
+      _selectedIds.clear();
+      _textController.text = message!.text;
+      _textController.selection = TextSelection.collapsed(offset: message.text.length);
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editingMessage = null;
+      _textController.clear();
+    });
+  }
+
+  Future<void> _openSearch() async {
+    final targetId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => ChatSearchScreen(conversationId: widget.conversationId, peerUsername: widget.peerUsername),
+      ),
+    );
+    if (targetId != null) _jumpToMessage(targetId);
   }
 
   void _showAttachSheet() {
@@ -357,7 +431,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Message not sent — $e'), duration: const Duration(seconds: 6)));
     } finally {
       if (mounted) setState(() => _sendingMedia = false);
     }
@@ -484,7 +558,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('DEBUG send failed: $e'), duration: const Duration(seconds: 10)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Message not sent — $e'), duration: const Duration(seconds: 6)));
     } finally {
       try {
         if (await file.exists()) await file.delete();
@@ -761,6 +835,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             status: msg.isMine ? msg.status : null,
                             pinned: _pinnedIds.contains(msg.id),
                             selected: _selectedIds.contains(msg.id),
+                            edited: msg.editedAt != null,
                             onLongPress: () => _toggleSelect(msg.id),
                             onTap: () {
                               if (_selectedIds.isNotEmpty) _toggleSelect(msg.id);
@@ -798,7 +873,23 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   );
                 },
               ),
-              if (_replyingTo != null)
+              if (_editingMessage != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: scheme.surfaceContainerHigh,
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit_outlined, size: 18, color: scheme.primary),
+                      const SizedBox(width: 8),
+                      const Expanded(child: Text('Editing message', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        onPressed: _cancelEdit,
+                      ),
+                    ],
+                  ),
+                )
+              else if (_replyingTo != null)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   color: scheme.surfaceContainerHigh,
@@ -876,9 +967,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                           child: IconButton(
                             onPressed: _sendingMedia
                                 ? null
-                                : (_textController.text.trim().isEmpty ? _startVoiceRecording : _send),
+                                : (_editingMessage == null && _textController.text.trim().isEmpty
+                                    ? _startVoiceRecording
+                                    : _send),
                             icon: Icon(
-                              _textController.text.trim().isEmpty ? Icons.mic : Icons.arrow_upward_rounded,
+                              _editingMessage != null
+                                  ? Icons.check_rounded
+                                  : (_textController.text.trim().isEmpty ? Icons.mic : Icons.arrow_upward_rounded),
                               color: scheme.onPrimary,
                             ),
                           ),
@@ -1089,6 +1184,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ),
       actions: [
         IconButton(
+          icon: const Icon(Icons.search),
+          tooltip: 'Search in chat',
+          onPressed: _openSearch,
+        ),
+        IconButton(
           icon: const Icon(Icons.tune_rounded),
           tooltip: 'Chat settings',
           onPressed: () => Navigator.push(
@@ -1109,6 +1209,24 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   AppBar _buildSelectionAppBar(ColorScheme scheme) {
     final count = _selectedIds.length;
     final single = count == 1;
+    // Edit is only offered when the single selected message is ours, is
+    // plain text (not media/voice — see MessageRelayService.editMessage),
+    // and is still inside the edit window — same constraints the send
+    // path itself enforces, checked again here just to decide whether to
+    // show the button at all.
+    LocalMessage? singleMessage;
+    if (single) {
+      for (final m in _messages) {
+        if (m.id == _selectedIds.first) {
+          singleMessage = m;
+          break;
+        }
+      }
+    }
+    final canEdit = singleMessage != null &&
+        singleMessage.isMine &&
+        singleMessage.messageType == 'text' &&
+        DateTime.now().difference(singleMessage.createdAt) <= MessageRelayService.editWindow;
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.close),
@@ -1120,6 +1238,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           IconButton(icon: const Icon(Icons.emoji_emotions_outlined), tooltip: 'React', onPressed: _reactToSelected),
         if (single)
           IconButton(icon: const Icon(Icons.reply_rounded), tooltip: 'Reply', onPressed: _replyToSelected),
+        if (canEdit)
+          IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Edit', onPressed: _editSelected),
         if (single)
           IconButton(
             icon: Icon(_pinnedIds.contains(_selectedIds.first) ? Icons.push_pin : Icons.push_pin_outlined),
@@ -1184,6 +1304,7 @@ class _MessageBubble extends StatelessWidget {
   final String? status;
   final bool pinned;
   final bool selected;
+  final bool edited;
   final VoidCallback onLongPress;
   final VoidCallback onTap;
   final VoidCallback onTapReactionChip;
@@ -1200,6 +1321,7 @@ class _MessageBubble extends StatelessWidget {
     required this.status,
     required this.pinned,
     required this.selected,
+    this.edited = false,
     required this.onLongPress,
     required this.onTap,
     required this.onTapReactionChip,
@@ -1308,9 +1430,22 @@ class _MessageBubble extends StatelessWidget {
                             child: _VoiceBubbleContent(path: mediaPath!, isMine: isMine),
                           ),
                         if (text.isNotEmpty)
-                          Text(
-                            text,
-                            style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
+                          RichText(
+                            text: TextSpan(
+                              style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
+                              children: [
+                                TextSpan(text: text),
+                                if (edited)
+                                  TextSpan(
+                                    text: '  (edited)',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontStyle: FontStyle.italic,
+                                      color: (isMine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.6),
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
                         if (isMine && status != null)
                           Padding(
