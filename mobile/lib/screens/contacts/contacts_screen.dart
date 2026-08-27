@@ -5,6 +5,7 @@ import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
 import '../groups/create_group_screen.dart';
 import 'find_users_screen.dart';
+import 'qr_code_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
@@ -127,6 +128,14 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                 ),
               ]
             : [
+                IconButton(
+                  icon: const Icon(Icons.qr_code_scanner_rounded),
+                  tooltip: 'Add via QR code',
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const QrCodeScreen()),
+                  ),
+                ),
                 IconButton(
                   icon: const Icon(Icons.person_add_alt_1_outlined),
                   tooltip: 'Find people',
