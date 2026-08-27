@@ -241,6 +241,97 @@ class GroupMessageRelayService {
     }
   }
 
+  /// Group counterpart to MessageRelayService.editMessage — same 15-minute
+  /// edit window, same 'edit' message_type. The RECEIVE side needs no
+  /// group-specific code at all (see the class doc comment): each
+  /// member's device picks this up through the exact same generic 'edit'
+  /// case in MessageRelayService._handleRow that a 1:1 edit uses.
+  static const editWindow = Duration(minutes: 15);
+
+  static Future<void> editGroupMessage({
+    required String groupId,
+    required List<String> memberUids,
+    required String messageId,
+    required String newText,
+    required DateTime originalCreatedAt,
+  }) async {
+    if (DateTime.now().difference(originalCreatedAt) > editWindow) {
+      throw Exception('This message is too old to edit.');
+    }
+    final trimmed = newText.trim();
+    if (trimmed.isEmpty) throw Exception('Message text cannot be empty.');
+
+    final myUid = _myUid;
+    for (final uid in memberUids.where((u) => u != myUid)) {
+      try {
+        final (ciphertext, nonce) =
+            await SignalSessionService.instance.encryptForPeer(uid, jsonEncode({'ref': messageId, 'text': trimmed}));
+        await _client.from('message_relay').insert({
+          'conversation_id': groupId,
+          'sender_uid': myUid,
+          'recipient_uid': uid,
+          'ciphertext': ciphertext,
+          'nonce': nonce,
+          'message_type': 'edit',
+          'client_id': _uuid.v4(),
+          'ttl_hours': 1,
+        });
+      } catch (_) {
+        // Best-effort, same as reactions/deletes: one member missing an
+        // edit isn't worth blocking the edit for everyone else who got it.
+      }
+    }
+    await LocalMessageStore.editMessage(messageId, trimmed);
+  }
+
+  /// Retries delivering an ALREADY-SENT (and already-stored-locally) group
+  /// text message to specific member(s) who were missed the first time —
+  /// the "Resend to X" action on the partial-failure snackbar (see
+  /// GroupSendPartialFailure / GroupChatScreen). Deliberately does NOT
+  /// touch local storage again — the message is already sitting there
+  /// from the original send, this only re-attempts the per-member
+  /// encrypted fan-out, reusing the SAME clientId so it's still
+  /// recognized as the one message everyone already sees rather than a
+  /// duplicate.
+  ///
+  /// v1 limitation, flagged rather than silently shipped: this only
+  /// covers text messages. A failed MEDIA send can't be safely retried
+  /// this way without re-uploading the file, since the per-member
+  /// ciphertext blob (the file key/nonce) that would need to be
+  /// re-encrypted for the missed member isn't kept around after the
+  /// original send completes — GroupChatScreen only offers this action
+  /// for text messages for that reason.
+  static Future<List<GroupMemberSendFailure>> resendTextMessage({
+    required String groupId,
+    required List<String> uids,
+    required String clientId,
+    required String text,
+    String? replyToId,
+    required int ttlHours,
+  }) async {
+    final myUid = _myUid;
+    final failures = <GroupMemberSendFailure>[];
+    for (final uid in uids.where((u) => u != myUid)) {
+      try {
+        final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(uid, text);
+        await _client.from('message_relay').insert({
+          'conversation_id': groupId,
+          'sender_uid': myUid,
+          'recipient_uid': uid,
+          'ciphertext': ciphertext,
+          'nonce': nonce,
+          'message_type': 'text',
+          'reply_to_id': replyToId,
+          'client_id': clientId,
+          'ttl_hours': ttlHours,
+        });
+      } catch (e) {
+        failures.add(GroupMemberSendFailure(uid, e));
+      }
+    }
+    return failures;
+  }
+
   static Future<void> deleteForEveryone({
     required String groupId,
     required List<String> memberUids,
