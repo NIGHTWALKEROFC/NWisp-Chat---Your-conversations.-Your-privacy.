@@ -13,6 +13,12 @@ class LocalMessage {
   final DateTime createdAt;
   final DateTime? expiresAt;
 
+  /// Set the first time this message is edited (see
+  /// LocalMessageStore.editMessage / MessageRelayService.editMessage) —
+  /// null means "never edited". Bubbles show a small "(edited)" label
+  /// when this is non-null.
+  final DateTime? editedAt;
+
   const LocalMessage({
     required this.id,
     required this.conversationId,
@@ -27,6 +33,7 @@ class LocalMessage {
     this.status = 'sent',
     required this.createdAt,
     this.expiresAt,
+    this.editedAt,
   });
 }
 
