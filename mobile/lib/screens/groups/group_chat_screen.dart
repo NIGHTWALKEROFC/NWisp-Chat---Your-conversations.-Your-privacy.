@@ -18,6 +18,8 @@ import '../../services/group_service.dart';
 import '../../services/local_message_store.dart';
 import '../../services/media_compression_service.dart';
 import '../../services/message_relay_service.dart' show NotSignedInException;
+import '../../services/screenshot_guard_service.dart';
+import '../chat/chat_search_screen.dart';
 import 'group_info_screen.dart';
 
 const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉', '😍', '👏', '💯', '😡'];
@@ -63,6 +65,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   int _ttlHours = 0;
   LocalMessage? _replyingTo;
 
+  /// Non-null while composing an edit to a previously-sent text message —
+  /// mutually exclusive with [_replyingTo]. See _startEditing /
+  /// GroupMessageRelayService.editGroupMessage.
+  LocalMessage? _editingMessage;
+
+  /// Live @mention suggestions while typing "@partialname" — cleared as
+  /// soon as the partial word stops looking like a mention-in-progress
+  /// (a space typed after it, the @ deleted, etc). See _onTextChanged.
+  List<String> _mentionSuggestions = [];
+
   bool _isRecordingVoice = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
@@ -78,6 +90,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    ScreenshotGuardService.acquire();
     _textController.addListener(() => setState(() {}));
     _msgSub = LocalMessageStore.watchConversation(widget.groupId).listen((list) {
       if (!mounted) return;
@@ -112,6 +125,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
+    ScreenshotGuardService.release();
     GroupService.instance.setTyping(widget.groupId, false);
     _msgSub.cancel();
     _groupSub.cancel();
@@ -147,17 +161,107 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   void _onTextChanged(String value) {
     GroupService.instance.setTyping(widget.groupId, value.trim().isNotEmpty);
+    _updateMentionSuggestions();
+  }
+
+  /// Looks at the text immediately before the cursor for an unfinished
+  /// "@partialname" and, if found, narrows [_mentionSuggestions] to other
+  /// members whose username starts with that partial text. Cleared
+  /// whenever what's before the cursor doesn't look like an in-progress
+  /// mention (no trailing @word, or a space/newline right after the @).
+  void _updateMentionSuggestions() {
+    final text = _textController.text;
+    final cursor = _textController.selection.baseOffset;
+    if (cursor < 0 || cursor > text.length) {
+      if (_mentionSuggestions.isNotEmpty) setState(() => _mentionSuggestions = []);
+      return;
+    }
+    final before = text.substring(0, cursor);
+    final match = RegExp(r'(?:^|\s)@([\w]*)$').firstMatch(before);
+    if (match == null) {
+      if (_mentionSuggestions.isNotEmpty) setState(() => _mentionSuggestions = []);
+      return;
+    }
+    final partial = match.group(1)!.toLowerCase();
+    final matches = _otherMembers
+        .map((uid) => _usernames[uid])
+        .whereType<String>()
+        .where((name) => name.toLowerCase().startsWith(partial))
+        .take(5)
+        .toList();
+    setState(() => _mentionSuggestions = matches);
+  }
+
+  /// Replaces the in-progress "@partial" the person just typed with the
+  /// chosen "@username " — same UX as tapping a suggestion in any other
+  /// mention-aware chat app.
+  void _applyMention(String username) {
+    final text = _textController.text;
+    final cursor = _textController.selection.baseOffset;
+    final before = cursor >= 0 && cursor <= text.length ? text.substring(0, cursor) : text;
+    final after = cursor >= 0 && cursor <= text.length ? text.substring(cursor) : '';
+    final match = RegExp(r'(?:^|\s)@([\w]*)$').firstMatch(before);
+    if (match == null) return;
+    final start = match.start + (match.group(0)!.startsWith(' ') ? 1 : 0);
+    final newBefore = '${before.substring(0, start)}@$username ';
+    _textController.value = TextEditingValue(
+      text: newBefore + after,
+      selection: TextSelection.collapsed(offset: newBefore.length),
+    );
+    setState(() => _mentionSuggestions = []);
   }
 
   List<String> get _otherMembers => _memberUids.where((u) => u != _myUid).toList();
 
-  Future<void> _warnAboutPartialFailure(GroupSendPartialFailure e) async {
+  /// [resendText]/[resendReplyToId] are only passed for a TEXT message
+  /// send failure — see GroupMessageRelayService.resendTextMessage's own
+  /// doc comment for why media failures don't offer this action. When
+  /// present, the snackbar gets a "Resend to X" action that retries
+  /// delivery to just the members who were missed, closing the loop
+  /// instead of leaving the warning as the only trace of the failure.
+  Future<void> _warnAboutPartialFailure(
+    GroupSendPartialFailure e, {
+    String? resendText,
+    String? resendReplyToId,
+  }) async {
     await _resolveUsernames(e.failures.map((f) => f.uid));
     if (!mounted) return;
     final names = e.failures.map((f) => _nameFor(f.uid)).join(', ');
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Didn't reach: $names — they may need to reopen the app once."), duration: const Duration(seconds: 5)),
+      SnackBar(
+        content: Text("Didn't reach: $names — they may need to reopen the app once."),
+        duration: const Duration(seconds: 8),
+        action: resendText == null
+            ? null
+            : SnackBarAction(
+                label: e.failures.length == 1 ? 'Resend to $names' : 'Resend to ${e.failures.length}',
+                onPressed: () => _resendToFailedMembers(e, resendText, resendReplyToId),
+              ),
+      ),
     );
+  }
+
+  /// Retries delivering the same already-sent message to just the members
+  /// who were missed the first time — the "Resend to X" snackbar action.
+  Future<void> _resendToFailedMembers(GroupSendPartialFailure original, String text, String? replyToId) async {
+    final retryFailures = await GroupMessageRelayService.resendTextMessage(
+      groupId: widget.groupId,
+      uids: original.failures.map((f) => f.uid).toList(),
+      clientId: original.clientId,
+      text: text,
+      replyToId: replyToId,
+      ttlHours: _ttlHours,
+    );
+    if (!mounted) return;
+    if (retryFailures.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Resent successfully.')));
+    } else {
+      await _warnAboutPartialFailure(
+        GroupSendPartialFailure(original.clientId, retryFailures),
+        resendText: text,
+        resendReplyToId: replyToId,
+      );
+    }
   }
 
   Future<void> _send() async {
@@ -167,9 +271,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("You're not signed in. Please sign in again.")));
       return;
     }
+
+    final editing = _editingMessage;
+    if (editing != null) {
+      _textController.clear();
+      setState(() {
+        _editingMessage = null;
+        _mentionSuggestions = [];
+      });
+      try {
+        await GroupMessageRelayService.editGroupMessage(
+          groupId: widget.groupId,
+          memberUids: _otherMembers,
+          messageId: editing.id,
+          newText: text,
+          originalCreatedAt: editing.createdAt,
+        );
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't save edit — $e")));
+      }
+      return;
+    }
+
     _textController.clear();
     final replyId = _replyingTo?.id;
-    setState(() => _replyingTo = null);
+    setState(() {
+      _replyingTo = null;
+      _mentionSuggestions = [];
+    });
     try {
       await GroupMessageRelayService.sendGroupMessage(
         groupId: widget.groupId,
@@ -179,7 +309,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         ttlHours: _ttlHours,
       );
     } on GroupSendPartialFailure catch (e) {
-      await _warnAboutPartialFailure(e);
+      await _warnAboutPartialFailure(e, resendText: text, resendReplyToId: replyId);
     } on NotSignedInException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -188,6 +318,41 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not send: $e')));
     }
     await GroupService.instance.setTyping(widget.groupId, false);
+  }
+
+  /// Entry point for the "Edit" action in _showMessageActions — only
+  /// offered there for a message that is ours, is plain text, and is
+  /// still inside GroupMessageRelayService.editWindow.
+  void _startEditing(LocalMessage message) {
+    setState(() {
+      _editingMessage = message;
+      _replyingTo = null;
+      _textController.text = message.text;
+      _textController.selection = TextSelection.collapsed(offset: message.text.length);
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editingMessage = null;
+      _textController.clear();
+    });
+  }
+
+  Future<void> _openSearch() async {
+    final targetId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => ChatSearchScreen(conversationId: widget.groupId, peerUsername: _groupName)),
+    );
+    if (targetId == null) return;
+    // Group messages render in a plain ListView.builder (no per-bubble
+    // GlobalKey the way chat_detail_screen keeps one for jump-to-reply) —
+    // scrolling exactly to the matched message isn't wired up here, so
+    // this at least confirms the match and lets the person scroll
+    // manually rather than silently doing nothing.
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Found it — scroll up to find the highlighted result in the chat.')),
+    );
   }
 
   void _showAttachSheet() {
@@ -379,9 +544,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _react(LocalMessage message, String emoji) async {
-    final mine = message.reactions[_myUid];
+    final myUid = _myUid;
+    if (myUid == null) return;
+    final mine = message.reactions[myUid];
     final next = mine == emoji ? null : emoji;
-    await LocalMessageStore.setReaction(message.id, _myUid!, next);
+    await LocalMessageStore.setReaction(message.id, myUid, next);
     await GroupMessageRelayService.sendReaction(
       groupId: widget.groupId,
       memberUids: _memberUids,
@@ -437,6 +604,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 onTap: () {
                   Navigator.pop(sheetContext);
                   Clipboard.setData(ClipboardData(text: message.text));
+                },
+              ),
+            if (mine &&
+                message.messageType == 'text' &&
+                DateTime.now().difference(message.createdAt) <= GroupMessageRelayService.editWindow)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _startEditing(message);
                 },
               ),
             ListTile(
@@ -603,7 +781,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     12,
                     message.reactions.isEmpty ? 8 : 2,
                   ),
-                  child: Text(message.text, style: TextStyle(color: mine ? scheme.onPrimary : scheme.onSurface, fontSize: 15, height: 1.3)),
+                  child: _messageText(message, mine, scheme),
                 ),
               if (message.reactions.isNotEmpty)
                 Padding(
@@ -615,6 +793,41 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         ),
       ),
     );
+  }
+
+  /// Renders a message's text with any "@username" substrings that match
+  /// a real current member highlighted in bold — the natural next step
+  /// from already showing sender names on bubbles (see [_nameFor]). Only
+  /// highlights mentions of members actually in this group right now, so
+  /// a literal "@" in normal conversation that doesn't match anyone isn't
+  /// mistakenly styled as a mention. Also appends a small "(edited)" tag
+  /// when the message has been edited (see GroupMessageRelayService.
+  /// editGroupMessage).
+  Widget _messageText(LocalMessage message, bool mine, ColorScheme scheme) {
+    final baseColor = mine ? scheme.onPrimary : scheme.onSurface;
+    final baseStyle = TextStyle(color: baseColor, fontSize: 15, height: 1.3);
+    final knownNames = _usernames.values.toSet();
+    final spans = <TextSpan>[];
+    final pattern = RegExp(r'@([\w]+)');
+    var lastEnd = 0;
+    for (final match in pattern.allMatches(message.text)) {
+      final name = match.group(1)!;
+      if (!knownNames.any((n) => n.toLowerCase() == name.toLowerCase())) continue;
+      if (match.start > lastEnd) spans.add(TextSpan(text: message.text.substring(lastEnd, match.start)));
+      spans.add(TextSpan(
+        text: match.group(0),
+        style: TextStyle(fontWeight: FontWeight.w700, color: mine ? scheme.onPrimary : scheme.primary),
+      ));
+      lastEnd = match.end;
+    }
+    if (lastEnd < message.text.length) spans.add(TextSpan(text: message.text.substring(lastEnd)));
+    if (message.editedAt != null) {
+      spans.add(TextSpan(
+        text: '  (edited)',
+        style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: baseColor.withValues(alpha: 0.65)),
+      ));
+    }
+    return RichText(text: TextSpan(style: baseStyle, children: spans));
   }
 
   Widget _brokenMediaTile(ColorScheme scheme, String label) {
@@ -665,6 +878,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ],
           ),
         ),
+        actions: [
+          IconButton(icon: const Icon(Icons.search), tooltip: 'Search in chat', onPressed: _openSearch),
+        ],
       ),
       body: Column(
         children: [
@@ -690,7 +906,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     itemBuilder: (context, i) => _bubbleFor(_messages[i]),
                   ),
           ),
-          if (_replyingTo != null)
+          if (_editingMessage != null)
+            Container(
+              margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(12)),
+              child: Row(
+                children: [
+                  Icon(Icons.edit_outlined, size: 16, color: scheme.primary),
+                  const SizedBox(width: 8),
+                  const Expanded(child: Text('Editing message', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: _cancelEdit,
+                  ),
+                ],
+              ),
+            )
+          else if (_replyingTo != null)
             Container(
               margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -724,6 +959,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     onPressed: () => setState(() => _replyingTo = null),
                   ),
                 ],
+              ),
+            ),
+          if (_mentionSuggestions.isNotEmpty)
+            Container(
+              height: 44,
+              margin: const EdgeInsets.fromLTRB(10, 0, 10, 4),
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _mentionSuggestions.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 6),
+                itemBuilder: (context, i) {
+                  final name = _mentionSuggestions[i];
+                  return ActionChip(
+                    avatar: const Icon(Icons.alternate_email, size: 15),
+                    label: Text(name),
+                    onPressed: () => _applyMention(name),
+                  );
+                },
               ),
             ),
           SafeArea(
@@ -821,10 +1074,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   shape: const CircleBorder(),
                   child: InkWell(
                     customBorder: const CircleBorder(),
-                    onTap: hasText ? _send : _startVoiceRecording,
+                    onTap: (hasText || _editingMessage != null) ? _send : _startVoiceRecording,
                     child: Padding(
                       padding: const EdgeInsets.all(12),
-                      child: Icon(hasText ? Icons.send_rounded : Icons.mic_rounded, color: scheme.onPrimary, size: 22),
+                      child: Icon(
+                        _editingMessage != null ? Icons.check_rounded : (hasText ? Icons.send_rounded : Icons.mic_rounded),
+                        color: scheme.onPrimary,
+                        size: 22,
+                      ),
                     ),
                   ),
                 ),
