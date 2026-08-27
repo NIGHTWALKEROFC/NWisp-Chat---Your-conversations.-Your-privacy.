@@ -22,6 +22,7 @@ class ConversationService {
         'participants': [myUid, otherUid]..sort(),
         'createdAt': FieldValue.serverTimestamp(),
         'mutedBy': <String>[],
+        'archivedBy': <String>[],
         'chatTtlHours': null,
       });
     }
@@ -40,6 +41,26 @@ class ConversationService {
     final myUid = _auth.currentUser!.uid;
     return _db.collection('conversations').doc(conversationId).update({
       'mutedBy': muted ? FieldValue.arrayUnion([myUid]) : FieldValue.arrayRemove([myUid]),
+    });
+  }
+
+  /// Archiving hides a chat from the main chat list without leaving it or
+  /// deleting anything — same per-person model as [isMutedByMe]/
+  /// [setMuted] above (an "archivedBy" array, not a single shared flag),
+  /// so archiving a chat on your device doesn't affect what the other
+  /// person sees on theirs. Sending or receiving a new message in an
+  /// archived chat does NOT auto-unarchive it (matches WhatsApp) — the
+  /// person archived it on purpose and gets to decide when it's worth
+  /// surfacing again.
+  bool isArchivedByMe(Map<String, dynamic> data) {
+    final archived = List<String>.from(data['archivedBy'] ?? []);
+    return archived.contains(_auth.currentUser!.uid);
+  }
+
+  Future<void> setArchived(String conversationId, bool archived) {
+    final myUid = _auth.currentUser!.uid;
+    return _db.collection('conversations').doc(conversationId).update({
+      'archivedBy': archived ? FieldValue.arrayUnion([myUid]) : FieldValue.arrayRemove([myUid]),
     });
   }
 
