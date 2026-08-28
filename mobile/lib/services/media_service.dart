@@ -26,6 +26,24 @@ class MediaService {
   }
 
   static Never _throwWithDetail(String action, http.Response res) {
+    // HTTP 404 with an Edge-Function-shaped body here has one specific,
+    // extremely common cause: the `get-signed-url` function exists as
+    // SOURCE CODE in this repo but was never actually deployed to the
+    // Supabase project (or was deployed under a different project ref).
+    // Deploying is a manual step (`supabase functions deploy ...`) that's
+    // easy to skip since nothing else in the build fails without it —
+    // text messages, auth, everything else keeps working fine. Surface
+    // that directly instead of a bare status code, since "404 / requested
+    // function was not found" otherwise reads like a generic network
+    // hiccup rather than a one-time setup step that got missed.
+    if (res.statusCode == 404) {
+      throw Exception(
+        '$action failed (HTTP 404): the get-signed-url Edge Function is not '
+        'deployed on this Supabase project yet. See supabase/SETUP.md for '
+        'the deploy steps — this is a one-time setup step, not a bug in the '
+        'app itself.',
+      );
+    }
     throw Exception('$action failed (HTTP ${res.statusCode}): ${res.body}');
   }
 
