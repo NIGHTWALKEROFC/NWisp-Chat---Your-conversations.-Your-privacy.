@@ -4,6 +4,24 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'signal_store.dart';
 
+/// Thrown when [uid] has never published a Signal Protocol key bundle at
+/// all — meaning either they haven't opened this version of the app yet
+/// (still on an old version without end-to-end encryption support), or
+/// they've never signed in on any device. This is distinct from a
+/// transient send failure (network blip, a momentarily-exhausted one-time
+/// prekey pool): retrying RIGHT NOW would fail again for the exact same
+/// reason, since nothing has changed. Callers use this to avoid spamming
+/// an actionable "try again" prompt for something an instant retry can't
+/// fix — see GroupMessageRelayService's pending-resend queue, which
+/// instead waits and retries automatically once the contact's bundle
+/// actually shows up.
+class ContactNotUpgradedException implements Exception {
+  final String uid;
+  ContactNotUpgradedException(this.uid);
+  @override
+  String toString() => "This contact hasn't set up secure messaging yet — ask them to update and reopen the app.";
+}
+
 /// High-level Double Ratchet API used by MessageRelayService. Wraps
 /// libsignal_protocol_dart's SessionBuilder/SessionCipher plus the
 /// Firestore-based prekey bundle publish/fetch that makes X3DH (the
@@ -141,7 +159,7 @@ class SignalSessionService {
     final bundleDoc = await _bundleRef(uid).get();
     final bundleData = bundleDoc.data();
     if (bundleData == null) {
-      throw Exception("This contact hasn't set up secure messaging yet — ask them to update and reopen the app.");
+      throw ContactNotUpgradedException(uid);
     }
 
     final oneTimePreKey = await _claimOneTimePreKey(uid);
@@ -229,53 +247,41 @@ class SignalSessionService {
       return utf8.decode(plaintext!);
     }
 
-    // Decrypting a plain (non-prekey) SignalMessage against an already-
-    // established ratchet: two build attempts confirmed BOTH decrypt()
-    // and decryptWithCallback() are strictly typed to PreKeySignalMessage
-    // only in this package version — so there must be a separately-named
-    // method for this case, and I could not find its exact name in any
-    // searchable source (the pub.dev API pages, the package's own
-    // example, and other real projects using this library all only
-    // document the prekey path in detail). Rather than guess a THIRD
-    // compile-time name and risk another failed build, this probes a set
-    // of plausible names at runtime via dynamic dispatch — which compiles
-    // regardless of which one is right, since dynamic calls skip static
-    // type checking, and simply tries the next candidate if a given name
-    // doesn't exist (NoSuchMethodError) or exists but rejects the
-    // argument shape (TypeError).
-    final plaintext = await _decryptEstablishedSession(cipher, bytes);
-    return utf8.decode(plaintext);
-  }
-
-  Future<Uint8List> _decryptEstablishedSession(SessionCipher cipher, Uint8List rawBytes) async {
-    final signalMessage = SignalMessage.fromSerialized(rawBytes);
-    final dynamic dyn = cipher;
-    final attempts = <String, Future<Uint8List> Function()>{
-      'decryptSignalMessage': () async => await dyn.decryptSignalMessage(signalMessage) as Uint8List,
-      'decryptWhisperMessage': () async => await dyn.decryptWhisperMessage(signalMessage) as Uint8List,
-      'decrypt (SignalMessage)': () async => await dyn.decrypt(signalMessage) as Uint8List,
-      'decryptWithCallback (SignalMessage)': () async {
-        Uint8List? result;
-        await dyn.decryptWithCallback(signalMessage, (Uint8List pt) => result = pt);
-        if (result == null) throw Exception('callback never fired');
-        return result!;
-      },
-    };
-    for (final entry in attempts.entries) {
-      try {
-        return await entry.value();
-      } catch (_) {
-        continue; // this candidate name doesn't exist / rejected the argument — try the next
-      }
-    }
-    throw Exception(
-      "Couldn't decrypt this message — none of the known SessionCipher method "
-      "names for decrypting an established-session message matched this version "
-      "of libsignal_protocol_dart. This needs one real method name confirmed "
-      "against the installed package's generated docs (Dart: run `dart doc` "
-      "locally, or check .dart_tool/ for the resolved package source) — "
-      "see the comment above _decryptEstablishedSession in signal_session_service.dart.",
-    );
+    // BUGFIX (this was the cause of the one-way-messaging bug — see the
+    // fix notes): decrypting a plain (non-prekey) SignalMessage against an
+    // already-established ratchet uses decryptFromSignalWithCallback, a
+    // SEPARATELY named method from the PreKeySignalMessage path above
+    // (confirmed directly against the libsignal_protocol_dart 0.8.2
+    // source on GitHub — lib/src/session_cipher.dart — since this Dart
+    // port can't overload a single method name by parameter type the way
+    // Java's original libsignal does, it exposes two distinctly-named
+    // methods instead: decryptWithCallback(PreKeySignalMessage, ...) for
+    // a brand-new/handshake message, and
+    // decryptFromSignalWithCallback(SignalMessage, ...) for every message
+    // after a session is already established).
+    //
+    // The previous version of this method didn't know the real name and
+    // guessed at several plausible-sounding ones via runtime reflection
+    // (decryptSignalMessage, decryptWhisperMessage, decrypt,
+    // decryptWithCallback with the wrong argument type) — none of which
+    // exist on this class, so EVERY message sent over an already-
+    // established session failed to decrypt. Concretely: the very first
+    // message two people ever exchange is a PreKeySignalMessage (type
+    // '3') and decrypted fine either way, but the Signal Protocol design
+    // keeps the *initiating* side's messages tagged as PreKeySignalMessage
+    // until it receives an actual reply — so in a conversation where only
+    // one side ever successfully sent, that side's messages kept working
+    // (always type '3'), while the other side's replies (type '1', a
+    // plain SignalMessage once their session was fully established) could
+    // never be decrypted at all. That's exactly the "person A can message
+    // person B, but B can't message A back" symptom.
+    final signalMessage = SignalMessage.fromSerialized(bytes);
+    Uint8List? plaintext;
+    await cipher.decryptFromSignalWithCallback(signalMessage, (pt) {
+      plaintext = pt;
+    });
+    if (plaintext == null) throw Exception('Could not decrypt message.');
+    return utf8.decode(plaintext!);
   }
 
   /// This device's own identity public key — used only to build the
