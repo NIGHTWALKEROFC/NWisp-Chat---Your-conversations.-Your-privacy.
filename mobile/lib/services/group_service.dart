@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:uuid/uuid.dart';
 import '../models/group.dart';
+import 'group_message_relay_service.dart';
 import 'local_message_store.dart';
 
 /// Group metadata (name/avatar/membership) lives in Firestore, the same
@@ -52,6 +53,7 @@ class GroupService {
       'chatTtlHours': null,
       'mutedBy': <String>[],
       'archivedBy': <String>[],
+      'pinnedBy': <String>[],
       'description': '',
     });
     await LocalMessageStore.upsertGroupMeta(id: groupId, name: cleanName, avatarUrl: avatarUrl, memberUids: members);
@@ -97,6 +99,17 @@ class GroupService {
     });
   }
 
+  bool isPinnedByMe(Map<String, dynamic> data) {
+    final pinned = List<String>.from(data['pinnedBy'] ?? []);
+    return pinned.contains(_myUid);
+  }
+
+  Future<void> setPinned(String groupId, bool pinned) {
+    return _ref(groupId).update({
+      'pinnedBy': pinned ? FieldValue.arrayUnion([_myUid]) : FieldValue.arrayRemove([_myUid]),
+    });
+  }
+
   /// Admin-only, like renameGroup/updateAvatar — a group's description is
   /// shared context for the whole group, not personal preference like
   /// mute/archive above.
@@ -105,6 +118,70 @@ class GroupService {
 
   Future<void> addMembers(String groupId, List<String> uids) =>
       _ref(groupId).update({'members': FieldValue.arrayUnion(uids)});
+
+  CollectionReference<Map<String, dynamic>> get _groupInviteRequestsRef =>
+      _db.collection('groupInviteRequests');
+
+  String _inviteRequestId(String groupId, String toUid) => '${groupId}_$toUid';
+
+  /// Invites [toUid] to a group WITHOUT adding them yet — the flow for
+  /// anyone who ISN'T already the inviting admin's contact. Firestore
+  /// rules only let an admin directly rewrite a group's `members` array
+  /// for people already established as a mutual contact-style
+  /// relationship elsewhere in the app (see [addMembers], used by
+  /// group_info_screen.dart / create_group_screen.dart, both of which
+  /// only ever list the admin's own contacts as candidates); this app
+  /// deliberately does NOT extend that direct-add power to strangers, on
+  /// the reasoning that being silently pulled into a group — exposing
+  /// your presence and messages to people you've never agreed to talk to
+  /// — deserves the same explicit consent a 1:1 contact request already
+  /// requires (see ContactService.sendRequest). The invited person
+  /// accepts or declines from their own device (see
+  /// [myGroupInviteRequestsStream] / [acceptGroupInvite] /
+  /// [declineGroupInvite]) — only THEY can turn an accepted invite into
+  /// actual membership (see firestore.rules'
+  /// isSelfJoiningViaAcceptedInvite()), an admin can't do it for them.
+  Future<void> inviteToGroup({
+    required String groupId,
+    required String groupName,
+    String? groupAvatarUrl,
+    required String toUid,
+    required String toUsername,
+  }) async {
+    final myUid = _myUid;
+    final myProfile = await _db.collection('users').doc(myUid).get();
+    final myUsername = (myProfile.data()?['username'] as String?) ?? '';
+    await _groupInviteRequestsRef.doc(_inviteRequestId(groupId, toUid)).set({
+      'groupId': groupId,
+      'groupName': groupName,
+      'groupAvatarUrl': groupAvatarUrl,
+      'fromUid': myUid,
+      'fromUsername': myUsername,
+      'toUid': toUid,
+      'toUsername': toUsername,
+      'status': 'pending',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> myGroupInviteRequestsStream() {
+    return _groupInviteRequestsRef
+        .where('toUid', isEqualTo: _myUid)
+        .where('status', isEqualTo: 'pending')
+        .snapshots();
+  }
+
+  /// Deliberately two sequential writes, not a batch: firestore.rules'
+  /// isSelfJoiningViaAcceptedInvite() checks the invite doc's status AT
+  /// THE MOMENT of the members-array write, so that status update has to
+  /// actually be committed first, not just queued alongside it.
+  Future<void> acceptGroupInvite({required String requestId, required String groupId}) async {
+    await _groupInviteRequestsRef.doc(requestId).update({'status': 'accepted'});
+    await _ref(groupId).update({'members': FieldValue.arrayUnion([_myUid])});
+  }
+
+  Future<void> declineGroupInvite(String requestId) =>
+      _groupInviteRequestsRef.doc(requestId).update({'status': 'declined'});
 
   /// Also strips the removed member from `admins` if they were one — a
   /// removed member has no business staying an admin of a group they're
@@ -184,6 +261,24 @@ class GroupService {
         LocalMessageStore.upsertGroupMeta(id: g.id, name: g.name, avatarUrl: g.avatarUrl, memberUids: g.members);
       }
     });
+  }
+
+  /// Call once per sign-in, alongside [startCaching] (see main.dart).
+  /// Sweeps EVERY group the person is currently in for queued resends
+  /// (see ContactNotUpgradedException / GroupMessageRelayService.
+  /// retryPendingResends) — not just whichever group they happen to open
+  /// first — so a message queued for a member who hadn't updated yet
+  /// actually reaches them once they do, even for a group the sender
+  /// doesn't reopen right away.
+  Future<void> retryAllPendingResends() async {
+    final groupIds = await LocalMessageStore.groupIdsWithPendingResends();
+    for (final groupId in groupIds) {
+      try {
+        await GroupMessageRelayService.retryPendingResends(groupId);
+      } catch (_) {
+        // best-effort sweep — one group's failure shouldn't block the rest
+      }
+    }
   }
 
   void stopCaching() {
