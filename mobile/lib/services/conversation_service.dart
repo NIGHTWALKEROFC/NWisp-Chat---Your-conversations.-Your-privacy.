@@ -23,6 +23,7 @@ class ConversationService {
         'createdAt': FieldValue.serverTimestamp(),
         'mutedBy': <String>[],
         'archivedBy': <String>[],
+        'pinnedBy': <String>[],
         'chatTtlHours': null,
       });
     }
@@ -61,6 +62,20 @@ class ConversationService {
     final myUid = _auth.currentUser!.uid;
     return _db.collection('conversations').doc(conversationId).update({
       'archivedBy': archived ? FieldValue.arrayUnion([myUid]) : FieldValue.arrayRemove([myUid]),
+    });
+  }
+
+  /// Pinning keeps a chat at the top of the list — WhatsApp's long-press
+  /// "Pin" — same per-person model as mute/archive above.
+  bool isPinnedByMe(Map<String, dynamic> data) {
+    final pinned = List<String>.from(data['pinnedBy'] ?? []);
+    return pinned.contains(_auth.currentUser!.uid);
+  }
+
+  Future<void> setPinned(String conversationId, bool pinned) {
+    final myUid = _auth.currentUser!.uid;
+    return _db.collection('conversations').doc(conversationId).update({
+      'pinnedBy': pinned ? FieldValue.arrayUnion([myUid]) : FieldValue.arrayRemove([myUid]),
     });
   }
 
