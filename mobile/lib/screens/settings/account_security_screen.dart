@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/device_session_service.dart';
+import 'forgot_password_screen.dart';
 
 class AccountSecurityScreen extends StatelessWidget {
   const AccountSecurityScreen({super.key});
@@ -29,11 +30,13 @@ class AccountSecurityScreen extends StatelessWidget {
 
   String _labelFor(Map<String, dynamic> data) {
     final device = data['deviceLabel'] as String? ?? 'a device';
+    final location = data['location'] as String?;
+    final deviceWithLocation = location != null ? '$device ($location)' : device;
     switch (data['event']) {
       case 'login':
-        return 'Signed in on $device';
+        return 'Signed in on $deviceWithLocation';
       case 'password_changed':
-        return 'Password changed from $device';
+        return 'Password changed from $deviceWithLocation';
       default:
         return 'Security event';
     }
@@ -84,6 +87,7 @@ class AccountSecurityScreen extends StatelessWidget {
             builder: (context, sessionSnapshot) {
               final sessionData = sessionSnapshot.data?.data();
               final label = sessionData?['activeDeviceLabel'] as String? ?? 'This device';
+              final location = sessionData?['activeLocation'] as String?;
               final since = (sessionData?['activeSince'] as Timestamp?)?.toDate();
               final clearedAt = (sessionData?['historyClearedAt'] as Timestamp?)?.toDate();
 
@@ -94,7 +98,11 @@ class AccountSecurityScreen extends StatelessWidget {
                     child: ListTile(
                       leading: Icon(Icons.phone_android, color: scheme.primary),
                       title: Text(label),
-                      subtitle: Text('Active device • signed in ${_timeAgo(since)}'),
+                      subtitle: Text(
+                        location != null
+                            ? 'Active device • $location • signed in ${_timeAgo(since)}'
+                            : 'Active device • signed in ${_timeAgo(since)}',
+                      ),
                       trailing: Icon(Icons.check_circle, color: scheme.primary, size: 20),
                     ),
                   ),
@@ -151,7 +159,10 @@ class AccountSecurityScreen extends StatelessWidget {
             title: const Text('Not sure this was you?'),
             subtitle: const Text('Change your password to sign out anyone else immediately'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pop(context),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+            ),
           ),
         ],
       ),
