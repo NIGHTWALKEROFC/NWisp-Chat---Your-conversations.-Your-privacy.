@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'secure_storage_service.dart';
 
@@ -44,6 +47,55 @@ class DeviceSessionService {
 
   String _deviceLabel(String deviceId) => 'Android phone (…${deviceId.substring(deviceId.length - 4)})';
 
+  /// A real device model (e.g. "Samsung Galaxy S23", "Pixel 8") instead of
+  /// the old generic placeholder above — makes the Account Security
+  /// screen's login history actually useful for spotting a login that
+  /// wasn't you, the same way Google's/WhatsApp's own "where you're
+  /// signed in" lists do. [_deviceLabel] above is left in place unused by
+  /// [claimThisDevice]/[logPasswordChanged] now, rather than deleted
+  /// outright, since it's still a reasonable fallback shape if this ever
+  /// needs one (e.g. a future non-Android build).
+  Future<String> _realDeviceLabel() async {
+    try {
+      final info = await DeviceInfoPlugin().androidInfo;
+      final manufacturer = info.manufacturer.trim();
+      final model = info.model.trim();
+      if (model.isEmpty) return 'Android phone';
+      // Some OEMs (Samsung, Xiaomi) already fold their brand into `model`
+      // on some builds — avoid a redundant "Samsung Samsung Galaxy S23".
+      if (manufacturer.isEmpty || model.toLowerCase().startsWith(manufacturer.toLowerCase())) {
+        return model;
+      }
+      return '$manufacturer $model';
+    } catch (_) {
+      return 'Android phone';
+    }
+  }
+
+  /// Best-effort city/country for THIS login, from a free IP-geolocation
+  /// lookup done entirely client-side — see the setup notes for why no
+  /// server component is needed for this. Never blocks or fails a sign-in:
+  /// any error here (no network, the free API being briefly unavailable,
+  /// a slow response) just means this one login's history entry has no
+  /// location on it, which the UI already handles by simply not showing
+  /// that line rather than erroring.
+  Future<String?> _locationLabel() async {
+    try {
+      final response = await http.get(Uri.parse('https://ipapi.co/json/')).timeout(const Duration(seconds: 5));
+      if (response.statusCode != 200) return null;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final city = (data['city'] as String?)?.trim();
+      final country = (data['country_name'] as String?)?.trim();
+      if (city != null && city.isNotEmpty && country != null && country.isNotEmpty) {
+        return '$city, $country';
+      }
+      if (country != null && country.isNotEmpty) return country;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Call right after a successful sign-in/sign-up (see AuthService). Makes
   /// THIS device the one-and-only active device for the account — any
   /// other device that was previously active gets signed out next time its
@@ -51,16 +103,19 @@ class DeviceSessionService {
   /// seconds if it's online, or the next time it's foregrounded otherwise.
   Future<void> claimThisDevice(String uid) async {
     final deviceId = await _localDeviceId();
-    final label = _deviceLabel(deviceId);
+    final label = await _realDeviceLabel();
+    final location = await _locationLabel();
     await _sessionRef(uid).set({
       'activeDeviceId': deviceId,
       'activeDeviceLabel': label,
+      'activeLocation': location,
       'activeSince': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     await _historyRef(uid).add({
       'event': 'login',
       'deviceId': deviceId,
       'deviceLabel': label,
+      'location': location,
       'timestamp': FieldValue.serverTimestamp(),
     });
   }
@@ -69,10 +124,13 @@ class DeviceSessionService {
   /// Account Security history list. Called from AuthService.updatePassword.
   Future<void> logPasswordChanged(String uid) async {
     final deviceId = await _localDeviceId();
+    final label = await _realDeviceLabel();
+    final location = await _locationLabel();
     await _historyRef(uid).add({
       'event': 'password_changed',
       'deviceId': deviceId,
-      'deviceLabel': _deviceLabel(deviceId),
+      'deviceLabel': label,
+      'location': location,
       'timestamp': FieldValue.serverTimestamp(),
     });
   }
