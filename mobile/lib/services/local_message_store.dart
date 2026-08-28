@@ -32,7 +32,7 @@ class LocalMessageStore {
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -56,6 +56,7 @@ class LocalMessageStore {
         await db.execute('CREATE INDEX idx_conv ON messages(conversation_id, created_at)');
         await db.execute('CREATE INDEX idx_expiry ON messages(expires_at)');
         await _createGroupMetaTable(db);
+        await _createPendingResendTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // v1 -> v2: adds the group_meta cache table for Phase 7 (group
@@ -64,13 +65,24 @@ class LocalMessageStore {
         if (oldVersion < 2) {
           await _createGroupMetaTable(db);
         }
-        // v2 -> v3: adds edited_at, used by the new "edit sent message"
+        // v2 -> v3: adds edited_at, used by the "edit sent message"
         // feature (see MessageRelayService.editMessage /
         // GroupMessageRelayService's shared receive path). Existing rows
         // simply get a NULL edited_at, which the UI already treats as
         // "never edited".
         if (oldVersion < 3) {
           await db.execute('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
+        }
+        // v3 -> v4: adds pending_group_resends — see
+        // GroupMessageRelayService's ContactNotUpgradedException handling.
+        // Tracks group-message copies that couldn't be fanned out to a
+        // specific member because they haven't published a Signal key
+        // bundle yet (old app version / never signed in), so they can be
+        // silently retried later once that member updates, instead of
+        // repeatedly nagging the sender with a "try again" prompt that
+        // would just fail the same way every time.
+        if (oldVersion < 4) {
+          await _createPendingResendTable(db);
         }
       },
     );
@@ -87,6 +99,97 @@ class LocalMessageStore {
         updated_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  static Future<void> _createPendingResendTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_group_resends (
+        id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        enc_payload TEXT NOT NULL,
+        enc_nonce TEXT NOT NULL,
+        message_type TEXT NOT NULL,
+        media_path TEXT,
+        reply_to_id TEXT,
+        ttl_hours INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_pending_group ON pending_group_resends(group_id)');
+  }
+
+  /// Queues a group-message copy that couldn't be delivered to [uid]
+  /// because they haven't published a Signal key bundle yet (see
+  /// ContactNotUpgradedException) — GroupMessageRelayService retries these
+  /// automatically (see [pendingGroupResends] / [removePendingGroupResend])
+  /// once that member's device eventually publishes a bundle, instead of
+  /// asking the sender to keep manually retrying something that can't
+  /// succeed until the OTHER person updates.
+  static Future<void> queuePendingGroupResend({
+    required String groupId,
+    required String clientId,
+    required String uid,
+    required String payload,
+    required String messageType,
+    String? mediaPath,
+    String? replyToId,
+    required int ttlHours,
+  }) async {
+    final (encPayload, nonce) = await CryptoService.encryptLocal(payload);
+    await _db!.insert(
+      'pending_group_resends',
+      {
+        'id': '${clientId}_$uid',
+        'group_id': groupId,
+        'client_id': clientId,
+        'uid': uid,
+        'enc_payload': encPayload,
+        'enc_nonce': nonce,
+        'message_type': messageType,
+        'media_path': mediaPath,
+        'reply_to_id': replyToId,
+        'ttl_hours': ttlHours,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// All queued resend attempts for one group, decrypted — read by
+  /// GroupMessageRelayService.retryPendingResends.
+  static Future<List<PendingGroupResend>> pendingGroupResends(String groupId) async {
+    final rows = await _db!.query('pending_group_resends', where: 'group_id = ?', whereArgs: [groupId]);
+    final result = <PendingGroupResend>[];
+    for (final r in rows) {
+      final payload = await CryptoService.decryptLocal(r['enc_payload'] as String, r['enc_nonce'] as String);
+      result.add(PendingGroupResend(
+        id: r['id'] as String,
+        groupId: r['group_id'] as String,
+        clientId: r['client_id'] as String,
+        uid: r['uid'] as String,
+        payload: payload,
+        messageType: r['message_type'] as String,
+        mediaPath: r['media_path'] as String?,
+        replyToId: r['reply_to_id'] as String?,
+        ttlHours: r['ttl_hours'] as int,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(r['created_at'] as int),
+      ));
+    }
+    return result;
+  }
+
+  static Future<void> removePendingGroupResend(String id) async {
+    await _db!.delete('pending_group_resends', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// All group ids with at least one queued resend — used at app startup
+  /// to sweep every group, not just whichever one the person happens to
+  /// open first (see GroupService.retryAllPendingResends).
+  static Future<List<String>> groupIdsWithPendingResends() async {
+    final rows = await _db!.query('pending_group_resends', columns: ['group_id'], distinct: true);
+    return rows.map((r) => r['group_id'] as String).toList();
   }
 
   // ---- group metadata cache (see GroupService.startCaching) ------------
