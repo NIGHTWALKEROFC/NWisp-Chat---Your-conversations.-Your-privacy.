@@ -159,6 +159,7 @@ void _setUpMessagingLifecycle() {
     await LocalMessageStore.purgeExpired();
     await MessageRelayService.start();
     GroupService.instance.startCaching();
+    GroupService.instance.retryAllPendingResends();
     sweepTimer?.cancel();
     sweepTimer = Timer.periodic(const Duration(seconds: 30), (_) => LocalMessageStore.purgeExpired());
 
