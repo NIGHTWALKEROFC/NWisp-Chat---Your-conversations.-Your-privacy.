@@ -22,48 +22,77 @@ class TermsScreen extends StatelessWidget {
           ),
           _Section(
             title: '2. The service',
-            body: 'NWisp is a free, ad-free, privacy-focused messaging app. Messages disappear '
-                "after the auto-delete duration you set (default 24 hours). There's no guaranteed "
-                'uptime or support level — this is a small, independently run app.',
+            body: 'NWisp is a free, ad-free, privacy-focused messaging app for 1:1 chats, group '
+                'chats, and 24-hour Stories, built on end-to-end encryption (the Signal Protocol). '
+                "Messages can auto-delete after a duration you set (default 24 hours). There's no "
+                'guaranteed uptime or support level — this is a small, independently run app.',
           ),
           _Section(
             title: '3. Your account',
             body: "You're responsible for keeping your password and device secure. You must be old "
                 "enough to consent to online services in your country. One account per person — don't "
-                'impersonate someone else or create accounts to evade a block or ban.',
+                'impersonate someone else or create accounts to evade a block or ban. Only one device '
+                "can be actively signed in at a time — signing in elsewhere signs the previous device "
+                'out, and this is shown to you in Account security along with the device and '
+                'approximate location of each sign-in.',
           ),
           _Section(
-            title: '4. Acceptable use',
+            title: '4. Contacts and groups',
+            body: 'Messaging someone generally requires them to accept a contact request from you '
+                'first. A group admin can add an existing contact to a group directly; adding anyone '
+                'else requires that person to accept an invite before they join or see anything about '
+                'the group. You can leave any group, block any contact, or decline any request at any '
+                'time.',
+          ),
+          _Section(
+            title: '5. Acceptable use',
             body: "Don't use NWisp to harass, threaten, or abuse others; send illegal content; spam; "
-                'attempt to break the encryption, security, or infrastructure; or use it in any way '
-                'that violates the law where you live. Accounts found doing this may be blocked or '
+                'attempt to break the encryption, security, or infrastructure; use it to add or invite '
+                'people without a legitimate reason to contact them; or use it in any way that '
+                'violates the law where you live. Accounts found doing this may be blocked or '
                 'removed.',
           ),
           _Section(
-            title: '5. Content is yours',
+            title: '6. Editing and deleting messages',
+            body: 'A text message you sent can be edited for a short window after sending, and shows '
+                '"(edited)" to the recipient once changed — it is not a way to silently rewrite what '
+                'someone already read. "Delete for everyone" removes a message from the recipient\'s '
+                'device too; "delete for me" or "delete chat" from the chat list only ever affects '
+                'your own device. Neither action can retroactively un-notify someone who already saw '
+                'the original message.',
+          ),
+          _Section(
+            title: '7. Verifying contacts and QR codes',
+            body: 'The "Verify safety number" and QR-code contact features exist to help you confirm '
+                'who you\'re actually talking to. Don\'t use these features to try to identify or '
+                'target someone without their consent — a QR code only ever encodes an account id, '
+                'never a real name, phone number, or location.',
+          ),
+          _Section(
+            title: '8. Content is yours',
             body: "You own what you send. Because of NWisp's design, message content is never "
                 'readable by the server and is deleted from it as soon as it reaches the recipient '
                 "— so there's no way for us to recover, moderate, or restore lost messages after the "
                 'fact. See the Privacy Policy for exactly what is and isn\'t stored.',
           ),
           _Section(
-            title: '6. No warranty',
+            title: '9. No warranty',
             body: 'NWisp is provided "as is," without warranties of any kind. Auto-delete timing, '
-                'delivery, and encryption are implemented carefully but not guaranteed to be perfect '
-                '— see the known-limitations notes in the in-app Help Centre.',
+                'delivery, screenshot prevention, and encryption are implemented carefully but not '
+                'guaranteed to be perfect — see the known-limitations notes in the in-app Help Centre.',
           ),
           _Section(
-            title: '7. Termination',
+            title: '10. Termination',
             body: 'You can stop using NWisp and request account deletion at any time by contacting '
                 'the developer. Accounts that violate these Terms may be suspended or removed.',
           ),
           _Section(
-            title: '8. Changes',
+            title: '11. Changes',
             body: "These Terms may change as the app changes. We'll update the date at the top of "
                 'this page — continuing to use the app after a change means you accept the update.',
           ),
           _Section(
-            title: '9. Contact',
+            title: '12. Contact',
             body: 'Questions about these Terms can be sent to rinshan602@gmail.com.',
           ),
           const SizedBox(height: 8),
