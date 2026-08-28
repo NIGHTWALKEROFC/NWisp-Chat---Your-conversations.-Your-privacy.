@@ -87,10 +87,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   late final StreamSubscription<QuerySnapshot<Map<String, dynamic>>> _typingSub;
   Set<String> _typingUids = {};
 
+  /// Debounce for the "hasn't updated the app yet" notice (see
+  /// _warnAboutPartialFailure) — without this, sending several messages in
+  /// a row to a group with one outdated member would pop a fresh snackbar
+  /// for every single one, even though nothing actionable changed between
+  /// them.
+  final Map<String, DateTime> _lastNotUpgradedWarnedAt = {};
+
   @override
   void initState() {
     super.initState();
     ScreenshotGuardService.acquire();
+    // Silently flush any messages that were queued because a member
+    // hadn't updated the app yet (see ContactNotUpgradedException /
+    // retryPendingResends) — opening the group is a natural, frequent
+    // catch-up point, on top of the app-startup-wide sweep in main.dart.
+    GroupMessageRelayService.retryPendingResends(widget.groupId);
     _textController.addListener(() => setState(() {}));
     _msgSub = LocalMessageStore.watchConversation(widget.groupId).listen((list) {
       if (!mounted) return;
@@ -219,6 +231,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   /// present, the snackbar gets a "Resend to X" action that retries
   /// delivery to just the members who were missed, closing the loop
   /// instead of leaving the warning as the only trace of the failure.
+  ///
+  /// BUGFIX: a member who simply hasn't updated the app yet
+  /// (ContactNotUpgradedException) used to get the exact same "Resend to
+  /// X" treatment as any other failure — meaning sending several messages
+  /// in a row to a group with one outdated member popped a fresh "Resend"
+  /// snackbar for every single one, even though tapping Resend would just
+  /// fail again for the identical reason every time (nothing changes
+  /// until THEY update). That specific case is now split out: it's
+  /// already been silently queued for automatic delivery (see
+  /// GroupMessageRelayService.retryPendingResends, called on group open
+  /// and at app startup), so this just shows a one-time-per-cooldown,
+  /// non-actionable heads up instead of repeating the same dead-end
+  /// prompt. Any OTHER kind of failure (network blip, momentarily-
+  /// exhausted prekey pool) keeps the original immediate, actionable
+  /// "Resend to X" behavior, since an instant retry can genuinely help there.
   Future<void> _warnAboutPartialFailure(
     GroupSendPartialFailure e, {
     String? resendText,
@@ -226,19 +253,47 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }) async {
     await _resolveUsernames(e.failures.map((f) => f.uid));
     if (!mounted) return;
-    final names = e.failures.map((f) => _nameFor(f.uid)).join(', ');
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("Didn't reach: $names — they may need to reopen the app once."),
-        duration: const Duration(seconds: 8),
-        action: resendText == null
-            ? null
-            : SnackBarAction(
-                label: e.failures.length == 1 ? 'Resend to $names' : 'Resend to ${e.failures.length}',
-                onPressed: () => _resendToFailedMembers(e, resendText, resendReplyToId),
-              ),
-      ),
-    );
+
+    final notUpgraded = e.failures.where((f) => f.error is ContactNotUpgradedException).toList();
+    final other = e.failures.where((f) => f.error is! ContactNotUpgradedException).toList();
+
+    if (other.isNotEmpty) {
+      final names = other.map((f) => _nameFor(f.uid)).join(', ');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Didn't reach: $names — they may need to reopen the app once."),
+          duration: const Duration(seconds: 8),
+          action: resendText == null
+              ? null
+              : SnackBarAction(
+                  label: other.length == 1 ? 'Resend to $names' : 'Resend to ${other.length}',
+                  onPressed: () => _resendToFailedMembers(
+                    GroupSendPartialFailure(e.clientId, other),
+                    resendText,
+                    resendReplyToId,
+                  ),
+                ),
+        ),
+      );
+    }
+
+    final now = DateTime.now();
+    final freshlyNotUpgraded = notUpgraded.where((f) {
+      final last = _lastNotUpgradedWarnedAt[f.uid];
+      return last == null || now.difference(last) > const Duration(minutes: 10);
+    }).toList();
+    if (freshlyNotUpgraded.isNotEmpty) {
+      for (final f in freshlyNotUpgraded) {
+        _lastNotUpgradedWarnedAt[f.uid] = now;
+      }
+      final names = freshlyNotUpgraded.map((f) => _nameFor(f.uid)).join(', ');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("$names hasn't updated the app yet — they'll get this once they do."),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    }
   }
 
   /// Retries delivering the same already-sent message to just the members
