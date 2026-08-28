@@ -87,9 +87,41 @@ class _LockGate extends StatefulWidget {
   State<_LockGate> createState() => _LockGateState();
 }
 
-class _LockGateState extends State<_LockGate> {
-  late final Future<bool> _needsUnlock = AppLockService.isEnabled();
+class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
+  late Future<bool> _needsUnlock = AppLockService.isEnabled();
   bool _unlocked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // BUGFIX: re-lock the moment the app is actually backgrounded, not
+    // just on a full cold start. Previously, once someone entered their
+    // PIN once after opening the app, _unlocked stayed true for the rest
+    // of that running app session — backgrounding and returning (the
+    // normal way people actually use their phone) never asked for the
+    // PIN again. That defeats the entire point of an app lock on a
+    // security-focused app: anyone who picked up an already-open,
+    // backgrounded phone would see every chat with no prompt at all.
+    if (state == AppLifecycleState.paused && _unlocked) {
+      setState(() {
+        _unlocked = false;
+        // Re-check in case app lock was just turned off in Settings —
+        // don't force a PIN prompt for someone who deliberately disabled it.
+        _needsUnlock = AppLockService.isEnabled();
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
