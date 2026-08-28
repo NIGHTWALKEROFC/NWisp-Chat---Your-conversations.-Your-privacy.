@@ -147,6 +147,94 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     await GroupService.instance.addMembers(widget.groupId, toAdd.toList());
   }
 
+  /// For anyone who ISN'T already a contact — see GroupService.
+  /// inviteToGroup's own doc comment for why this goes through a
+  /// request/accept flow instead of adding them directly the way
+  /// [_addMembers] does for contacts.
+  Future<void> _inviteNonContact(Group group) async {
+    final controller = TextEditingController();
+    List<Map<String, dynamic>> results = [];
+    final invited = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(sheetContext).viewInsets.bottom),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Invite someone else', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                      const SizedBox(height: 4),
+                      Text(
+                        "They'll get an invite to accept or decline — they won't be added until they do.",
+                        style: TextStyle(color: Theme.of(sheetContext).colorScheme.onSurfaceVariant, fontSize: 12),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: controller,
+                        autofocus: true,
+                        decoration: const InputDecoration(labelText: 'Search by username', border: OutlineInputBorder()),
+                        onChanged: (query) async {
+                          final found = await _contactService.searchUsers(query);
+                          setSheetState(() => results = found.where((u) => !group.members.contains(u['uid'])).toList());
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: results.map((u) {
+                      final uid = u['uid'] as String;
+                      final username = (u['username'] as String?) ?? 'Unknown';
+                      return ListTile(
+                        leading: CircleAvatar(child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?')),
+                        title: Text(username),
+                        trailing: FilledButton(
+                          onPressed: () async {
+                            try {
+                              await GroupService.instance.inviteToGroup(
+                                groupId: widget.groupId,
+                                groupName: group.name,
+                                groupAvatarUrl: group.avatarUrl,
+                                toUid: uid,
+                                toUsername: username,
+                              );
+                              if (sheetContext.mounted) Navigator.pop(sheetContext, true);
+                            } catch (e) {
+                              if (sheetContext.mounted) {
+                                ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                  SnackBar(content: Text("Couldn't send invite: $e")),
+                                );
+                              }
+                            }
+                          },
+                          child: const Text('Invite'),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (invited == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invite sent')));
+    }
+  }
+
   Future<void> _removeMember(String uid, String username) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -316,10 +404,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   children: [
                     Text('Members', style: Theme.of(context).textTheme.titleSmall),
                     if (amAdmin)
-                      TextButton.icon(
-                        onPressed: () => _addMembers(group),
-                        icon: const Icon(Icons.person_add_alt_1_outlined, size: 18),
-                        label: const Text('Add'),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => _addMembers(group),
+                            icon: const Icon(Icons.person_add_alt_1_outlined, size: 18),
+                            label: const Text('Add'),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => _inviteNonContact(group),
+                            icon: const Icon(Icons.mail_outline, size: 18),
+                            label: const Text('Invite'),
+                          ),
+                        ],
                       ),
                   ],
                 ),
