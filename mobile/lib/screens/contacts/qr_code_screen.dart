@@ -38,12 +38,19 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
       // no reason to keep it warm (and the flashlight/lens active) while
       // looking at your own code.
       if (_tabController.indexIsChanging) return;
-      if (_tabController.index == 1) {
-        _scannerController ??= MobileScannerController();
-      } else {
-        _scannerController?.dispose();
-        _scannerController = null;
-      }
+      // BUGFIX: this used to create/dispose _scannerController without
+      // calling setState — the controller was created, but the widget
+      // tree never rebuilt to swap the placeholder SizedBox.shrink() out
+      // for the actual MobileScanner, so the Scan tab stayed permanently
+      // blank with no camera preview.
+      setState(() {
+        if (_tabController.index == 1) {
+          _scannerController ??= MobileScannerController();
+        } else {
+          _scannerController?.dispose();
+          _scannerController = null;
+        }
+      });
     });
   }
 
