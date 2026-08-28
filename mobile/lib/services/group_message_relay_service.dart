@@ -10,6 +10,7 @@ import 'media_service.dart';
 import 'message_relay_service.dart' show NotSignedInException;
 import 'signal_session_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
+export 'signal_session_service.dart' show ContactNotUpgradedException;
 
 /// One member a group message couldn't be delivered to, and why. Carried
 /// by [GroupSendPartialFailure] so the UI can tell the sender exactly who
@@ -117,6 +118,22 @@ class GroupMessageRelayService {
         });
       } catch (e) {
         failures.add(GroupMemberSendFailure(uid, e));
+        // This specific failure reason won't be fixed by an immediate
+        // manual retry — only by the OTHER person updating their app —
+        // so queue it for silent automatic retry instead (see
+        // retryPendingResends) rather than surfacing yet another "try
+        // again" prompt that would just fail identically.
+        if (e is ContactNotUpgradedException) {
+          await LocalMessageStore.queuePendingGroupResend(
+            groupId: groupId,
+            clientId: clientId,
+            uid: uid,
+            payload: text,
+            messageType: messageType,
+            replyToId: replyToId,
+            ttlHours: ttlHours,
+          );
+        }
       }
     }
 
@@ -190,6 +207,17 @@ class GroupMessageRelayService {
         });
       } catch (e) {
         failures.add(GroupMemberSendFailure(uid, e));
+        if (e is ContactNotUpgradedException) {
+          await LocalMessageStore.queuePendingGroupResend(
+            groupId: groupId,
+            clientId: clientId,
+            uid: uid,
+            payload: metaPayload,
+            messageType: messageType,
+            mediaPath: remotePath,
+            ttlHours: ttlHours,
+          );
+        }
       }
     }
 
@@ -330,6 +358,47 @@ class GroupMessageRelayService {
       }
     }
     return failures;
+  }
+
+  /// Silently retries every queued resend for [groupId] — see
+  /// ContactNotUpgradedException / LocalMessageStore.queuePendingGroupResend.
+  /// Called when a group chat is opened (GroupChatScreen.initState) and
+  /// once at app startup for every group the person is in (see
+  /// GroupService.retryAllPendingResends), so a message queued because a
+  /// member "hasn't updated yet" actually reaches them once they do,
+  /// without the sender having to do anything or see another prompt.
+  /// Entries that still fail (still not upgraded) simply stay queued for
+  /// next time — no snackbar, no user-visible failure, since nothing
+  /// about this attempt is actionable by the sender right now.
+  static Future<void> retryPendingResends(String groupId) async {
+    final pending = await LocalMessageStore.pendingGroupResends(groupId);
+    if (pending.isEmpty) return;
+    final myUid = _myUid;
+    for (final item in pending) {
+      if (item.uid == myUid) {
+        await LocalMessageStore.removePendingGroupResend(item.id);
+        continue;
+      }
+      try {
+        final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(item.uid, item.payload);
+        await _client.from('message_relay').insert({
+          'conversation_id': item.groupId,
+          'sender_uid': myUid,
+          'recipient_uid': item.uid,
+          'ciphertext': ciphertext,
+          'nonce': nonce,
+          'message_type': item.messageType,
+          'media_path': item.mediaPath,
+          'reply_to_id': item.replyToId,
+          'client_id': item.clientId,
+          'ttl_hours': item.ttlHours,
+        });
+        await LocalMessageStore.removePendingGroupResend(item.id);
+      } catch (_) {
+        // Still not upgraded (or some other transient issue) — leave it
+        // queued, try again next time this is called.
+      }
+    }
   }
 
   static Future<void> deleteForEveryone({
