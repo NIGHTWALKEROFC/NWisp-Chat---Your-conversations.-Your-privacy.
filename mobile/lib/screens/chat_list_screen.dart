@@ -12,6 +12,7 @@ import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
 import 'groups/create_group_screen.dart';
 import 'groups/group_chat_screen.dart';
+import 'groups/group_invites_screen.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
 import 'settings/settings_screen.dart';
@@ -31,6 +32,7 @@ class _ChatRow {
   final bool isPlaceholder;
   final bool muted;
   final bool archived;
+  final bool pinned;
 
   _ChatRow({
     required this.conversationId,
@@ -44,6 +46,7 @@ class _ChatRow {
     required this.isPlaceholder,
     this.muted = false,
     this.archived = false,
+    this.pinned = false,
   });
 }
 
@@ -162,6 +165,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return false;
   }
 
+  bool _isPinned(String conversationId) {
+    for (final d in _convoDocs) {
+      if (d.id == conversationId) return _conversationService.isPinnedByMe(d.data());
+    }
+    for (final d in _groupDocs) {
+      if (d.id == conversationId) return GroupService.instance.isPinnedByMe(d.data());
+    }
+    return false;
+  }
+
   /// Merges real message-backed summaries with any 1:1 conversation or
   /// group you've opened/created but not messaged in yet, so a chat shows
   /// up on the home screen the moment you start it — not only after the
@@ -181,6 +194,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         isPlaceholder: false,
         muted: _isMuted(s.conversationId),
         archived: _isArchived(s.conversationId),
+        pinned: _isPinned(s.conversationId),
       );
     }
     for (final doc in _convoDocs) {
@@ -198,6 +212,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         isPlaceholder: true,
         muted: _conversationService.isMutedByMe(doc.data()),
         archived: _conversationService.isArchivedByMe(doc.data()),
+        pinned: _conversationService.isPinnedByMe(doc.data()),
       );
     }
     for (final doc in _groupDocs) {
@@ -218,9 +233,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
         isPlaceholder: true,
         muted: GroupService.instance.isMutedByMe(data),
         archived: GroupService.instance.isArchivedByMe(data),
+        pinned: GroupService.instance.isPinnedByMe(data),
       );
     }
-    final rows = byConvo.values.toList()..sort((a, b) => b.lastAt.compareTo(a.lastAt));
+    final rows = byConvo.values.toList()
+      ..sort((a, b) {
+        if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
+        return b.lastAt.compareTo(a.lastAt);
+      });
     return rows;
   }
 
@@ -265,6 +285,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
         actions: _showArchived
             ? null
             : [
+          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: GroupService.instance.myGroupInviteRequestsStream(),
+            builder: (context, snapshot) {
+              final count = snapshot.data?.docs.length ?? 0;
+              return IconButton(
+                icon: Badge(
+                  isLabelVisible: count > 0,
+                  label: Text('$count'),
+                  child: const Icon(Icons.mail_outline),
+                ),
+                tooltip: 'Group invites',
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const GroupInvitesScreen())),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'Search people',
@@ -367,10 +402,97 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
+  /// WhatsApp-style long-press quick actions on a chat row — pin, mute,
+  /// archive, and a LOCAL-ONLY delete. "Delete chat" here intentionally
+  /// only clears this device's own copy (see LocalMessageStore.
+  /// clearConversation) and never notifies the other side — that's
+  /// "Clear chat" in ChatSettingsScreen (MessageRelayService.
+  /// clearForBoth), a distinctly different, both-sides action reachable
+  /// from inside the chat itself.
+  void _showChatOptions(BuildContext context, ColorScheme scheme, _ChatRow row) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(row.pinned ? Icons.push_pin : Icons.push_pin_outlined),
+              title: Text(row.pinned ? 'Unpin' : 'Pin to top'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                if (row.isGroup) {
+                  GroupService.instance.setPinned(row.conversationId, !row.pinned);
+                } else {
+                  _conversationService.setPinned(row.conversationId, !row.pinned);
+                }
+              },
+            ),
+            ListTile(
+              leading: Icon(row.muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+              title: Text(row.muted ? 'Unmute' : 'Mute'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                if (row.isGroup) {
+                  GroupService.instance.setMuted(row.conversationId, !row.muted);
+                } else {
+                  _conversationService.setMuted(row.conversationId, !row.muted);
+                }
+              },
+            ),
+            ListTile(
+              leading: Icon(row.archived ? Icons.unarchive_outlined : Icons.archive_outlined),
+              title: Text(row.archived ? 'Unarchive' : 'Archive'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                if (row.isGroup) {
+                  GroupService.instance.setArchived(row.conversationId, !row.archived);
+                } else {
+                  _conversationService.setArchived(row.conversationId, !row.archived);
+                }
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: scheme.error),
+              title: Text('Delete chat', style: TextStyle(color: scheme.error)),
+              subtitle: const Text('Removes messages from this device only'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (dialogContext) => AlertDialog(
+                    title: const Text('Delete this chat?'),
+                    content: const Text(
+                      "This removes all messages from this device only — it won't notify or affect "
+                      'anyone else in the chat, and new messages will still arrive normally.',
+                    ),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+                      FilledButton(
+                        style: FilledButton.styleFrom(backgroundColor: scheme.error),
+                        onPressed: () => Navigator.pop(dialogContext, true),
+                        child: const Text('Delete'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed == true) {
+                  await LocalMessageStore.clearConversation(row.conversationId);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _chatRowTile(BuildContext context, ColorScheme scheme, _ChatRow row) {
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (row.pinned) Padding(padding: const EdgeInsets.only(right: 6), child: Icon(Icons.push_pin, size: 15, color: scheme.onSurfaceVariant)),
         if (row.muted) Padding(padding: const EdgeInsets.only(right: 6), child: Icon(Icons.notifications_off, size: 16, color: scheme.onSurfaceVariant)),
         if (row.unreadCount > 0)
           CircleAvatar(
@@ -401,6 +523,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ),
         trailing: trailing,
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId))),
+        onLongPress: () => _showChatOptions(context, scheme, row),
       );
     }
 
@@ -427,6 +550,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
             ),
           ),
+          onLongPress: () => _showChatOptions(context, scheme, row),
         );
       },
     );
