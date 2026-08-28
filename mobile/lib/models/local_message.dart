@@ -37,6 +37,41 @@ class LocalMessage {
   });
 }
 
+/// One queued group-message copy waiting to be retried to a specific
+/// member once they publish a Signal key bundle (see
+/// ContactNotUpgradedException / LocalMessageStore.queuePendingGroupResend
+/// / GroupMessageRelayService.retryPendingResends). [payload] is the
+/// plaintext that still needs to be Signal-encrypted for [uid] — for a
+/// text message that's the message text itself; for media it's the same
+/// small JSON metadata blob (fileKey/nonce/mime/etc.) the original send
+/// used, since the actual file bytes are already uploaded once and shared
+/// by every member.
+class PendingGroupResend {
+  final String id;
+  final String groupId;
+  final String clientId;
+  final String uid;
+  final String payload;
+  final String messageType;
+  final String? mediaPath;
+  final String? replyToId;
+  final int ttlHours;
+  final DateTime createdAt;
+
+  const PendingGroupResend({
+    required this.id,
+    required this.groupId,
+    required this.clientId,
+    required this.uid,
+    required this.payload,
+    required this.messageType,
+    this.mediaPath,
+    this.replyToId,
+    required this.ttlHours,
+    required this.createdAt,
+  });
+}
+
 class ConversationSummary {
   final String conversationId;
   final String peerUid;
