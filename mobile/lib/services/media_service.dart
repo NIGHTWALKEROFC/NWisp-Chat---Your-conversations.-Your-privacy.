@@ -18,8 +18,22 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// Every exception below now includes the real HTTP status + response body
 /// so whichever it is shows up directly in the app's own error snackbar.
 class MediaService {
-  static const _edgeFunctionUrl =
-      'https://bgbmrtwbndoewwwjxnxa.supabase.co/functions/v1/get-signed-url';
+  // BUGFIX: this used to be a HARDCODED literal pointing at one specific
+  // project (bgbmrtwbndoewwwjxnxa — the original template project this
+  // repo shipped with). Storage/Postgres calls elsewhere in the app go
+  // through `Supabase.instance.client`, which is initialized in main.dart
+  // from the SUPABASE_URL build-time --dart-define — so as soon as anyone
+  // rebuilds this app pointed at THEIR OWN Supabase project (a different
+  // URL), every other Supabase call correctly follows them there, but this
+  // one function call kept calling the original hardcoded project instead.
+  // That project either never had the function deployed, or isn't even
+  // this developer's project to deploy to — so no amount of correctly
+  // deploying to *your own* project would ever fix the 404, because the
+  // app was never calling your project's function in the first place.
+  // Deriving this from the same SUPABASE_URL define main.dart uses makes
+  // it impossible for the two to drift apart again.
+  static String get _edgeFunctionUrl =>
+      '${const String.fromEnvironment('SUPABASE_URL')}/functions/v1/get-signed-url';
 
   static Future<String> _idToken() async {
     return (await FirebaseAuth.instance.currentUser!.getIdToken())!;
