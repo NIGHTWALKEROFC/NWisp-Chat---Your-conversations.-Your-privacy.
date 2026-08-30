@@ -9,8 +9,24 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// on disk and would show up as-is in any storage inspection/backup tool
 /// that gets access to it (e.g. a rooted device). It's now stored as a
 /// salted SHA-256 hash, so the PIN itself is never persisted anywhere.
+///
+/// BUGFIX 2: `_storage` used to be built with NO AndroidOptions, which
+/// defaults to flutter_secure_storage's older, per-value Keystore-key
+/// encryption path (`encryptedSharedPreferences: false`). That legacy path
+/// is documented to be unreliable on stock Android across a real process
+/// kill on many OEM skins (Samsung/MIUI/etc. more aggressively invalidate
+/// its Keystore key under Doze/App Standby) — values written during a
+/// session can simply fail to read back as null after the app is swiped
+/// away from Recents and cold-started again, which reads exactly like
+/// "app lock silently turned itself off." SecureStorageService (right next
+/// to this file) already opts into the newer, more robust
+/// EncryptedSharedPreferences-backed path via `encryptedSharedPreferences:
+/// true` — this now matches that, so the PIN/enabled flag survive a real
+/// app kill the same way the rest of the app's secure data already does.
 class AppLockService {
-  static const _storage = FlutterSecureStorage();
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
   static const _pinHashKey = 'app_lock_pin_hash';
   static const _pinSaltKey = 'app_lock_pin_salt';
   static const _enabledKey = 'app_lock_enabled';
