@@ -26,6 +26,21 @@ class DeviceSessionService {
   StreamSubscription? _watchSub;
   String? _myDeviceId;
 
+  // BUGFIX: [watchForRemoteLogout] used to judge its very first Firestore
+  // snapshot as-is. That snapshot can easily arrive BEFORE this device's
+  // own [claimThisDevice] write has actually landed — claimThisDevice does
+  // a device-info lookup, a network geolocation call (up to 5s), and two
+  // Firestore writes before it's done, while main.dart's authStateChanges
+  // listener calls watchForRemoteLogout almost immediately after sign-in.
+  // The result: the listener's first snapshot still reflected whatever was
+  // in Firestore from BEFORE this login (which never matches this
+  // device), reading as "signed in elsewhere" and signing the person
+  // straight back out of the login they just completed — every time.
+  // [_lastClaim] lets [watchForRemoteLogout] wait for any of THIS
+  // instance's own in-flight claims to finish, then re-read fresh data,
+  // before ever judging a mismatch as a real takeover.
+  Future<void>? _lastClaim;
+
   DocumentReference<Map<String, dynamic>> _sessionRef(String uid) =>
       _db.collection('users').doc(uid).collection('private').doc('session');
 
@@ -101,7 +116,17 @@ class DeviceSessionService {
   /// other device that was previously active gets signed out next time its
   /// listener fires (see [watchForRemoteLogout]), typically within
   /// seconds if it's online, or the next time it's foregrounded otherwise.
-  Future<void> claimThisDevice(String uid) async {
+  Future<void> claimThisDevice(String uid) {
+    // Assigned synchronously, before any awaiting happens inside
+    // [_claimThisDevice] — so [watchForRemoteLogout], however soon it
+    // runs after this call starts, can always see that a claim is
+    // in-flight and wait for it. See [_lastClaim]'s doc comment above.
+    final future = _claimThisDevice(uid);
+    _lastClaim = future;
+    return future;
+  }
+
+  Future<void> _claimThisDevice(String uid) async {
     final deviceId = await _localDeviceId();
     final label = await _realDeviceLabel();
     final location = await _locationLabel();
@@ -145,8 +170,18 @@ class DeviceSessionService {
   /// sign-out with an explanatory message.
   void watchForRemoteLogout(String uid, void Function() onSupersededByAnotherDevice) {
     _watchSub?.cancel();
-    _watchSub = _sessionRef(uid).snapshots().listen((snap) async {
-      final activeDeviceId = snap.data()?['activeDeviceId'] as String?;
+    _watchSub = _sessionRef(uid).snapshots().listen((_) async {
+      // BUGFIX: deliberately ignore the snapshot's own payload and always
+      // re-read fresh below, once any of THIS device's own in-flight
+      // claimThisDevice() write has finished. Trusting the delivered
+      // snapshot directly was the bug — see [_lastClaim]'s doc comment for
+      // exactly why that read as "signed in elsewhere" on every fresh
+      // login. Awaiting a null/already-finished future is an instant
+      // no-op, so this changes nothing for the genuine "someone else
+      // really did just log in elsewhere" case.
+      if (_lastClaim != null) await _lastClaim;
+      final data = (await _sessionRef(uid).get()).data();
+      final activeDeviceId = data?['activeDeviceId'] as String?;
       if (activeDeviceId == null) return; // no claim recorded yet - nothing to compare against
       final myId = await _localDeviceId();
       if (activeDeviceId != myId) {
