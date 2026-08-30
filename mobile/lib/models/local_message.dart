@@ -9,7 +9,7 @@ class LocalMessage {
   final String? mediaPath;
   final String? replyToId;
   final Map<String, String> reactions;
-  final String status; // sent | delivered | read
+  final String status; // sending | sent | delivered | read | failed
   final DateTime createdAt;
   final DateTime? expiresAt;
 
@@ -69,6 +69,34 @@ class PendingGroupResend {
     this.replyToId,
     required this.ttlHours,
     required this.createdAt,
+  });
+}
+
+/// The extra bookkeeping [LocalMessageStore] keeps for a photo/video/voice
+/// message while it's uploading, so a failed send can be retried without
+/// re-picking the file — see LocalMessageStore.savePendingMediaSend /
+/// MessageRelayService.retryMediaMessage. The caption and local media
+/// file path aren't duplicated here — they're read back from the
+/// `messages` row itself via LocalMessageStore.getById.
+class PendingMediaSend {
+  final String clientId;
+  final String conversationId;
+  final String? recipientUid; // null for a group send — see isGroup
+  final bool isGroup;
+  final String extension;
+  final String mime;
+  final int? durationMs;
+  final int ttlHours;
+
+  const PendingMediaSend({
+    required this.clientId,
+    required this.conversationId,
+    this.recipientUid,
+    required this.isGroup,
+    required this.extension,
+    required this.mime,
+    this.durationMs,
+    required this.ttlHours,
   });
 }
 
