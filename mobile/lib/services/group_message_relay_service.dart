@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -176,14 +177,62 @@ class GroupMessageRelayService {
     final clientId = _uuid.v4();
     final others = memberUids.where((u) => u != myUid).toSet().toList();
 
-    final fileKey = await CryptoService.generateFileKey();
-    final (encryptedBytes, fileNonce) = await CryptoService.encryptFileBytes(plainBytes, fileKey);
-    final remotePath = 'chat_media/$myUid/${_uuid.v4()}.enc';
-    await MediaService.uploadBytes(Uint8List.fromList(encryptedBytes), _mediaBucket, remotePath);
+    // Feature: upload progress + retry — same insert-before-upload order
+    // as MessageRelayService.sendMediaMessage (see its doc comment): the
+    // bubble and progress indicator show up immediately, and a failed
+    // upload leaves a 'failed' row + pending-send record instead of
+    // vanishing. Group retry is upload-only (see [retryMediaMessage]
+    // below) — an already-uploaded file that failed only for SOME
+    // members still goes through GroupSendPartialFailure exactly as
+    // before, not through the failed/retry path at all.
+    final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
+    final createdAt = DateTime.now();
+    await LocalMessageStore.insert(
+      id: clientId,
+      conversationId: groupId,
+      peerUid: myUid,
+      senderUid: myUid,
+      isMine: true,
+      text: caption ?? '',
+      messageType: messageType,
+      mediaPath: localPath,
+      status: 'sending',
+      createdAt: createdAt,
+      expiresAt: _expiryFor(createdAt, ttlHours),
+    );
+    await LocalMessageStore.savePendingMediaSend(
+      clientId: clientId,
+      conversationId: groupId,
+      isGroup: true,
+      extension: extension,
+      mime: mime,
+      durationMs: durationMs,
+      ttlHours: ttlHours,
+    );
+
+    String remotePath;
+    String fileKeyForMeta, fileNonceForMeta;
+    try {
+      final fileKey = await CryptoService.generateFileKey();
+      final (encryptedBytes, fileNonce) = await CryptoService.encryptFileBytes(plainBytes, fileKey);
+      remotePath = 'chat_media/$myUid/${_uuid.v4()}.enc';
+      await MediaService.uploadBytes(
+        Uint8List.fromList(encryptedBytes),
+        _mediaBucket,
+        remotePath,
+        onProgress: MediaService.progressReporterFor(clientId),
+      );
+      fileKeyForMeta = fileKey;
+      fileNonceForMeta = fileNonce;
+    } catch (e) {
+      await LocalMessageStore.setStatus(clientId, 'failed');
+      MediaService.clearProgress(clientId);
+      rethrow;
+    }
 
     final metaPayload = jsonEncode({
-      'fileKey': fileKey,
-      'nonce': fileNonce,
+      'fileKey': fileKeyForMeta,
+      'nonce': fileNonceForMeta,
       'mime': mime,
       'extension': extension,
       if (caption != null && caption.isNotEmpty) 'caption': caption,
@@ -221,24 +270,88 @@ class GroupMessageRelayService {
       }
     }
 
-    final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
-    final createdAt = DateTime.now();
-    await LocalMessageStore.insert(
-      id: clientId,
-      conversationId: groupId,
-      peerUid: myUid,
-      senderUid: myUid,
-      isMine: true,
-      text: caption ?? '',
-      messageType: messageType,
-      mediaPath: localPath,
-      status: 'sent',
-      createdAt: createdAt,
-      expiresAt: _expiryFor(createdAt, ttlHours),
-    );
+    // The upload itself succeeded, so this is 'sent' even if some members
+    // individually failed (GroupSendPartialFailure below covers that) —
+    // only an upload failure (above) should leave it in 'failed'/retryable.
+    await LocalMessageStore.setStatus(clientId, 'sent');
+    await LocalMessageStore.removePendingMediaSend(clientId);
+    MediaService.clearProgress(clientId);
 
     if (failures.isNotEmpty) throw GroupSendPartialFailure(clientId, failures);
     return clientId;
+  }
+
+  /// Retries the UPLOAD half of a group media send that failed before any
+  /// member ever received it (status 'failed', not the partial-failure
+  /// case above, which is a separate "Resend to X" flow since the file
+  /// already made it to Storage there). Re-reads the already-saved local
+  /// file, re-uploads, then fans the relay rows out to every current
+  /// member fresh.
+  static Future<void> retryMediaMessage(String clientId) async {
+    final myUid = _myUid;
+    final pending = await LocalMessageStore.getPendingMediaSend(clientId);
+    final message = await LocalMessageStore.getById(clientId);
+    if (pending == null || message == null || message.mediaPath == null) {
+      throw Exception('This message can no longer be retried — its local data is gone.');
+    }
+    final memberUids = await LocalMessageStore.cachedGroupMemberUids(pending.conversationId);
+    final others = memberUids.where((u) => u != myUid).toList();
+
+    await LocalMessageStore.setStatus(clientId, 'sending');
+    String remotePath;
+    String fileKey, fileNonce;
+    try {
+      final plainBytes = await File(message.mediaPath!).readAsBytes();
+      final key = await CryptoService.generateFileKey();
+      final (encryptedBytes, nonce) = await CryptoService.encryptFileBytes(plainBytes, key);
+      remotePath = 'chat_media/$myUid/${_uuid.v4()}.enc';
+      await MediaService.uploadBytes(
+        Uint8List.fromList(encryptedBytes),
+        _mediaBucket,
+        remotePath,
+        onProgress: MediaService.progressReporterFor(clientId),
+      );
+      fileKey = key;
+      fileNonce = nonce;
+    } catch (e) {
+      await LocalMessageStore.setStatus(clientId, 'failed');
+      MediaService.clearProgress(clientId);
+      rethrow;
+    }
+
+    final metaPayload = jsonEncode({
+      'fileKey': fileKey,
+      'nonce': fileNonce,
+      'mime': pending.mime,
+      'extension': pending.extension,
+      if (message.text.isNotEmpty) 'caption': message.text,
+      if (pending.durationMs != null) 'durationMs': pending.durationMs,
+    });
+
+    final failures = <GroupMemberSendFailure>[];
+    for (final uid in others) {
+      try {
+        final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(uid, metaPayload);
+        await _client.from('message_relay').insert({
+          'conversation_id': pending.conversationId,
+          'sender_uid': myUid,
+          'recipient_uid': uid,
+          'ciphertext': ciphertext,
+          'nonce': nonce,
+          'message_type': message.messageType,
+          'media_path': remotePath,
+          'client_id': clientId,
+          'ttl_hours': pending.ttlHours,
+        });
+      } catch (e) {
+        failures.add(GroupMemberSendFailure(uid, e));
+      }
+    }
+
+    await LocalMessageStore.setStatus(clientId, 'sent');
+    await LocalMessageStore.removePendingMediaSend(clientId);
+    MediaService.clearProgress(clientId);
+    if (failures.isNotEmpty) throw GroupSendPartialFailure(clientId, failures);
   }
 
   /// Fans a reaction out to every other member — best-effort, same as 1:1:
