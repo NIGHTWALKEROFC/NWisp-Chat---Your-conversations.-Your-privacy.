@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -18,6 +20,29 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 /// Every exception below now includes the real HTTP status + response body
 /// so whichever it is shows up directly in the app's own error snackbar.
 class MediaService {
+  /// One entry per in-flight (or just-finished/failed) media send, keyed
+  /// by that message's clientId. A bubble widget listens to its own
+  /// notifier via ValueListenableBuilder to show a live progress ring —
+  /// see VoiceMessageBubble / the image/video bubbles in chat_detail_screen
+  /// and group_chat_screen, and MessageRelayService.sendMediaMessage /
+  /// GroupMessageRelayService.sendGroupMediaMessage, which create and feed
+  /// the notifier via [progressReporterFor]. Entries are removed once a
+  /// send finally settles (success or failure) — see [clearProgress].
+  static final Map<String, ValueNotifier<double>> uploadProgress = {};
+
+  static ValueNotifier<double> progressNotifierFor(String clientId) =>
+      uploadProgress.putIfAbsent(clientId, () => ValueNotifier(0.0));
+
+  /// A plain callback bound to [clientId]'s notifier — this is what gets
+  /// passed as `onProgress` into [uploadBytes] so the sending code doesn't
+  /// need to touch ValueNotifier directly.
+  static void Function(double) progressReporterFor(String clientId) =>
+      (p) => progressNotifierFor(clientId).value = p;
+
+  static void clearProgress(String clientId) {
+    uploadProgress.remove(clientId);
+  }
+
   // BUGFIX: this used to be a HARDCODED literal pointing at one specific
   // project (bgbmrtwbndoewwwjxnxa — the original template project this
   // repo shipped with). Storage/Postgres calls elsewhere in the app go
@@ -83,7 +108,25 @@ class MediaService {
   /// Same as [uploadFile] but for raw bytes already sitting in memory —
   /// used for encrypted chat media, where we never want the encrypted blob
   /// touching disk on its way out.
-  static Future<String> uploadBytes(Uint8List bytes, String bucket, String path) async {
+  ///
+  /// [onProgress], if given, is called with a 0.0-1.0 value as the upload
+  /// proceeds. This is a smoothly-creeping ESTIMATE (it caps at 0.9 until
+  /// the call actually finishes, then jumps to 1.0), not a true
+  /// bytes-sent/bytes-total ratio — the supabase_flutter storage client
+  /// doesn't expose a real byte-progress hook for uploadBinaryToSignedUrl,
+  /// and reimplementing Supabase Storage's signed-upload wire format by
+  /// hand to get one carries a real risk of getting some header or the
+  /// exact request shape subtly wrong — which would break uploads outright,
+  /// a far worse outcome than a progress bar that's an honest estimate
+  /// rather than byte-exact. Good enough to show real, continuous motion
+  /// instead of a bar that's either 0% or 100% with nothing in between.
+  static Future<String> uploadBytes(
+    Uint8List bytes,
+    String bucket,
+    String path, {
+    void Function(double progress)? onProgress,
+  }) async {
+    onProgress?.call(0.05);
     final idToken = await _idToken();
     final res = await http.post(
       Uri.parse(_edgeFunctionUrl),
@@ -92,11 +135,24 @@ class MediaService {
     );
     if (res.statusCode != 200) _throwWithDetail('Failed to get upload URL', res);
     final data = jsonDecode(res.body);
+    onProgress?.call(0.15);
 
-    await Supabase.instance.client.storage
-        .from(bucket)
-        .uploadBinaryToSignedUrl(path, data['token'], bytes);
-
+    Timer? ticker;
+    if (onProgress != null) {
+      var estimated = 0.15;
+      ticker = Timer.periodic(const Duration(milliseconds: 180), (_) {
+        estimated = (estimated + 0.05).clamp(0.0, 0.9);
+        onProgress(estimated);
+      });
+    }
+    try {
+      await Supabase.instance.client.storage
+          .from(bucket)
+          .uploadBinaryToSignedUrl(path, data['token'], bytes);
+    } finally {
+      ticker?.cancel();
+    }
+    onProgress?.call(1.0);
     return path;
   }
 
