@@ -1,24 +1,22 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:chewie/chewie.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
-import 'package:record/record.dart';
-import 'package:uuid/uuid.dart';
-import 'package:video_player/video_player.dart';
 import '../../models/local_message.dart';
 import '../../services/group_message_relay_service.dart';
 import '../../services/group_service.dart';
 import '../../services/local_message_store.dart';
 import '../../services/media_compression_service.dart';
+import '../../services/media_service.dart';
 import '../../services/message_relay_service.dart' show NotSignedInException;
 import '../../services/screenshot_guard_service.dart';
+import '../../services/voice_recording_controller.dart';
+import '../../widgets/media_viewer_screen.dart';
+import '../../widgets/voice_message_bubble.dart';
+import '../../widgets/voice_recording_bar.dart';
 import '../chat/chat_search_screen.dart';
 import 'group_info_screen.dart';
 
@@ -37,12 +35,6 @@ String _mediaLabel(String type) {
   }
 }
 
-String _fmtSeconds(int totalSeconds) {
-  final m = (totalSeconds ~/ 60).toString().padLeft(2, '0');
-  final s = (totalSeconds % 60).toString().padLeft(2, '0');
-  return '$m:$s';
-}
-
 class GroupChatScreen extends StatefulWidget {
   final String groupId;
   const GroupChatScreen({super.key, required this.groupId});
@@ -54,7 +46,12 @@ class GroupChatScreen extends StatefulWidget {
 class _GroupChatScreenState extends State<GroupChatScreen> {
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
-  final _voiceRecorder = AudioRecorder();
+  // Feature: unified voice/media UI (chat + group) — shared controller
+  // instead of this screen's own duplicated recording state/logic.
+  late final _voiceController = VoiceRecordingController(
+    onTick: () => setState(() {}),
+    onMaxLengthReached: _stopAndSendVoiceRecording,
+  );
   String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
   List<LocalMessage> _messages = [];
@@ -75,16 +72,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   /// (a space typed after it, the @ deleted, etc). See _onTextChanged.
   List<String> _mentionSuggestions = [];
 
-  bool _isRecordingVoice = false;
-  int _recordSeconds = 0;
-  Timer? _recordTimer;
-  String? _recordingPath;
   bool _sendingMedia = false;
-  static const _maxVoiceSeconds = 300;
+
+  // Feature: accurate per-member group read receipts — messageId ->
+  // {memberUid: 'delivered'|'read'}, kept live via watchGroupReceipts.
+  Map<String, Map<String, String>> _receipts = {};
 
   late final StreamSubscription<List<LocalMessage>> _msgSub;
   late final StreamSubscription<DocumentSnapshot<Map<String, dynamic>>> _groupSub;
   late final StreamSubscription<QuerySnapshot<Map<String, dynamic>>> _typingSub;
+  late final StreamSubscription<Map<String, Map<String, String>>> _receiptSub;
   Set<String> _typingUids = {};
 
   /// Debounce for the "hasn't updated the app yet" notice (see
@@ -133,6 +130,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             .toSet();
       });
     });
+    // Feature: accurate per-member group read receipts.
+    _receiptSub = LocalMessageStore.watchGroupReceipts(widget.groupId).listen((m) {
+      if (mounted) setState(() => _receipts = m);
+    });
   }
 
   @override
@@ -142,10 +143,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _msgSub.cancel();
     _groupSub.cancel();
     _typingSub.cancel();
+    _receiptSub.cancel();
     _textController.dispose();
     _scrollController.dispose();
-    _recordTimer?.cancel();
-    _voiceRecorder.dispose();
+    _voiceController.dispose();
     super.dispose();
   }
 
@@ -521,73 +522,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _startVoiceRecording() async {
-    if (!await _voiceRecorder.hasPermission()) {
+    if (!await _voiceController.hasPermission()) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Microphone permission is needed to record a voice message.')),
       );
       return;
     }
-    final dir = await getTemporaryDirectory();
-    final path = p.join(dir.path, '${const Uuid().v4()}.m4a');
-    await _voiceRecorder.start(
-      const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000, sampleRate: 44100, numChannels: 1),
-      path: path,
-    );
-    setState(() {
-      _isRecordingVoice = true;
-      _recordingPath = path;
-      _recordSeconds = 0;
-    });
-    _recordTimer?.cancel();
-    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      setState(() => _recordSeconds++);
-      if (_recordSeconds >= _maxVoiceSeconds) _stopAndSendVoiceRecording();
-    });
+    await _voiceController.start();
   }
 
-  Future<void> _cancelVoiceRecording() async {
-    _recordTimer?.cancel();
-    try {
-      await _voiceRecorder.stop();
-    } catch (_) {}
-    final path = _recordingPath;
-    if (path != null) {
-      try {
-        final f = File(path);
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
-    }
-    setState(() {
-      _isRecordingVoice = false;
-      _recordingPath = null;
-      _recordSeconds = 0;
-    });
-  }
+  Future<void> _cancelVoiceRecording() => _voiceController.cancel();
 
   Future<void> _stopAndSendVoiceRecording() async {
-    _recordTimer?.cancel();
-    final durationMs = _recordSeconds * 1000;
-    String? path;
-    try {
-      path = await _voiceRecorder.stop();
-    } catch (_) {}
-    path ??= _recordingPath;
-    setState(() {
-      _isRecordingVoice = false;
-      _recordingPath = null;
-      _recordSeconds = 0;
-    });
-    if (path == null) return;
-    final file = File(path);
-    // A recording under ~1 second is almost always an accidental tap.
-    if (durationMs < 800) {
-      try {
-        if (await file.exists()) await file.delete();
-      } catch (_) {}
-      return;
-    }
+    final result = await _voiceController.stopAndFinish();
+    if (result == null) return;
+    final (file, durationMs) = result;
     await _sendMedia(
       file: file,
       messageType: 'voice',
@@ -596,6 +546,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       durationMs: durationMs,
       compress: (f) async => f.readAsBytesSync(), // already recorded at a low speech bitrate, no post-compression needed
     );
+  }
+
+  /// Retries a photo/video/voice message that failed to send (status
+  /// 'failed' — see GroupMessageRelayService.sendGroupMediaMessage/
+  /// retryMediaMessage). Tapped from the bubble's own "Tap to retry" row.
+  Future<void> _retryMediaSend(String clientId) async {
+    try {
+      await GroupMessageRelayService.retryMediaMessage(clientId);
+    } on GroupSendPartialFailure catch (e) {
+      if (mounted) _warnAboutPartialFailure(e);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Still couldn\'t send — $e')));
+    }
   }
 
   Future<void> _react(LocalMessage message, String emoji) async {
@@ -762,6 +726,87 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  /// Feature: upload progress + retry queue, and accurate per-member
+  /// group read receipts. Shown only under the sender's OWN messages —
+  /// 'sending'/'failed' come from the shared `status` column (set by
+  /// GroupMessageRelayService.sendGroupMediaMessage/retryMediaMessage);
+  /// once a message is actually sent, this switches to a real "Read X/Y"
+  /// count from [_receipts] instead of a single check mark that could
+  /// only ever reflect whichever member's receipt arrived last.
+  Widget _statusRow(LocalMessage message, ColorScheme scheme) {
+    final fg = scheme.onPrimary;
+    if (message.status == 'sending') {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: ValueListenableBuilder<double>(
+            valueListenable: MediaService.progressNotifierFor(message.id),
+            builder: (context, progress, _) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 11,
+                  height: 11,
+                  child: CircularProgressIndicator(strokeWidth: 1.6, value: progress > 0 ? progress : null, color: fg.withValues(alpha: 0.85)),
+                ),
+                const SizedBox(width: 5),
+                Text('Sending…', style: TextStyle(fontSize: 11, color: fg.withValues(alpha: 0.75))),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    if (message.status == 'failed') {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: InkWell(
+            onTap: () => _retryMediaSend(message.id),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.error_outline, size: 13, color: scheme.error),
+                const SizedBox(width: 4),
+                Text('Tap to retry', style: TextStyle(fontSize: 11, color: scheme.error, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final total = _otherMembers.length;
+    if (total == 0) return const SizedBox.shrink();
+    final statuses = _receipts[message.id] ?? const {};
+    final readCount = statuses.values.where((s) => s == 'read').length;
+    final deliveredCount = statuses.values.where((s) => s == 'read' || s == 'delivered').length;
+    final label = readCount == total
+        ? 'Read by all'
+        : readCount > 0
+            ? 'Read $readCount/$total'
+            : deliveredCount > 0
+                ? 'Delivered $deliveredCount/$total'
+                : 'Sent';
+    final color = readCount == total ? Colors.lightBlueAccent : fg.withValues(alpha: 0.75);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.done_all, size: 13, color: color),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(fontSize: 11, color: color)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _bubbleFor(LocalMessage message) {
     final scheme = Theme.of(context).colorScheme;
     final mine = message.isMine;
@@ -769,15 +814,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final showsHeader = !mine || replyTarget != null;
     final isMedia = message.messageType == 'image' || message.messageType == 'video';
 
+    // Feature: in-app media viewer — every photo/video in this group chat,
+    // in order, so tapping one opens a swipeable gallery instead of a
+    // single image/video page.
+    final galleryMessages = _messages.where((m) => m.mediaPath != null && (m.messageType == 'image' || m.messageType == 'video')).toList();
+    final gallery = galleryMessages.map((m) => MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video')).toList();
+    final galleryIndex = galleryMessages.indexWhere((m) => m.id == message.id);
+
     Widget? mediaWidget;
     if (message.messageType == 'image') {
       mediaWidget = message.mediaPath == null
           ? _brokenMediaTile(scheme, 'Photo unavailable')
-          : _ImageBubble(path: message.mediaPath!);
+          : _ImageBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
     } else if (message.messageType == 'video') {
       mediaWidget = message.mediaPath == null
           ? _brokenMediaTile(scheme, 'Video unavailable')
-          : _VideoBubble(path: message.mediaPath!);
+          : _VideoBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
     }
 
     final radius = BorderRadius.only(
@@ -826,7 +878,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   padding: EdgeInsets.fromLTRB(10, showsHeader ? 0 : 8, 14, 8),
                   child: message.mediaPath == null
                       ? Text('Voice message unavailable', style: TextStyle(color: mine ? scheme.onPrimary : scheme.onSurface))
-                      : _VoiceBubble(path: message.mediaPath!, isMine: mine),
+                      : VoiceMessageBubble(path: message.mediaPath!, isMine: mine),
                 ),
               if (message.messageType == 'text' || (isMedia && message.text.isNotEmpty))
                 Padding(
@@ -843,6 +895,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
                   child: _reactionsPill(message, scheme, mine),
                 ),
+              if (mine) _statusRow(message, scheme),
             ],
           ),
         ),
@@ -1036,41 +1089,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ),
           SafeArea(
             top: false,
-            child: _isRecordingVoice ? _buildRecordingBar(scheme) : _buildComposeBar(scheme),
+            child: _voiceController.isRecording
+                ? VoiceRecordingBar(
+                    seconds: _voiceController.seconds,
+                    onCancel: _cancelVoiceRecording,
+                    onSend: _stopAndSendVoiceRecording,
+                  )
+                : _buildComposeBar(scheme),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildRecordingBar(ColorScheme scheme) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(26)),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Icon(Icons.fiber_manual_record, color: scheme.error, size: 14),
-            const SizedBox(width: 8),
-            Text('Recording  ${_fmtSeconds(_recordSeconds)}', style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
-            const Spacer(),
-            IconButton(icon: Icon(Icons.delete_outline, color: scheme.error), onPressed: _cancelVoiceRecording, tooltip: 'Cancel'),
-            Material(
-              color: scheme.primary,
-              shape: const CircleBorder(),
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: _stopAndSendVoiceRecording,
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Icon(Icons.send_rounded, color: scheme.onPrimary, size: 18),
-                ),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1155,12 +1182,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
 class _ImageBubble extends StatelessWidget {
   final String path;
-  const _ImageBubble({required this.path});
+  final List<MediaViewerItem> gallery;
+  final int galleryIndex;
+  const _ImageBubble({required this.path, this.gallery = const [], this.galleryIndex = -1});
   @override
   Widget build(BuildContext context) {
     final file = File(path);
     return GestureDetector(
-      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => _FullscreenImage(path: path))),
+      // Feature: in-app media viewer — opens the shared swipeable gallery
+      // (every photo/video in this group, in order) with pinch-zoom and a
+      // save-to-device option, instead of a single-image page.
+      onTap: () {
+        final index = galleryIndex >= 0 ? galleryIndex : 0;
+        final items = gallery.isNotEmpty ? gallery : [MediaViewerItem(path: path, isVideo: false)];
+        Navigator.push(context, MaterialPageRoute(builder: (_) => MediaViewerScreen(items: items, initialIndex: index)));
+      },
       child: SizedBox(
         width: double.infinity,
         height: 220,
@@ -1172,26 +1208,19 @@ class _ImageBubble extends StatelessWidget {
   }
 }
 
-class _FullscreenImage extends StatelessWidget {
-  final String path;
-  const _FullscreenImage({required this.path});
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)),
-      body: Center(child: InteractiveViewer(minScale: 0.8, maxScale: 5, child: Image.file(File(path)))),
-    );
-  }
-}
-
 class _VideoBubble extends StatelessWidget {
   final String path;
-  const _VideoBubble({required this.path});
+  final List<MediaViewerItem> gallery;
+  final int galleryIndex;
+  const _VideoBubble({required this.path, this.gallery = const [], this.galleryIndex = -1});
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => _FullscreenVideo(path: path))),
+      onTap: () {
+        final index = galleryIndex >= 0 ? galleryIndex : 0;
+        final items = gallery.isNotEmpty ? gallery : [MediaViewerItem(path: path, isVideo: true)];
+        Navigator.push(context, MaterialPageRoute(builder: (_) => MediaViewerScreen(items: items, initialIndex: index)));
+      },
       child: SizedBox(
         width: double.infinity,
         height: 200,
@@ -1208,167 +1237,6 @@ class _VideoBubble extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _FullscreenVideoState extends State<_FullscreenVideo> {
-  VideoPlayerController? _controller;
-  ChewieController? _chewie;
-
-  @override
-  void initState() {
-    super.initState();
-    final controller = VideoPlayerController.file(File(widget.path));
-    _controller = controller;
-    controller.initialize().then((_) {
-      if (!mounted) return;
-      setState(() => _chewie = ChewieController(videoPlayerController: controller, autoPlay: true, looping: false));
-    });
-  }
-
-  @override
-  void dispose() {
-    _chewie?.dispose();
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)),
-      body: Center(child: _chewie == null ? const CircularProgressIndicator(color: Colors.white) : Chewie(controller: _chewie!)),
-    );
-  }
-}
-
-class _FullscreenVideo extends StatefulWidget {
-  final String path;
-  const _FullscreenVideo({required this.path});
-  @override
-  State<_FullscreenVideo> createState() => _FullscreenVideoState();
-}
-
-class _VoiceBubble extends StatefulWidget {
-  final String path;
-  final bool isMine;
-  const _VoiceBubble({required this.path, required this.isMine});
-  @override
-  State<_VoiceBubble> createState() => _VoiceBubbleState();
-}
-
-class _VoiceBubbleState extends State<_VoiceBubble> {
-  final _player = AudioPlayer();
-  Duration _duration = Duration.zero;
-  Duration _position = Duration.zero;
-  bool _loaded = false;
-  late final List<double> _bars;
-
-  @override
-  void initState() {
-    super.initState();
-    // A stable pseudo-waveform derived from the file path's hash — purely
-    // decorative (this app doesn't analyze real audio amplitude). It just
-    // needs to look the same every time this exact message re-renders, not
-    // represent the actual recorded waveform.
-    final seed = widget.path.hashCode;
-    _bars = List.generate(26, (i) {
-      final v = ((seed >> (i % 20)) & 0xF) / 15.0;
-      return 0.28 + v * 0.72;
-    });
-    _player.setFilePath(widget.path).then((d) {
-      if (!mounted) return;
-      setState(() {
-        _duration = d ?? Duration.zero;
-        _loaded = true;
-      });
-    }).catchError((_) {
-      if (mounted) setState(() => _loaded = true);
-    });
-    _player.positionStream.listen((pos) {
-      if (mounted) setState(() => _position = pos);
-    });
-    _player.playerStateStream.listen((s) {
-      if (s.processingState == ProcessingState.completed) {
-        _player.seek(Duration.zero);
-        _player.pause();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _player.dispose();
-    super.dispose();
-  }
-
-  String _fmt(Duration d) {
-    final m = d.inMinutes.toString().padLeft(2, '0');
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final fg = widget.isMine ? scheme.onPrimary : scheme.onSurface;
-    final dim = fg.withValues(alpha: 0.32);
-    final total = _duration.inMilliseconds == 0 ? 1 : _duration.inMilliseconds;
-    final progress = (_position.inMilliseconds / total).clamp(0.0, 1.0);
-    final playedBars = (progress * _bars.length).round();
-
-    return SizedBox(
-      width: 190,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          StreamBuilder<PlayerState>(
-            stream: _player.playerStateStream,
-            builder: (context, snap) {
-              final playing = snap.data?.playing ?? false;
-              return InkWell(
-                customBorder: const CircleBorder(),
-                onTap: !_loaded ? null : () => playing ? _player.pause() : _player.play(),
-                child: Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(color: fg.withValues(alpha: 0.15), shape: BoxShape.circle),
-                  child: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: fg, size: 20),
-                ),
-              );
-            },
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  height: 22,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: List.generate(_bars.length, (i) {
-                      final played = i < playedBars;
-                      return Expanded(
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 0.8),
-                          height: 22 * _bars[i],
-                          decoration: BoxDecoration(color: played ? fg : dim, borderRadius: BorderRadius.circular(2)),
-                        ),
-                      );
-                    }),
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(_fmt(_position.inMilliseconds > 0 ? _position : _duration), style: TextStyle(fontSize: 10.5, color: fg.withValues(alpha: 0.75))),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
