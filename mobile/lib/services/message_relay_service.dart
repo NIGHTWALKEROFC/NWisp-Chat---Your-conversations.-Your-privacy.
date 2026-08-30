@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -172,7 +173,22 @@ class MessageRelayService {
     switch (messageType) {
       case 'receipt':
         final data = jsonDecode(payload) as Map<String, dynamic>;
-        await LocalMessageStore.setStatus(data['ref'] as String, data['status'] as String);
+        final conversationId = row['conversation_id'] as String;
+        // Group conversations track receipts PER MEMBER (see
+        // LocalMessageStore.setGroupReceipt / GroupChatScreen's read
+        // indicator) rather than overwriting one shared `status` column,
+        // which could previously only ever reflect whichever receipt
+        // happened to arrive last.
+        if (conversationId.startsWith(_groupIdPrefix)) {
+          await LocalMessageStore.setGroupReceipt(
+            conversationId: conversationId,
+            messageId: data['ref'] as String,
+            memberUid: senderUid,
+            status: data['status'] as String,
+          );
+        } else {
+          await LocalMessageStore.setStatus(data['ref'] as String, data['status'] as String);
+        }
         break;
       case 'delete':
         final data = jsonDecode(payload) as Map<String, dynamic>;
@@ -383,38 +399,13 @@ class MessageRelayService {
     await _checkNotBlocked(recipientUid);
 
     final clientId = _uuid.v4();
-    final fileKey = await CryptoService.generateFileKey();
-    final (encryptedBytes, fileNonce) = await CryptoService.encryptFileBytes(plainBytes, fileKey);
 
-    final remotePath = 'chat_media/$_myUid/${_uuid.v4()}.enc';
-    await MediaService.uploadBytes(Uint8List.fromList(encryptedBytes), _mediaBucket, remotePath);
-
-    final metaPayload = jsonEncode({
-      'fileKey': fileKey,
-      'nonce': fileNonce,
-      'mime': mime,
-      'extension': extension,
-      if (caption != null && caption.isNotEmpty) 'caption': caption,
-      if (durationMs != null) 'durationMs': durationMs,
-    });
-
-    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
-
-    await _client.from('message_relay').insert({
-      'conversation_id': conversationId,
-      'sender_uid': _myUid,
-      'recipient_uid': recipientUid,
-      'ciphertext': ciphertext,
-      'nonce': nonce,
-      'message_type': messageType,
-      'media_path': remotePath,
-      'client_id': clientId,
-      'ttl_hours': ttlHours,
-    });
-
-    // Keep our OWN plaintext copy locally too — we already have the bytes
-    // in memory, no need to round-trip through Supabase to see our own
-    // sent photo/video.
+    // Feature: upload progress + retry. The local row (status 'sending')
+    // and local media copy are created FIRST, before any network call —
+    // so the bubble shows up in the chat immediately with a progress
+    // indicator, instead of the UI showing nothing at all until the whole
+    // upload finishes. [MediaService.uploadProgress] is what the bubble
+    // widget listens to for the live percentage.
     final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
     final createdAt = DateTime.now();
     await LocalMessageStore.insert(
@@ -426,11 +417,130 @@ class MessageRelayService {
       text: caption ?? '',
       messageType: messageType,
       mediaPath: localPath,
-      status: 'sent',
+      status: 'sending',
       createdAt: createdAt,
       expiresAt: _expiryFor(createdAt, ttlHours),
     );
-    return clientId;
+    await LocalMessageStore.savePendingMediaSend(
+      clientId: clientId,
+      conversationId: conversationId,
+      recipientUid: recipientUid,
+      isGroup: false,
+      extension: extension,
+      mime: mime,
+      durationMs: durationMs,
+      ttlHours: ttlHours,
+    );
+
+    try {
+      final fileKey = await CryptoService.generateFileKey();
+      final (encryptedBytes, fileNonce) = await CryptoService.encryptFileBytes(plainBytes, fileKey);
+      final remotePath = 'chat_media/$_myUid/${_uuid.v4()}.enc';
+      await MediaService.uploadBytes(
+        Uint8List.fromList(encryptedBytes),
+        _mediaBucket,
+        remotePath,
+        onProgress: MediaService.progressReporterFor(clientId),
+      );
+
+      final metaPayload = jsonEncode({
+        'fileKey': fileKey,
+        'nonce': fileNonce,
+        'mime': mime,
+        'extension': extension,
+        if (caption != null && caption.isNotEmpty) 'caption': caption,
+        if (durationMs != null) 'durationMs': durationMs,
+      });
+      final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
+
+      await _client.from('message_relay').insert({
+        'conversation_id': conversationId,
+        'sender_uid': _myUid,
+        'recipient_uid': recipientUid,
+        'ciphertext': ciphertext,
+        'nonce': nonce,
+        'message_type': messageType,
+        'media_path': remotePath,
+        'client_id': clientId,
+        'ttl_hours': ttlHours,
+      });
+
+      await LocalMessageStore.setStatus(clientId, 'sent');
+      await LocalMessageStore.removePendingMediaSend(clientId);
+      MediaService.clearProgress(clientId);
+      return clientId;
+    } catch (e) {
+      // Left in 'failed' status with its pending-send row intact — see
+      // [retryMediaMessage]. The bubble already exists (inserted above),
+      // so the person sees a real "tap to retry" message instead of the
+      // send silently vanishing.
+      await LocalMessageStore.setStatus(clientId, 'failed');
+      MediaService.clearProgress(clientId);
+      rethrow;
+    }
+  }
+
+  /// Retries a photo/video/voice send that's sitting in 'failed' status —
+  /// the local file is already on disk (see [sendMediaMessage]'s
+  /// insert-before-upload order), so this just redoes the
+  /// encrypt-upload-relay steps without asking the user to re-pick
+  /// anything. Throws the same exceptions [sendMediaMessage] would if the
+  /// retry itself fails again (still blocked, still offline, etc.) —
+  /// callers should catch those the same way.
+  static Future<void> retryMediaMessage(String clientId) async {
+    if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
+    final pending = await LocalMessageStore.getPendingMediaSend(clientId);
+    final message = await LocalMessageStore.getById(clientId);
+    if (pending == null || message == null || message.mediaPath == null) {
+      throw Exception('This message can no longer be retried — its local data is gone.');
+    }
+    final recipientUid = pending.recipientUid;
+    if (recipientUid == null) throw Exception('Missing recipient for retry.');
+    await _checkNotBlocked(recipientUid);
+
+    await LocalMessageStore.setStatus(clientId, 'sending');
+    try {
+      final plainBytes = await File(message.mediaPath!).readAsBytes();
+      final fileKey = await CryptoService.generateFileKey();
+      final (encryptedBytes, fileNonce) = await CryptoService.encryptFileBytes(plainBytes, fileKey);
+      final remotePath = 'chat_media/$_myUid/${_uuid.v4()}.enc';
+      await MediaService.uploadBytes(
+        Uint8List.fromList(encryptedBytes),
+        _mediaBucket,
+        remotePath,
+        onProgress: MediaService.progressReporterFor(clientId),
+      );
+
+      final metaPayload = jsonEncode({
+        'fileKey': fileKey,
+        'nonce': fileNonce,
+        'mime': pending.mime,
+        'extension': pending.extension,
+        if (message.text.isNotEmpty) 'caption': message.text,
+        if (pending.durationMs != null) 'durationMs': pending.durationMs,
+      });
+      final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
+
+      await _client.from('message_relay').insert({
+        'conversation_id': pending.conversationId,
+        'sender_uid': _myUid,
+        'recipient_uid': recipientUid,
+        'ciphertext': ciphertext,
+        'nonce': nonce,
+        'message_type': message.messageType,
+        'media_path': remotePath,
+        'client_id': clientId,
+        'ttl_hours': pending.ttlHours,
+      });
+
+      await LocalMessageStore.setStatus(clientId, 'sent');
+      await LocalMessageStore.removePendingMediaSend(clientId);
+      MediaService.clearProgress(clientId);
+    } catch (e) {
+      await LocalMessageStore.setStatus(clientId, 'failed');
+      MediaService.clearProgress(clientId);
+      rethrow;
+    }
   }
 
   /// How long after the ORIGINAL send a text message can still be edited
