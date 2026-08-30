@@ -23,6 +23,8 @@ class LocalMessageStore {
   static Database? _db;
   static final Map<String, StreamController<List<LocalMessage>>> _convoControllers = {};
   static final _summaryController = StreamController<List<ConversationSummary>>.broadcast();
+  // messageId -> {memberUid -> 'delivered'|'read'} — see watchGroupReceipts.
+  static final Map<String, StreamController<Map<String, Map<String, String>>>> _receiptControllers = {};
 
   static const _groupPrefix = 'group_';
 
@@ -32,7 +34,7 @@ class LocalMessageStore {
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 4,
+      version: 6,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -57,6 +59,8 @@ class LocalMessageStore {
         await db.execute('CREATE INDEX idx_expiry ON messages(expires_at)');
         await _createGroupMetaTable(db);
         await _createPendingResendTable(db);
+        await _createReceiptsTable(db);
+        await _createPendingMediaSendsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // v1 -> v2: adds the group_meta cache table for Phase 7 (group
@@ -83,6 +87,29 @@ class LocalMessageStore {
         // would just fail the same way every time.
         if (oldVersion < 4) {
           await _createPendingResendTable(db);
+        }
+        // v4 -> v5: adds `message_receipts` — one row per (message, group
+        // member), so a group message's read/delivered state can be
+        // tracked PER RECIPIENT instead of the single shared `status`
+        // column on `messages` (which — see GroupMessageRelayService's own
+        // doc comment — could only ever show whichever receipt arrived
+        // LAST, not a real "3 of 5 read" breakdown). 1:1 chats keep using
+        // the plain `status` column unchanged; this table is additive,
+        // only ever written to for group conversations (see
+        // MessageRelayService._handleRow's 'receipt' case).
+        if (oldVersion < 5) {
+          await _createReceiptsTable(db);
+        }
+        // v5 -> v6: adds `pending_media_sends` — the small extra fields
+        // (extension/mime/duration/ttl/recipient) needed to RETRY a
+        // photo/video/voice send that failed partway through uploading,
+        // without re-picking the file. The bytes themselves don't need to
+        // be duplicated here: a message row is now inserted (status
+        // 'sending') and its local media file saved to disk BEFORE the
+        // upload starts, so a retry just re-reads that same local file.
+        // See MessageRelayService.sendMediaMessage / retryMediaMessage.
+        if (oldVersion < 6) {
+          await _createPendingMediaSendsTable(db);
         }
       },
     );
@@ -118,6 +145,36 @@ class LocalMessageStore {
       )
     ''');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_pending_group ON pending_group_resends(group_id)');
+  }
+
+  static Future<void> _createReceiptsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS message_receipts (
+        message_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        member_uid TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (message_id, member_uid)
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_receipts_conv ON message_receipts(conversation_id)');
+  }
+
+  static Future<void> _createPendingMediaSendsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_media_sends (
+        client_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        recipient_uid TEXT,
+        is_group INTEGER NOT NULL,
+        extension TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        duration_ms INTEGER,
+        ttl_hours INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
   }
 
   /// Queues a group-message copy that couldn't be delivered to [uid]
@@ -280,6 +337,143 @@ class LocalMessageStore {
     _notifyConversation(row.first['conversation_id'] as String);
   }
 
+  // ---- per-member group read receipts (Feature: accurate group receipts) ----
+
+  /// Records that [memberUid] has delivered/read the group message
+  /// [messageId] — called from MessageRelayService._handleRow's 'receipt'
+  /// case for GROUP conversations only (1:1 chats keep using [setStatus]
+  /// unchanged). Never downgrades an existing 'read' back to 'delivered' —
+  /// receipts can arrive out of order over an unreliable connection, and a
+  /// stale 'delivered' retry landing after the real 'read' shouldn't undo
+  /// it in the UI.
+  static Future<void> setGroupReceipt({
+    required String conversationId,
+    required String messageId,
+    required String memberUid,
+    required String status,
+  }) async {
+    final existing = await _db!.query(
+      'message_receipts',
+      where: 'message_id = ? AND member_uid = ?',
+      whereArgs: [messageId, memberUid],
+      limit: 1,
+    );
+    if (existing.isNotEmpty && existing.first['status'] == 'read' && status != 'read') return;
+    await _db!.insert(
+      'message_receipts',
+      {
+        'message_id': messageId,
+        'conversation_id': conversationId,
+        'member_uid': memberUid,
+        'status': status,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _notifyGroupReceipts(conversationId);
+  }
+
+  static Future<Map<String, Map<String, String>>> _loadGroupReceipts(String conversationId) async {
+    final rows = await _db!.query('message_receipts', where: 'conversation_id = ?', whereArgs: [conversationId]);
+    final result = <String, Map<String, String>>{};
+    for (final r in rows) {
+      final byMember = result.putIfAbsent(r['message_id'] as String, () => {});
+      byMember[r['member_uid'] as String] = r['status'] as String;
+    }
+    return result;
+  }
+
+  static void _notifyGroupReceipts(String conversationId, [int attempt = 0]) {
+    final controller = _receiptControllers[conversationId];
+    if (controller == null) return;
+    _loadGroupReceipts(conversationId).then((m) {
+      if (!controller.isClosed) controller.add(m);
+    }).catchError((Object e) {
+      if (attempt >= 5) return;
+      Future.delayed(Duration(milliseconds: 300 * (attempt + 1)), () => _notifyGroupReceipts(conversationId, attempt + 1));
+    });
+  }
+
+  /// Emits `{messageId: {memberUid: status}}` for every message in
+  /// [conversationId] whenever a receipt changes — GroupChatScreen uses
+  /// this alongside [watchConversation] to render a real "Read 3/5"
+  /// indicator on its own sent messages instead of a single check mark.
+  static Stream<Map<String, Map<String, String>>> watchGroupReceipts(String conversationId) {
+    final controller = _receiptControllers.putIfAbsent(
+      conversationId,
+      () => StreamController<Map<String, Map<String, String>>>.broadcast(onCancel: () {
+        _receiptControllers.remove(conversationId);
+      }),
+    );
+    _notifyGroupReceipts(conversationId);
+    return controller.stream;
+  }
+
+  // ---- pending media sends (Feature: upload progress + retry) ----------
+
+  /// Saved right after a photo/video/voice message's local row+file are
+  /// created but BEFORE the upload starts (see
+  /// MessageRelayService.sendMediaMessage) — holds exactly the extra
+  /// fields a retry needs that aren't already sitting in the `messages`
+  /// row itself (caption/media path are read back via [getById]).
+  /// Removed again once the send finally succeeds; left in place on
+  /// failure so [retryMediaMessage] can pick it up later.
+  static Future<void> savePendingMediaSend({
+    required String clientId,
+    required String conversationId,
+    String? recipientUid,
+    required bool isGroup,
+    required String extension,
+    required String mime,
+    int? durationMs,
+    required int ttlHours,
+  }) async {
+    await _db!.insert(
+      'pending_media_sends',
+      {
+        'client_id': clientId,
+        'conversation_id': conversationId,
+        'recipient_uid': recipientUid,
+        'is_group': isGroup ? 1 : 0,
+        'extension': extension,
+        'mime': mime,
+        'duration_ms': durationMs,
+        'ttl_hours': ttlHours,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<PendingMediaSend?> getPendingMediaSend(String clientId) async {
+    final rows = await _db!.query('pending_media_sends', where: 'client_id = ?', whereArgs: [clientId], limit: 1);
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return PendingMediaSend(
+      clientId: r['client_id'] as String,
+      conversationId: r['conversation_id'] as String,
+      recipientUid: r['recipient_uid'] as String?,
+      isGroup: (r['is_group'] as int) == 1,
+      extension: r['extension'] as String,
+      mime: r['mime'] as String,
+      durationMs: r['duration_ms'] as int?,
+      ttlHours: r['ttl_hours'] as int,
+    );
+  }
+
+  static Future<void> removePendingMediaSend(String clientId) async {
+    await _db!.delete('pending_media_sends', where: 'client_id = ?', whereArgs: [clientId]);
+  }
+
+  /// Every message currently sitting in 'failed' status, across every
+  /// conversation — used to offer a "retry all" action and to
+  /// automatically retry once connectivity comes back (see
+  /// ConversationService/ChatListScreen wiring, if enabled).
+  static Future<List<String>> failedMediaClientIds() async {
+    final rows = await _db!.query('messages', columns: ['id'], where: "status = 'failed'");
+    return rows.map((r) => r['id'] as String).toList();
+  }
+
   static Future<void> setReaction(String id, String uid, String? emoji) async {
     final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
     if (rows.isEmpty) return;
@@ -349,7 +543,10 @@ class LocalMessageStore {
     // expiry) — only the SQLite row was removed, never the actual
     // image/video/voice file it pointed to.
     await LocalMediaFiles.delete(rows.first['media_path'] as String?);
+    await _db!.delete('message_receipts', where: 'message_id = ?', whereArgs: [id]);
+    await _db!.delete('pending_media_sends', where: 'client_id = ?', whereArgs: [id]);
     _notifyConversation(rows.first['conversation_id'] as String);
+    _notifyGroupReceipts(rows.first['conversation_id'] as String);
     _notifySummaries();
   }
 
@@ -359,7 +556,10 @@ class LocalMessageStore {
     for (final r in rows) {
       await LocalMediaFiles.delete(r['media_path'] as String?);
     }
+    await _db!.delete('message_receipts', where: 'conversation_id = ?', whereArgs: [conversationId]);
+    await _db!.delete('pending_media_sends', where: 'conversation_id = ?', whereArgs: [conversationId]);
     _notifyConversation(conversationId);
+    _notifyGroupReceipts(conversationId);
     _notifySummaries();
   }
 
@@ -400,9 +600,14 @@ class LocalMessageStore {
   static Future<void> resetForNewUser() async {
     await _db!.delete('messages');
     await _db!.delete('group_meta');
+    await _db!.delete('message_receipts');
+    await _db!.delete('pending_media_sends');
     await LocalMediaFiles.deleteAll();
     for (final controller in _convoControllers.values) {
       if (!controller.isClosed) controller.add([]);
+    }
+    for (final controller in _receiptControllers.values) {
+      if (!controller.isClosed) controller.add({});
     }
     _notifySummaries();
   }
