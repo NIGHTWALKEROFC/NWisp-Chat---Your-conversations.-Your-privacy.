@@ -1,0 +1,20 @@
+# Supabase CLI project config.
+#
+# Run `supabase link --project-ref <your-project-ref>` once from the repo
+# root before deploying — that command reads/writes the project_id below.
+project_id = "bgbmrtwbndoewwwjxnxa"
+
+# Both Edge Functions verify the caller themselves (a Firebase ID token,
+# checked against Google's JWKS — see each function's own index.ts) rather
+# than a Supabase Auth session. Supabase's platform-level "Enforce JWT
+# Verification" check runs BEFORE the function code and expects a
+# Supabase-issued JWT, so it rejects a Firebase token before the function
+# ever gets to run its own check. verify_jwt = false here is the CLI/config
+# equivalent of turning that dashboard toggle off — declaring it here means
+# every future deploy (including from CI) gets it right automatically,
+# instead of relying on someone remembering the manual dashboard step.
+[functions.get-signed-url]
+verify_jwt = false
+
+[functions.send-push]
+verify_jwt = false
