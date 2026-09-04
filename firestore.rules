@@ -84,7 +84,13 @@ service cloud.firestore {
     match /usernames/{name} {
       allow read: if true;
       allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update, delete: if false;
+      // BUGFIX (account deletion feature): this used to disallow delete
+      // entirely, which meant deleting an account could never free up its
+      // username for anyone else to use again. Only the account that
+      // reserved a given username may delete that exact reservation doc —
+      // nobody can delete someone else's.
+      allow update: if false;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
     }
 
     match /contactRequests/{requestId} {
