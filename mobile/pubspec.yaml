@@ -38,6 +38,9 @@ dependencies:
   just_audio: ^0.9.40
   qr_flutter: ^4.1.0
   mobile_scanner: ^6.0.2
+  # Feature: account data export — hands the exported JSON to the OS share
+  # sheet so the person can save/send it wherever they like.
+  share_plus: ^10.1.2
   device_info_plus: ^11.1.1
 
 dev_dependencies:
