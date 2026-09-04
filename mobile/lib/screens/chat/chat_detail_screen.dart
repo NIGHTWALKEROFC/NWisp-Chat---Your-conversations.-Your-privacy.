@@ -222,6 +222,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           newText: text,
           originalCreatedAt: editing.createdAt,
         );
+      } on RateLimitedException catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't save edit — $e")));
@@ -259,6 +262,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } on BlockedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } on RateLimitedException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
@@ -426,6 +432,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     } on BlockedException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } on RateLimitedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Message not sent — $e'), duration: const Duration(seconds: 6)));
@@ -500,6 +509,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     } on BlockedException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } on RateLimitedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       // Feature: upload progress + retry — sendMediaMessage now leaves a
       // real 'failed' bubble in the chat on error instead of the send
@@ -530,6 +542,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Still couldn\'t send — $e')));
         }
       }
+    } on RateLimitedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Still couldn\'t send — $e')));
