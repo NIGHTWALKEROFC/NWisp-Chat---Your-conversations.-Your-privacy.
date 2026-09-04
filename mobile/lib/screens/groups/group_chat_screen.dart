@@ -255,6 +255,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await _resolveUsernames(e.failures.map((f) => f.uid));
     if (!mounted) return;
 
+    // A rate-limit hit fails EVERY member's row identically (they all
+    // share one client_id — see the migration's distinct-client_id
+    // counting), so this always shows up as "every member failed for
+    // the same reason," never a mix. Show the one friendly message
+    // instead of a contact-key-sounding "didn't reach: everyone."
+    if (e.failures.isNotEmpty && e.failures.every((f) => f.error is RateLimitedException)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text((e.failures.first.error as RateLimitedException).message)),
+      );
+      return;
+    }
+
     final notUpgraded = e.failures.where((f) => f.error is ContactNotUpgradedException).toList();
     final other = e.failures.where((f) => f.error is! ContactNotUpgradedException).toList();
 
@@ -343,6 +355,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           newText: text,
           originalCreatedAt: editing.createdAt,
         );
+      } on RateLimitedException catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't save edit — $e")));
