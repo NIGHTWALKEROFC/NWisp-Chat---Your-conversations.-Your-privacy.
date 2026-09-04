@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import '../../services/account_lifecycle_service.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import 'account_security_screen.dart';
+import 'delete_account_screen.dart';
 import 'forgot_password_screen.dart';
 
 class AccountScreen extends StatefulWidget {
@@ -14,6 +16,7 @@ class _AccountScreenState extends State<AccountScreen> {
   final _authService = AuthService();
   String _email = '';
   bool _loading = true;
+  bool _exporting = false;
 
   @override
   void initState() {
@@ -71,6 +74,45 @@ class _AccountScreenState extends State<AccountScreen> {
     } catch (e) {
       _showErrorWithHelp("Could not change password. If you don't remember your current one, use "
           "'Forgot password?' below instead.");
+    }
+  }
+
+  Future<void> _exportData() async {
+    setState(() => _exporting = true);
+    try {
+      await AccountLifecycleService.exportAndShareUserData();
+    } catch (e) {
+      _showErrorWithHelp('Could not export your data. Please try again.');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  Future<void> _confirmDeactivate() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Deactivate account?'),
+        content: const Text(
+          "Your account will be hidden and you won't be able to use NWisp until you log back in "
+          "and reactivate it. This does NOT delete anything — your messages, contacts, and "
+          "settings are all still there when you come back.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Deactivate')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await AccountLifecycleService.setSelfDisabled(true);
+      await _authService.logout();
+      // Logging out flips AuthGate straight to LoginScreen, which tears
+      // down this screen — no further setState needed on success.
+    } catch (e) {
+      _showErrorWithHelp('Could not deactivate your account. Please try again.');
     }
   }
 
@@ -192,6 +234,41 @@ class _AccountScreenState extends State<AccountScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const AccountSecurityScreen()),
+                  ),
+                ),
+                const Divider(height: 32),
+                ListTile(
+                  leading: const Icon(Icons.download_outlined),
+                  title: const Text('Export your data'),
+                  subtitle: const Text('Save a copy of your profile and account settings'),
+                  trailing: _exporting
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.chevron_right),
+                  onTap: _exporting ? null : _exportData,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.pause_circle_outline),
+                  title: const Text('Temporarily deactivate account'),
+                  subtitle: const Text('Hide your account until you log back in'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _confirmDeactivate,
+                ),
+                const Divider(height: 32),
+                ListTile(
+                  leading: Icon(Icons.delete_forever, color: Theme.of(context).colorScheme.error),
+                  title: Text(
+                    'Delete account',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                  subtitle: const Text('Permanently delete your account and all its data'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const DeleteAccountScreen()),
                   ),
                 ),
                 const Divider(height: 32),
