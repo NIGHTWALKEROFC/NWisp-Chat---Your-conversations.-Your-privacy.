@@ -26,6 +26,34 @@ class NotSignedInException implements Exception {
   String toString() => message;
 }
 
+/// Thrown when the message_relay_rate_limit database trigger rejects an
+/// insert (see supabase/migrations/0001_message_relay_rate_limit.sql —
+/// caps each sender to 30 real messages per 10 seconds). This carries a
+/// message that's safe to show directly to the person, instead of the
+/// raw Postgres error text leaking into the chat UI.
+class RateLimitedException implements Exception {
+  final String message = "You're sending messages too fast. Please wait a moment and try again.";
+  @override
+  String toString() => message;
+}
+
+/// Every message_relay insert, in BOTH relay services (this one and
+/// GroupMessageRelayService), goes through this instead of calling
+/// `_client.from('message_relay').insert` directly. It's the one place
+/// that recognizes the rate-limit trigger's error and turns it into a
+/// [RateLimitedException] the UI can catch and show a friendly message
+/// for. Every other Postgres error is rethrown unchanged — this only
+/// ever translates the one error it specifically knows about.
+Future<void> insertMessageRelayRow(Map<String, dynamic> row) async {
+  try {
+    await Supabase.instance.client.from('message_relay').insert(row);
+  } on PostgrestException catch (e) {
+    final isRateLimit = e.code == 'P0001' || e.message.toLowerCase().contains('rate limit');
+    if (isRateLimit) throw RateLimitedException();
+    rethrow;
+  }
+}
+
 /// Moves message content through Supabase as a pure, temporary relay:
 /// insert -> the recipient's device picks it up over Realtime (or on
 /// reconnect) -> decrypts -> saves locally -> deletes the row. Nothing about
@@ -343,7 +371,7 @@ class MessageRelayService {
     // "failed", since the Supabase insert itself always succeeds.
     final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, text);
 
-    await _client.from('message_relay').insert({
+    await insertMessageRelayRow({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
       'recipient_uid': recipientUid,
@@ -453,7 +481,7 @@ class MessageRelayService {
       });
       final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
 
-      await _client.from('message_relay').insert({
+      await insertMessageRelayRow({
         'conversation_id': conversationId,
         'sender_uid': _myUid,
         'recipient_uid': recipientUid,
@@ -521,7 +549,7 @@ class MessageRelayService {
       });
       final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
 
-      await _client.from('message_relay').insert({
+      await insertMessageRelayRow({
         'conversation_id': pending.conversationId,
         'sender_uid': _myUid,
         'recipient_uid': recipientUid,
@@ -573,7 +601,7 @@ class MessageRelayService {
       toUid,
       jsonEncode({'ref': messageId, 'text': trimmed}),
     );
-    await _client.from('message_relay').insert({
+    await insertMessageRelayRow({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
       'recipient_uid': toUid,
@@ -593,7 +621,7 @@ class MessageRelayService {
     required String status,
   }) async {
     final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': ref, 'status': status}));
-    await _client.from('message_relay').insert({
+    await insertMessageRelayRow({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
       'recipient_uid': toUid,
@@ -616,7 +644,7 @@ class MessageRelayService {
     required String? emoji,
   }) async {
     final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': messageId, 'emoji': emoji}));
-    await _client.from('message_relay').insert({
+    await insertMessageRelayRow({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
       'recipient_uid': toUid,
@@ -633,7 +661,7 @@ class MessageRelayService {
   /// un-send server-side because nothing stays server-side.
   static Future<void> deleteForEveryone({required String conversationId, required String toUid, required String messageId}) async {
     final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': messageId}));
-    await _client.from('message_relay').insert({
+    await insertMessageRelayRow({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
       'recipient_uid': toUid,
@@ -651,7 +679,7 @@ class MessageRelayService {
   /// "Clear chat" — tells the peer's device to wipe it locally too.
   static Future<void> clearForBoth({required String conversationId, required String toUid}) async {
     final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'conversationId': conversationId}));
-    await _client.from('message_relay').insert({
+    await insertMessageRelayRow({
       'conversation_id': conversationId,
       'sender_uid': _myUid,
       'recipient_uid': toUid,
