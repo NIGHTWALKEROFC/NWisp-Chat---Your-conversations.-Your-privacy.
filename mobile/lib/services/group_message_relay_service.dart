@@ -2,16 +2,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'crypto_service.dart';
 import 'local_media_files.dart';
 import 'local_message_store.dart';
 import 'media_service.dart';
-import 'message_relay_service.dart' show NotSignedInException;
+import 'message_relay_service.dart' show NotSignedInException, RateLimitedException, insertMessageRelayRow;
 import 'signal_session_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
 export 'signal_session_service.dart' show ContactNotUpgradedException;
+export 'message_relay_service.dart' show RateLimitedException;
 
 /// One member a group message couldn't be delivered to, and why. Carried
 /// by [GroupSendPartialFailure] so the UI can tell the sender exactly who
@@ -68,7 +68,6 @@ class GroupSendPartialFailure implements Exception {
 /// per-recipient status table, which is a bigger schema change than this
 /// pass makes.
 class GroupMessageRelayService {
-  static final _client = Supabase.instance.client;
   static final _uuid = const Uuid();
 
   static const _mediaBucket = 'media'; // same bucket 1:1 chat + stories use
@@ -106,7 +105,7 @@ class GroupMessageRelayService {
     for (final uid in others) {
       try {
         final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(uid, text);
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': groupId,
           'sender_uid': myUid,
           'recipient_uid': uid,
@@ -243,7 +242,7 @@ class GroupMessageRelayService {
     for (final uid in others) {
       try {
         final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(uid, metaPayload);
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': groupId,
           'sender_uid': myUid,
           'recipient_uid': uid,
@@ -332,7 +331,7 @@ class GroupMessageRelayService {
     for (final uid in others) {
       try {
         final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(uid, metaPayload);
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': pending.conversationId,
           'sender_uid': myUid,
           'recipient_uid': uid,
@@ -368,7 +367,7 @@ class GroupMessageRelayService {
       try {
         final (ciphertext, nonce) =
             await SignalSessionService.instance.encryptForPeer(uid, jsonEncode({'ref': messageId, 'emoji': emoji}));
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': groupId,
           'sender_uid': myUid,
           'recipient_uid': uid,
@@ -407,7 +406,7 @@ class GroupMessageRelayService {
       try {
         final (ciphertext, nonce) =
             await SignalSessionService.instance.encryptForPeer(uid, jsonEncode({'ref': messageId, 'text': trimmed}));
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': groupId,
           'sender_uid': myUid,
           'recipient_uid': uid,
@@ -455,7 +454,7 @@ class GroupMessageRelayService {
     for (final uid in uids.where((u) => u != myUid)) {
       try {
         final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(uid, text);
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': groupId,
           'sender_uid': myUid,
           'recipient_uid': uid,
@@ -494,7 +493,7 @@ class GroupMessageRelayService {
       }
       try {
         final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(item.uid, item.payload);
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': item.groupId,
           'sender_uid': myUid,
           'recipient_uid': item.uid,
@@ -524,7 +523,7 @@ class GroupMessageRelayService {
       try {
         final (ciphertext, nonce) =
             await SignalSessionService.instance.encryptForPeer(uid, jsonEncode({'ref': messageId}));
-        await _client.from('message_relay').insert({
+        await insertMessageRelayRow({
           'conversation_id': groupId,
           'sender_uid': myUid,
           'recipient_uid': uid,
