@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/account_lifecycle_service.dart';
 import '../services/app_lock_service.dart';
 import '../services/auth_service.dart';
 import '../services/presence_service.dart';
@@ -6,6 +7,7 @@ import '../services/settings_service.dart';
 import '../widgets/contact_developer_sheet.dart';
 import 'chat_list_screen.dart';
 import 'login_screen.dart';
+import 'reactivate_account_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import '../services/local_message_store.dart';
 
@@ -69,11 +71,49 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
             }
             if (snapshot.hasData) {
               PresenceService.goOnline();
-              return const _LockGate(child: ChatListScreen());
+              return const _PostAuthGate();
             }
             return const LoginScreen();
           },
         );
+      },
+    );
+  }
+}
+
+/// Sits between "signed in" and the actual app to check for a
+/// self-disabled account (see AccountScreen's "Temporarily deactivate
+/// account" action). A brand-new instance of this widget is only ever
+/// created on a fresh sign-in (see AuthGate above), so the status check
+/// below runs exactly once per session, not on every rebuild.
+class _PostAuthGate extends StatefulWidget {
+  const _PostAuthGate();
+
+  @override
+  State<_PostAuthGate> createState() => _PostAuthGateState();
+}
+
+class _PostAuthGateState extends State<_PostAuthGate> {
+  late final Future<String> _statusFuture = AccountLifecycleService.getAccountStatus();
+  bool _reactivatedThisSession = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_reactivatedThisSession) {
+      return const _LockGate(child: ChatListScreen());
+    }
+    return FutureBuilder<String>(
+      future: _statusFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (snapshot.data == 'self_disabled') {
+          return ReactivateAccountScreen(
+            onReactivated: () => setState(() => _reactivatedThisSession = true),
+          );
+        }
+        return const _LockGate(child: ChatListScreen());
       },
     );
   }
