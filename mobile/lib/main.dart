@@ -19,6 +19,7 @@ import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
 import 'screens/chat/chat_detail_screen.dart';
 import 'screens/groups/group_chat_screen.dart';
+import 'screens/login_approval_screen.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -76,7 +77,7 @@ void main() async {
   // terminated, not just backgrounded), handle that tap once the app is up.
   final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
   if (initialMessage != null) {
-    _openChatFromNotificationData(initialMessage.data);
+    _handleNotificationData(initialMessage.data);
   }
 }
 
@@ -98,7 +99,25 @@ Future<void> _setUpLocalNotifications() async {
       ?.createNotificationChannel(_androidChannel);
 }
 
-void _openChatFromNotificationData(Map<String, dynamic> data) {
+void _handleNotificationData(Map<String, dynamic> data) {
+  if (data['type'] == 'login_approval') {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final requestId = data['requestId'] as String?;
+    if (uid == null || requestId == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => LoginApprovalScreen(
+            uid: uid,
+            requestId: requestId,
+            deviceLabel: data['deviceLabel'] as String? ?? 'Unknown device',
+            location: data['location'] as String?,
+          ),
+        ),
+      );
+    });
+    return;
+  }
   final conversationId = data['conversationId'] as String?;
   final peerUid = data['senderUid'] as String?;
   final peerUsername = data['senderUsername'] as String?;
@@ -188,6 +207,36 @@ void _setUpMessagingLifecycle() {
         ),
       );
     });
+
+    _watchForIncomingLoginApprovals(user.uid);
+  });
+}
+
+/// Feature: new-login accept/deny flow (see AccountSecurityScreen's
+/// "Require approval for new logins" toggle). While this device is the
+/// signed-in/active one AND in the foreground, this pops the Accept/Deny
+/// screen the instant a new login requests approval — no need to wait for
+/// the push notification, which only matters if the app is backgrounded
+/// or killed (see _handleNotificationData above for that path).
+String? _lastHandledApprovalRequestId;
+void _watchForIncomingLoginApprovals(String uid) {
+  DeviceSessionService.instance.watchPendingApprovalRequest(uid).listen((request) {
+    if (request == null) return;
+    final requestId = request['requestId'] as String?;
+    if (requestId == null || requestId == _lastHandledApprovalRequestId) return;
+    _lastHandledApprovalRequestId = requestId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => LoginApprovalScreen(
+            uid: uid,
+            requestId: requestId,
+            deviceLabel: request['requestingDeviceLabel'] as String? ?? 'Unknown device',
+            location: request['requestingLocation'] as String?,
+          ),
+        ),
+      );
+    });
   });
 }
 
@@ -215,9 +264,15 @@ void _setUpPushNotifications() {
   // Foreground: FCM does NOT show a system notification automatically while
   // the app is open, so build one ourselves via flutter_local_notifications.
   FirebaseMessaging.onMessage.listen((message) {
+    final data = message.data;
+    // The OLD device's live Firestore listener (see
+    // _watchForIncomingLoginApprovals below) already pops the
+    // Accept/Deny screen the instant a request appears while this app is
+    // foregrounded — showing a system notification for it too here would
+    // just be a redundant second alert for the same thing.
+    if (data['type'] == 'login_approval') return;
     final notification = message.notification;
     if (notification == null) return;
-    final data = message.data;
     final payload = [
       data['conversationId'] ?? '',
       data['senderUid'] ?? '',
@@ -244,7 +299,7 @@ void _setUpPushNotifications() {
   // App was backgrounded (not terminated) and the user tapped the system
   // notification to bring it back to the foreground.
   FirebaseMessaging.onMessageOpenedApp.listen((message) {
-    _openChatFromNotificationData(message.data);
+    _handleNotificationData(message.data);
   });
 }
 
