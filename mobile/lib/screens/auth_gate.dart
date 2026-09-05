@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../main.dart';
 import '../services/account_lifecycle_service.dart';
 import '../services/app_lock_service.dart';
 import '../services/auth_service.dart';
@@ -82,11 +84,13 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   }
 }
 
-/// Sits between "signed in" and the actual app to check for a
-/// self-disabled account (see AccountScreen's "Temporarily deactivate
-/// account" action). A brand-new instance of this widget is only ever
-/// created on a fresh sign-in (see AuthGate above), so the status check
-/// below runs exactly once per session, not on every rebuild.
+/// Sits between "signed in" and the actual app, watching this account's
+/// status LIVE the entire time the app is open — not just at sign-in.
+/// That's the difference between this and a one-time check: if you (the
+/// admin) suspend someone, or they deactivate from a different device,
+/// while THIS device still has the app open, this drops them out of the
+/// chat list and onto the correct screen immediately, without them
+/// needing to close and reopen the app first.
 class _PostAuthGate extends StatefulWidget {
   const _PostAuthGate();
 
@@ -95,35 +99,56 @@ class _PostAuthGate extends StatefulWidget {
 }
 
 class _PostAuthGateState extends State<_PostAuthGate> {
-  late final Future<String> _statusFuture = AccountLifecycleService.getAccountStatus();
-  bool _reactivatedThisSession = false;
+  StreamSubscription<String>? _sub;
+  String? _status;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = AccountLifecycleService.watchAccountStatus().listen((status) {
+      final wasBlocked = _status == 'suspended' || _status == 'self_disabled';
+      final isNowBlocked = status == 'suspended' || status == 'self_disabled';
+      // BUGFIX: swapping what THIS widget renders isn't enough on its
+      // own — if the person is several screens deep (an open chat,
+      // settings, anywhere reached via Navigator.push), those pushed
+      // routes sit ON TOP of this one in the app's single shared
+      // Navigator (see main.dart's `MaterialApp(home: AuthGate())`) and
+      // stay fully visible no matter what this widget switches to
+      // underneath them. Only unwind the instant the account NEWLY
+      // becomes blocked (not on every rebuild) so this never fights the
+      // person's own in-app navigation the rest of the time.
+      if (!wasBlocked && isNowBlocked) {
+        navigatorKey.currentState?.popUntil((route) => route.isFirst);
+      }
+      if (mounted) setState(() => _status = status);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (_reactivatedThisSession) {
-      return const _LockGate(child: ChatListScreen());
+    if (_status == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    return FutureBuilder<String>(
-      future: _statusFuture,
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (snapshot.data == 'self_disabled') {
-          return ReactivateAccountScreen(
-            onReactivated: () => setState(() => _reactivatedThisSession = true),
-          );
-        }
-        if (snapshot.data == 'suspended') {
-          // No reactivate-from-here path — unlike self_disabled, this
-          // status can only be lifted by hand, in the console (see
-          // MODERATION_GUIDE.md and firestore.rules' private/profile
-          // rule, which blocks the owner from ever writing it away).
-          return const SuspendedAccountScreen();
-        }
-        return const _LockGate(child: ChatListScreen());
-      },
-    );
+    if (_status == 'self_disabled') {
+      // No callback needed here — tapping Reactivate just writes
+      // accountStatus back to 'active', and this same listener picks
+      // that up on its own and swaps back to the chat list.
+      return const ReactivateAccountScreen();
+    }
+    if (_status == 'suspended') {
+      // No reactivate-from-here path — unlike self_disabled, this
+      // status can only be lifted by hand, in the console (see
+      // MODERATION_GUIDE.md and firestore.rules' private/profile
+      // rule, which blocks the owner from ever writing it away).
+      return const SuspendedAccountScreen();
+    }
+    return const _LockGate(child: ChatListScreen());
   }
 }
 
