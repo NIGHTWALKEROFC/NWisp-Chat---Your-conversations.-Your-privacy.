@@ -26,8 +26,35 @@ service cloud.firestore {
       // Owner-only: blockedUsers, messageTtlHours, readReceiptsEnabled,
       // lastSeenVisible, fcmTokens, lastLoginAt. Never exposed to anyone
       // else, full stop - no other rule below grants read access to this.
+      // Owner-only: blockedUsers, messageTtlHours, readReceiptsEnabled,
+      // lastSeenVisible, fcmTokens, lastLoginAt, accountStatus,
+      // suspensionReason, suspensionAppealDisabled. Never exposed to
+      // anyone else, full stop - no other rule below grants read access
+      // to this.
       match /private/profile {
-        allow read, write: if isOwner(uid);
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid);
+        // BUGFIX (reporting/suspension feature): a blanket owner-write
+        // rule would let a modified client write straight to Firestore
+        // and set accountStatus back to 'active' to silently undo an
+        // admin suspension — the app's own UI only ever calls
+        // AccountLifecycleService.setSelfDisabled, but a rule has to
+        // actually enforce that, not just the app's UI. The owner may
+        // freely move between 'active' and 'self_disabled' (that
+        // feature) but can never write 'suspended' themselves (admin-only,
+        // via the Firebase console, which uses the Admin SDK and so is
+        // unaffected by this or any other rule), and can never change
+        // accountStatus AT ALL while it's currently 'suspended' - lifting
+        // a real suspension can only ever happen the same way it was
+        // applied: by hand, in the console.
+        allow update: if isOwner(uid) && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['accountStatus']) ||
+          (
+            resource.data.get('accountStatus', 'active') != 'suspended' &&
+            request.resource.data.accountStatus in ['active', 'self_disabled']
+          )
+        );
+        allow delete: if isOwner(uid);
       }
 
       // Presence (online / lastSeen) is the one piece of "private" data
@@ -77,6 +104,30 @@ service cloud.firestore {
           allow read: if isOwner(uid);
           allow create: if isOwner(uid);
           allow update, delete: if false; // append-only audit log
+        }
+
+        // Feature: new-login accept/deny flow (opt-in, default OFF — see
+        // AccountSecurityScreen's toggle). Both the NEW device (creating
+        // the request, watching its outcome) and the OLD/active device
+        // (watching for one to respond to) act under the SAME account's
+        // Firebase Auth token here, since the new device has already
+        // proven the password before this point — see
+        // DeviceSessionService's doc comment on this feature for the
+        // honest limit that implies. [create] only requires being signed
+        // in as this account; [update] additionally requires the
+        // responder's claimed deviceId to match the session doc's
+        // CURRENT activeDeviceId, which only the genuinely-active device
+        // can honestly supply, and that a still-'pending' request is the
+        // only kind that can be decided (no re-deciding an already
+        // accepted/denied one).
+        match /loginApprovals/{requestId} {
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid);
+          allow update: if isOwner(uid) &&
+            resource.data.status == 'pending' &&
+            request.resource.data.respondingDeviceId ==
+              get(/databases/$(database)/documents/users/$(uid)/private/session).data.activeDeviceId;
+          allow delete: if false;
         }
       }
     }
@@ -263,6 +314,28 @@ service cloud.firestore {
       allow read: if false;
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    // Feature: appeals (see the reporting/suspension/appeals writeup).
+    // Same shape and same reasoning as reports/ above: admin review is
+    // manual, via the Firebase console directly (Admin SDK bypasses
+    // these rules entirely), so the app itself never needs read access —
+    // it only ever needs to create one and never touch it again.
+    match /appeals/{appealId} {
+      allow read: if false;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // A single small doc holding the "contact admin" fallback link shown
+    // on SuspendedAccountScreen once an appeal has been marked bad-faith
+    // (see AccountLifecycleService / suspensionAppealDisabled). Readable
+    // by anyone signed in (a suspended person still needs to see it) but
+    // never writable from the app — the admin sets it by hand, in the
+    // console, so it can be changed without an app update.
+    match /config/moderation {
+      allow read: if isSignedIn();
+      allow write: if false;
     }
   }
 }
