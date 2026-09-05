@@ -1,5 +1,7 @@
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'media_service.dart';
 
 /// blockedUsers now lives at users/{uid}/private/profile (owner-only —
 /// see firestore.rules) instead of directly on users/{uid}, which used to
@@ -11,6 +13,22 @@ import 'package:firebase_auth/firebase_auth.dart';
 /// tells the OTHER person's device "you've been blocked, don't let them
 /// send" (see MessageRelayService._checkNotBlocked) — without exposing your
 /// whole block list to them or anyone else.
+///
+/// Fixed list of report/appeal reasons shown on ReportUserScreen — kept
+/// here (not in the screen) so anything reading a report's `ruleViolated`
+/// value (you, in the Firebase console) has one canonical list to match
+/// against.
+const List<String> reportableRules = [
+  'Harassment or bullying',
+  'Spam or scams',
+  'Impersonation',
+  'Sharing illegal content',
+  'Sexual content involving a minor',
+  'Violence or threats',
+  'Hate speech',
+  'Other',
+];
+
 class ModerationService {
   final _db = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
@@ -55,12 +73,79 @@ class ModerationService {
     return blocked.contains(uid);
   }
 
-  Future<void> reportUser(String uid, String reason) {
-    return _db.collection('reports').add({
+  /// Feature: reporting + admin review + suspension + appeals.
+  ///
+  /// [ruleViolated] should be one of [reportableRules] (enforced by the
+  /// picker on ReportUserScreen, not by this method itself). [proofFile],
+  /// if given, is uploaded through the exact same signed-URL pipeline
+  /// chat media already uses ([MediaService.uploadFile]) — reusing that
+  /// path means no Edge Function changes were needed for this feature at
+  /// all, since it already restricts uploads to "your own uid" as the
+  /// first path segment, which `report-proof/<your uid>/...` satisfies
+  /// just like `avatars/<your uid>.jpg` or `stories/<your uid>/...` do.
+  ///
+  /// The reporter's own email is attached automatically (from Firebase
+  /// Auth, never something they type in) so you — the admin, reading
+  /// this in the Firebase console — can email them the outcome later.
+  /// It is NEVER shown to the reported user: `reports/{reportId}` has
+  /// `allow read: if false` in firestore.rules, so the app itself can't
+  /// read reports back at all, only create them; you read them via the
+  /// Admin SDK in the console, which bypasses that rule entirely.
+  Future<String> reportUser({
+    required String reportedUid,
+    required String ruleViolated,
+    String? details,
+    File? proofFile,
+  }) async {
+    final reportRef = _db.collection('reports').doc();
+    String? proofPath;
+    if (proofFile != null) {
+      final ext = proofFile.path.split('.').last;
+      proofPath = await MediaService.uploadFile(
+        proofFile,
+        'media',
+        'report-proof/$_myUid/${reportRef.id}.$ext',
+      );
+    }
+    await reportRef.set({
       'reporterUid': _myUid,
-      'reportedUid': uid,
-      'reason': reason,
+      'reporterEmail': _auth.currentUser?.email,
+      'reportedUid': reportedUid,
+      'ruleViolated': ruleViolated,
+      'details': details,
+      'proofPath': proofPath,
+      'status': 'pending', // you flip this by hand in the console — see MODERATION_GUIDE.md
       'createdAt': FieldValue.serverTimestamp(),
     });
+    return reportRef.id;
+  }
+
+  /// Feature: appeals. Same reasoning as [reportUser] for the attached
+  /// email and the proof-upload path. [proofFile] is optional — a person
+  /// appealing doesn't necessarily have anything to attach, unlike a
+  /// reporter who's asked to back up a specific claim.
+  Future<String> submitAppeal({
+    required String text,
+    File? proofFile,
+  }) async {
+    final appealRef = _db.collection('appeals').doc();
+    String? proofPath;
+    if (proofFile != null) {
+      final ext = proofFile.path.split('.').last;
+      proofPath = await MediaService.uploadFile(
+        proofFile,
+        'media',
+        'appeal-proof/$_myUid/${appealRef.id}.$ext',
+      );
+    }
+    await appealRef.set({
+      'uid': _myUid,
+      'appellantEmail': _auth.currentUser?.email,
+      'text': text,
+      'proofPath': proofPath,
+      'status': 'pending', // you flip this by hand in the console — see MODERATION_GUIDE.md
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    return appealRef.id;
   }
 }
