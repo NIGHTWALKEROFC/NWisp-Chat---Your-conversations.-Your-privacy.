@@ -41,6 +41,18 @@ class AccountLifecycleService {
     return (snap.data()?['accountStatus'] as String?) ?? 'active';
   }
 
+  /// Live version of [getAccountStatus] — used by AuthGate so a
+  /// suspension (or a self-disable from another device) takes effect the
+  /// moment it happens, not just the next time the app is reopened.
+  /// Firestore's own snapshot listener reflects a write almost instantly
+  /// (even a write made from THIS device, like tapping Reactivate, shows
+  /// up from local cache before the server round-trip even finishes).
+  static Stream<String> watchAccountStatus() {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return Stream.value('active');
+    return _profileRef(uid).snapshots().map((snap) => (snap.data()?['accountStatus'] as String?) ?? 'active');
+  }
+
   static Future<void> setSelfDisabled(bool disabled) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) throw Exception('No signed-in user');
