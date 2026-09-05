@@ -1,11 +1,15 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../services/branding_service.dart';
+import '../services/device_session_service.dart';
 import '../services/settings_service.dart';
 import 'register_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'settings/help_center_screen.dart';
+
+enum _ApprovalOutcome { accepted, denied, timedOut, cancelled }
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -37,13 +41,85 @@ class _LoginScreenState extends State<LoginScreen> {
       _error = null;
     });
     try {
-      await _authService.loginWithEmail(_emailController.text.trim(), _passwordController.text);
+      final uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
+
+      if (await DeviceSessionService.instance.isLoginApprovalRequired(uid)) {
+        final requestId = await DeviceSessionService.instance.createLoginApprovalRequest(uid);
+        final outcome = await _waitForApproval(uid, requestId);
+        if (outcome != _ApprovalOutcome.accepted) {
+          await DeviceSessionService.instance.expireLoginApprovalRequest(uid, requestId);
+          await _authService.abortLogin();
+          if (mounted) {
+            setState(() => _error = switch (outcome) {
+              _ApprovalOutcome.denied => 'The login was denied from your other device.',
+              _ApprovalOutcome.timedOut => "Nobody responded in time. Try again, or check your other device.",
+              _ApprovalOutcome.cancelled => null,
+              _ApprovalOutcome.accepted => null,
+            });
+          }
+          return;
+        }
+      }
+
+      await _authService.finishLogin(uid);
       await SettingsService.setStayLoggedIn(_stayLoggedIn);
+      // AuthGate's authStateChanges listener takes it from here.
     } catch (e) {
-      setState(() => _error = _friendlyError(e));
+      if (mounted) setState(() => _error = _friendlyError(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// Shows a non-dismissible "waiting for approval" dialog and resolves
+  /// once the other device responds, the 60-second window elapses, or the
+  /// person taps Cancel — whichever happens first. Only ever one of these
+  /// three ends the wait; the losers are cleaned up (stream cancelled,
+  /// timer cancelled, dialog popped) before returning.
+  Future<_ApprovalOutcome> _waitForApproval(String uid, String requestId) async {
+    final outcomeCompleter = Completer<_ApprovalOutcome>();
+
+    final sub = DeviceSessionService.instance.watchApprovalStatus(uid, requestId).listen((status) {
+      if (outcomeCompleter.isCompleted) return;
+      if (status == 'accepted') outcomeCompleter.complete(_ApprovalOutcome.accepted);
+      if (status == 'denied') outcomeCompleter.complete(_ApprovalOutcome.denied);
+    });
+    final timeoutTimer = Timer(const Duration(seconds: 60), () {
+      if (!outcomeCompleter.isCompleted) outcomeCompleter.complete(_ApprovalOutcome.timedOut);
+    });
+
+    if (mounted) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Waiting for approval'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Approve this login from your other device, or wait for it to time out.'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                if (!outcomeCompleter.isCompleted) outcomeCompleter.complete(_ApprovalOutcome.cancelled);
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final outcome = await outcomeCompleter.future;
+    await sub.cancel();
+    timeoutTimer.cancel();
+    if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
+    return outcome;
   }
 
   String _friendlyError(Object e) {
