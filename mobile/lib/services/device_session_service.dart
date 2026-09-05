@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'secure_storage_service.dart';
 
@@ -46,6 +47,13 @@ class DeviceSessionService {
 
   CollectionReference<Map<String, dynamic>> _historyRef(String uid) =>
       _sessionRef(uid).collection('history');
+
+  /// New-login approval requests (see the "Require approval for new
+  /// logins" toggle on AccountSecurityScreen). A subcollection of the
+  /// same owner-only private/session doc used for device tracking, so it
+  /// shares that doc's existing firestore.rules access.
+  CollectionReference<Map<String, dynamic>> _approvalsRef(String uid) =>
+      _sessionRef(uid).collection('loginApprovals');
 
   Future<String> _localDeviceId() async {
     if (_myDeviceId != null) return _myDeviceId!;
@@ -222,5 +230,130 @@ class DeviceSessionService {
   /// point of view, without touching the underlying record.
   Future<void> clearHistoryView(String uid) async {
     await _sessionRef(uid).set({'historyClearedAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
+  }
+
+  // ---------------------------------------------------------------------
+  // New-login accept/deny flow (opt-in, default OFF)
+  // ---------------------------------------------------------------------
+  //
+  // With the toggle OFF (the default, and the only behavior that existed
+  // before this feature), logging in works exactly as above: the new
+  // device calls [claimThisDevice] immediately and the old one gets
+  // signed out next time its listener fires.
+  //
+  // With the toggle ON, a new login does NOT get to call
+  // [claimThisDevice] right away. Instead: it creates a doc here with
+  // status 'pending', the currently-active device is notified (a live
+  // Firestore listener while it's in the foreground — see main.dart —
+  // AND a push notification for when it isn't, reusing the exact same
+  // Database-Webhook + Edge-Function + FCM pattern send-push already uses
+  // for message notifications, just pointed at a new
+  // send-login-approval-push function), and the new device waits (60
+  // seconds, client-side) for that other device to accept or deny it.
+  // Only on acceptance does the new login proceed to [claimThisDevice].
+  //
+  // Honest limit on what this actually protects against: a deviceId here
+  // is a self-generated UUID this app stores in secure storage on first
+  // run (see [_localDeviceId]) — it is NOT a cryptographically attested
+  // hardware identity, the same trust level [claimThisDevice]'s
+  // activeDeviceId already relies on elsewhere in this file. This feature
+  // stops an opportunistic or accidental new sign-in (someone else with
+  // your password, or you signing in on a device you don't recognize) —
+  // it is not a defense against someone with the technical means to talk
+  // to Firestore directly instead of through this app.
+
+  Future<bool> isLoginApprovalRequired(String uid) async {
+    final data = (await _sessionRef(uid).get()).data();
+    return (data?['requireLoginApproval'] as bool?) ?? false;
+  }
+
+  Future<void> setRequireLoginApproval(String uid, bool required) =>
+      _sessionRef(uid).set({'requireLoginApproval': required}, SetOptions(merge: true));
+
+  /// Called by the NEW device once it's verified the account's password
+  /// but before it's allowed to claim itself as active. Writes the
+  /// pending request, then best-effort pings Supabase to trigger a push
+  /// to the OLD device — a failure there just means no push (the old
+  /// device's live listener, if it's foregrounded, still works fine).
+  Future<String> createLoginApprovalRequest(String uid) async {
+    final requestId = const Uuid().v4();
+    final deviceId = await _localDeviceId();
+    final label = await _realDeviceLabel();
+    final location = await _locationLabel();
+
+    await _approvalsRef(uid).doc(requestId).set({
+      'status': 'pending',
+      'requestingDeviceId': deviceId,
+      'requestingDeviceLabel': label,
+      'requestingLocation': location,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    try {
+      await Supabase.instance.client.from('login_approval_requests').insert({
+        'uid': uid,
+        'request_id': requestId,
+        'device_label': label,
+        'location': location,
+      });
+    } catch (_) {
+      // Best-effort — see the doc comment above.
+    }
+
+    return requestId;
+  }
+
+  /// The NEW device watches this while its "waiting for approval" dialog
+  /// is up (see LoginScreen) — emits 'pending', then eventually 'accepted'
+  /// or 'denied' once the OLD device responds.
+  Stream<String> watchApprovalStatus(String uid, String requestId) => _approvalsRef(uid)
+      .doc(requestId)
+      .snapshots()
+      .map((snap) => (snap.data()?['status'] as String?) ?? 'pending');
+
+  /// Called by the NEW device if the person cancels the wait, or the
+  /// 60-second client-side timeout elapses. A no-op if the OLD device
+  /// already accepted/denied it in the meantime — this only ever moves a
+  /// request OUT of 'pending', never overwrites an existing decision.
+  Future<void> expireLoginApprovalRequest(String uid, String requestId) async {
+    final ref = _approvalsRef(uid).doc(requestId);
+    try {
+      await _db.runTransaction((tx) async {
+        final snap = await tx.get(ref);
+        if ((snap.data()?['status'] as String?) == 'pending') {
+          tx.update(ref, {'status': 'expired'});
+        }
+      });
+    } catch (_) {}
+  }
+
+  /// The OLD/active device watches this while foregrounded (see
+  /// main.dart) to pop up an in-app Accept/Deny screen the instant a new
+  /// login requests approval, without waiting on a push at all. Only ever
+  /// the single latest still-pending request — normal use never has more
+  /// than one outstanding at a time.
+  Stream<Map<String, dynamic>?> watchPendingApprovalRequest(String uid) => _approvalsRef(uid)
+      .where('status', isEqualTo: 'pending')
+      .orderBy('createdAt', descending: true)
+      .limit(1)
+      .snapshots()
+      .map((snap) => snap.docs.isEmpty ? null : {'requestId': snap.docs.first.id, ...snap.docs.first.data()});
+
+  /// Called from the OLD/active device — either the in-app dialog
+  /// (foreground) or LoginApprovalScreen (opened from a tapped push).
+  /// firestore.rules requires [respondingDeviceId] to match the session
+  /// doc's current activeDeviceId, which only the actually-active device
+  /// can honestly supply (see this section's doc comment for the honest
+  /// limit on that guarantee).
+  Future<void> respondToLoginApproval({
+    required String uid,
+    required String requestId,
+    required bool approve,
+  }) async {
+    final deviceId = await _localDeviceId();
+    await _approvalsRef(uid).doc(requestId).update({
+      'status': approve ? 'accepted' : 'denied',
+      'respondingDeviceId': deviceId,
+    });
   }
 }
