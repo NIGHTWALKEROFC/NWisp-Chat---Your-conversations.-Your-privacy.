@@ -133,18 +133,45 @@ class AuthService {
     return cred;
   }
 
-  Future<UserCredential> loginWithEmail(String email, String password) async {
+  /// Step 1 of signing in: verify credentials only. Always call this
+  /// first, regardless of whether the account has "Require approval for
+  /// new logins" turned on — the caller (LoginScreen) checks
+  /// [DeviceSessionService.isLoginApprovalRequired] with the returned uid
+  /// and either calls [finishLogin] right away (approval OFF, unchanged
+  /// behavior) or runs the approval wait first (see LoginScreen._login).
+  ///
+  /// Deliberately does NOT call SessionService.prepareForUser or
+  /// DeviceSessionService.claimThisDevice — those still only happen in
+  /// [finishLogin], once any required approval has actually been
+  /// granted, so a denied/timed-out login never touches this device's
+  /// local crypto state or claims the account's active-device slot.
+  Future<String> beginEmailLogin(String email, String password) async {
     final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
+    return cred.user!.uid;
+  }
+
+  /// Step 2 (only reached if login-approval was required and was denied,
+  /// timed out, or was cancelled by the person waiting): undoes step 1's
+  /// Firebase Auth sign-in so this device is fully back to "signed out",
+  /// not left in a half-signed-in state.
+  Future<void> abortLogin() => _auth.signOut();
+
+  /// Step 2 (the normal case — approval wasn't required, or it was
+  /// granted): everything [loginWithEmail] used to do inline, now run
+  /// once as a distinct step so the approval wait in between never has to
+  /// touch local crypto state or the active-device slot until it's
+  /// actually earned that.
+  Future<void> finishLogin(String uid) async {
     // Prepares (and, if this device last belonged to a different account,
     // wipes-then-prepares) this device's Signal Protocol identity and local
     // message store, AND migrates any pre-restructure account onto the new
     // private/profile + private/presence documents (see
     // SessionService._ensurePrivateDocs).
-    await SessionService.prepareForUser(cred.user!.uid);
+    await SessionService.prepareForUser(uid);
 
-    final profileSnap = await _privateProfileRef(cred.user!.uid).get();
+    final profileSnap = await _privateProfileRef(uid).get();
     final lastLoginAt = (profileSnap.data()?['lastLoginAt'] as Timestamp?)?.toDate();
-    final userDoc = await _db.collection('users').doc(cred.user!.uid).get();
+    final userDoc = await _db.collection('users').doc(uid).get();
     final username = (userDoc.data()?['username'] as String?) ?? '';
     if (lastLoginAt != null && DateTime.now().difference(lastLoginAt).inDays >= 7) {
       pendingWelcomeMessage = 'Welcome back${username.isNotEmpty ? ', $username' : ''}! 👋';
@@ -152,11 +179,22 @@ class AuthService {
       pendingWelcomeMessage = null;
     }
 
-    await _privateProfileRef(cred.user!.uid).set({'lastLoginAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
+    await _privateProfileRef(uid).set({'lastLoginAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
     // Makes this device the account's sole active device — any other
     // device previously signed in gets signed out (see
     // DeviceSessionService and its listener wired up in main.dart).
-    await DeviceSessionService.instance.claimThisDevice(cred.user!.uid);
+    await DeviceSessionService.instance.claimThisDevice(uid);
+  }
+
+  /// Unchanged end-to-end behavior for the common case (login-approval
+  /// toggle OFF) — just [beginEmailLogin] immediately followed by
+  /// [finishLogin]. LoginScreen calls the two steps directly instead of
+  /// this method only when it needs to insert the approval wait between
+  /// them; kept here so any other/future caller that doesn't care about
+  /// that flow can still call one simple method.
+  Future<UserCredential> loginWithEmail(String email, String password) async {
+    final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
+    await finishLogin(cred.user!.uid);
     return cred;
   }
 
