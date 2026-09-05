@@ -9,6 +9,7 @@ import 'chat_list_screen.dart';
 import 'login_screen.dart';
 import 'reactivate_account_screen.dart';
 import 'settings/forgot_password_screen.dart';
+import 'suspended_account_screen.dart';
 import '../services/local_message_store.dart';
 
 class AuthGate extends StatefulWidget {
@@ -112,6 +113,13 @@ class _PostAuthGateState extends State<_PostAuthGate> {
           return ReactivateAccountScreen(
             onReactivated: () => setState(() => _reactivatedThisSession = true),
           );
+        }
+        if (snapshot.data == 'suspended') {
+          // No reactivate-from-here path — unlike self_disabled, this
+          // status can only be lifted by hand, in the console (see
+          // MODERATION_GUIDE.md and firestore.rules' private/profile
+          // rule, which blocks the owner from ever writing it away).
+          return const SuspendedAccountScreen();
         }
         return const _LockGate(child: ChatListScreen());
       },
