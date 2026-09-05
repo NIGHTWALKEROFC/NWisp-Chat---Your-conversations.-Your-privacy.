@@ -5,10 +5,9 @@ import '../services/auth_service.dart';
 /// Shown by AuthGate instead of the normal app when this account's
 /// accountStatus is 'self_disabled' (see AccountScreen's "Temporarily
 /// deactivate account" action). Distinct from admin-driven suspension,
-/// which will use a different status value and a different screen.
+/// which uses a different status value and a different screen.
 class ReactivateAccountScreen extends StatefulWidget {
-  final VoidCallback onReactivated;
-  const ReactivateAccountScreen({super.key, required this.onReactivated});
+  const ReactivateAccountScreen({super.key});
 
   @override
   State<ReactivateAccountScreen> createState() => _ReactivateAccountScreenState();
@@ -21,7 +20,10 @@ class _ReactivateAccountScreenState extends State<ReactivateAccountScreen> {
     setState(() => _busy = true);
     try {
       await AccountLifecycleService.setSelfDisabled(false);
-      widget.onReactivated();
+      // No further action needed here — AuthGate is watching accountStatus
+      // live and swaps back to the chat list on its own the moment this
+      // write lands (near-instantly, from local cache, before the
+      // server round-trip even completes).
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
