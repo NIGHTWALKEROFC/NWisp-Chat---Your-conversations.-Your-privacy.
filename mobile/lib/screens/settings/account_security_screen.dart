@@ -106,6 +106,20 @@ class AccountSecurityScreen extends StatelessWidget {
                       trailing: Icon(Icons.check_circle, color: scheme.primary, size: 20),
                     ),
                   ),
+                  Card(
+                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: SwitchListTile.adaptive(
+                      secondary: const Icon(Icons.verified_user_outlined),
+                      title: const Text('Require approval for new logins'),
+                      subtitle: const Text(
+                        'A new login must be accepted from this device before it can sign in. '
+                        "Off by default — when off, a new login instantly signs this device out, "
+                        'same as today.',
+                      ),
+                      value: (sessionData?['requireLoginApproval'] as bool?) ?? false,
+                      onChanged: (v) => DeviceSessionService.instance.setRequireLoginApproval(uid, v),
+                    ),
+                  ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 8, 4),
                     child: Row(
