@@ -188,6 +188,14 @@ void _setUpMessagingLifecycle() {
     // with a clear explanation instead of silently leaving two devices
     // both able to act on the account.
     DeviceSessionService.instance.watchForRemoteLogout(user.uid, () async {
+      // BUGFIX: without this, someone several screens deep (an open
+      // chat, settings, anywhere reached via Navigator.push) would get
+      // signed out underneath whatever they were looking at, but that
+      // screen would stay fully visible — it sits ON TOP of AuthGate in
+      // the app's one shared Navigator (see `MaterialApp(home:
+      // AuthGate())` below), and swapping what's underneath a still-open
+      // route doesn't make that route go away on its own.
+      navigatorKey.currentState?.popUntil((route) => route.isFirst);
       await AuthService().logout();
       final context = navigatorKey.currentContext;
       if (context == null) return;
