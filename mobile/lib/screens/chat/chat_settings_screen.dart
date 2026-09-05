@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
+import '../report_user_screen.dart';
 import '../security/safety_number_screen.dart';
 
 const _chatTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never for THIS chat specifically, hours after that
@@ -140,8 +141,13 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   }
 
   Future<void> _report() async {
-    await _moderationService.reportUser(widget.peerUid, 'Reported from chat settings');
-    if (!mounted) return;
+    final submitted = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ReportUserScreen(reportedUid: widget.peerUid, reportedLabel: widget.peerUsername),
+      ),
+    );
+    if (submitted != true || !mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Report submitted')));
   }
 
