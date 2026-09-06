@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/auth_service.dart';
+import 'settings/community_guidelines_screen.dart';
 import 'submit_appeal_screen.dart';
 
 /// Shown by AuthGate instead of the normal app when this account's
@@ -40,9 +41,33 @@ class _SuspendedAccountScreenState extends State<SuspendedAccountScreen> {
   }
 
   Future<void> _openContactLink(String url) async {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return;
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    // BUGFIX: admins commonly type a link without "https://" in front
+    // (e.g. "instagram.com/username") — Uri.tryParse accepts that as a
+    // schemeless relative URI, and launchUrl would then just silently do
+    // nothing with no error shown anywhere. Add the scheme if it's
+    // missing instead of failing quietly.
+    final normalized = url.contains('://') ? url : 'https://$url';
+    final uri = Uri.tryParse(normalized);
+    if (uri == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("This contact link isn't valid. Try Sign out and reach out another way.")),
+      );
+      return;
+    }
+    try {
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open that link.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open that link: $e')),
+      );
+    }
   }
 
   Future<void> _signOut() => AuthService().logout();
@@ -80,6 +105,13 @@ class _SuspendedAccountScreenState extends State<SuspendedAccountScreen> {
                       textAlign: TextAlign.center,
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
+                    TextButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const CommunityGuidelinesScreen()),
+                      ),
+                      child: const Text('See what this rule means'),
+                    ),
                     const SizedBox(height: 28),
                     if (info.appealDisabled) ...[
                       const Text(
@@ -88,6 +120,13 @@ class _SuspendedAccountScreenState extends State<SuspendedAccountScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
+                      // BUGFIX: if the admin hasn't set config/moderation's
+                      // contactSocialUrl yet (it's optional — see
+                      // MODERATION_GUIDE.md), this used to show NEITHER
+                      // button at all: no Appeal (correctly hidden) and no
+                      // Contact admin (silently skipped since contactUrl
+                      // was null) — a real dead end with only "Sign out"
+                      // left. Always show something actionable instead.
                       if (info.contactUrl != null)
                         SizedBox(
                           width: double.infinity,
@@ -95,6 +134,13 @@ class _SuspendedAccountScreenState extends State<SuspendedAccountScreen> {
                             onPressed: () => _openContactLink(info.contactUrl!),
                             child: const Text('Contact admin'),
                           ),
+                        )
+                      else
+                        Text(
+                          "No contact method has been set up yet for this. Please sign out and reach "
+                          "out another way.",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: scheme.onSurfaceVariant),
                         ),
                     ] else
                       SizedBox(
