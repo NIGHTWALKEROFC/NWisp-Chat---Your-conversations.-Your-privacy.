@@ -56,9 +56,23 @@ class AccountLifecycleService {
   static Future<void> setSelfDisabled(bool disabled) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) throw Exception('No signed-in user');
-    await _profileRef(uid).set({
+    final batch = _db.batch();
+    batch.set(_profileRef(uid), {
       'accountStatus': disabled ? 'self_disabled' : 'active',
     }, SetOptions(merge: true));
+    // Feature: deactivated accounts show as "not found" to others,
+    // Instagram-style. accountStatus itself lives on the OWNER-ONLY
+    // private/profile doc (see above) — nobody searching for this
+    // account could ever read it to know to hide anything. This mirrors
+    // just a bare true/false onto the PUBLIC users/{uid} doc (no reason,
+    // no detail — just "reachable or not"), which is what
+    // ContactService.searchUsers/userByUid actually check. See
+    // MODERATION_GUIDE.md for the matching admin-suspension step, since
+    // that path is a manual console action, not this method.
+    batch.set(_db.collection('users').doc(uid), {
+      'isActive': !disabled,
+    }, SetOptions(merge: true));
+    await batch.commit();
   }
 
   // ---------------------------------------------------------------------
