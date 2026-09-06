@@ -9,6 +9,8 @@ import 'edit_profile_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
 import 'blocked_users_screen.dart';
+import 'community_guidelines_screen.dart';
+import 'feature_guide_screen.dart';
 import 'help_center_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_screen.dart';
@@ -250,6 +252,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const TermsScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.rule_outlined),
+                  title: const Text('Community Guidelines'),
+                  subtitle: const Text('The specific rules reports and suspensions are based on'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const CommunityGuidelinesScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('Feature guide'),
+                  subtitle: const Text('A quick reference for everything the app can do'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const FeatureGuideScreen()),
                   ),
                 ),
                 _SectionLabel('Security'),
