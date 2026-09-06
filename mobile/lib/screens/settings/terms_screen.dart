@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 class TermsScreen extends StatelessWidget {
   const TermsScreen({super.key});
 
-  static const _lastUpdated = 'August 2026';
+  static const _lastUpdated = 'September 2026';
 
   @override
   Widget build(BuildContext context) {
@@ -42,15 +42,18 @@ class TermsScreen extends StatelessWidget {
                 'first. A group admin can add an existing contact to a group directly; adding anyone '
                 'else requires that person to accept an invite before they join or see anything about '
                 'the group. You can leave any group, block any contact, or decline any request at any '
-                'time.',
+                'time. Group admins can also turn on "Only admins can send messages" for a group — '
+                'everyone can still read and react, but sending is limited to admins until that '
+                'setting is turned back off.',
           ),
           _Section(
             title: '5. Acceptable use',
             body: "Don't use NWisp to harass, threaten, or abuse others; send illegal content; spam; "
                 'attempt to break the encryption, security, or infrastructure; use it to add or invite '
                 'people without a legitimate reason to contact them; or use it in any way that '
-                'violates the law where you live. Accounts found doing this may be blocked or '
-                'removed.',
+                'violates the law where you live. The full, specific list of rules — the same list '
+                'shown on every in-app "Report" button — is in Community Guidelines. Accounts found '
+                'breaking a rule there may be suspended; see §10.',
           ),
           _Section(
             title: '6. Editing and deleting messages',
@@ -82,9 +85,15 @@ class TermsScreen extends StatelessWidget {
                 'guaranteed to be perfect — see the known-limitations notes in the in-app Help Centre.',
           ),
           _Section(
-            title: '10. Termination',
-            body: 'You can stop using NWisp and request account deletion at any time by contacting '
-                'the developer. Accounts that violate these Terms may be suspended or removed.',
+            title: '10. Reports, suspension, and appeals',
+            body: 'Anyone can report an account for a specific rule from Community Guidelines, '
+                'optionally with details and a photo as proof. Reports are reviewed by a person, not '
+                'automatically. If an account is suspended, that account sees the specific rule cited '
+                'and can submit a written appeal, optionally with proof — appeals are also reviewed '
+                'by a person. If an appeal is found to have been made in bad faith, the appeal option '
+                'for that account may be turned off, with an alternate contact method shown instead. '
+                "You can also stop using NWisp and request account deletion at any time — from "
+                'Account settings, or by contacting the developer.',
           ),
           _Section(
             title: '11. Changes',
