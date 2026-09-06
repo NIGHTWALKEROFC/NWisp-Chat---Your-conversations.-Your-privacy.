@@ -228,24 +228,35 @@ void _setUpMessagingLifecycle() {
 /// or killed (see _handleNotificationData above for that path).
 String? _lastHandledApprovalRequestId;
 void _watchForIncomingLoginApprovals(String uid) {
-  DeviceSessionService.instance.watchPendingApprovalRequest(uid).listen((request) {
-    if (request == null) return;
-    final requestId = request['requestId'] as String?;
-    if (requestId == null || requestId == _lastHandledApprovalRequestId) return;
-    _lastHandledApprovalRequestId = requestId;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      navigatorKey.currentState?.push(
-        MaterialPageRoute(
-          builder: (_) => LoginApprovalScreen(
-            uid: uid,
-            requestId: requestId,
-            deviceLabel: request['requestingDeviceLabel'] as String? ?? 'Unknown device',
-            location: request['requestingLocation'] as String?,
+  DeviceSessionService.instance.watchPendingApprovalRequest(uid).listen(
+    (request) {
+      if (request == null) return;
+      final requestId = request['requestId'] as String?;
+      if (requestId == null || requestId == _lastHandledApprovalRequestId) return;
+      _lastHandledApprovalRequestId = requestId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (_) => LoginApprovalScreen(
+              uid: uid,
+              requestId: requestId,
+              deviceLabel: request['requestingDeviceLabel'] as String? ?? 'Unknown device',
+              location: request['requestingLocation'] as String?,
+            ),
           ),
-        ),
-      );
-    });
-  });
+        );
+      });
+    },
+    // BUGFIX: this used to have no error handler at all, so a query
+    // failure (e.g. the missing-composite-index issue this same fix
+    // resolves — see watchPendingApprovalRequest's own doc comment) died
+    // completely silently: no crash, no log, the active device's "new
+    // login wants approval" screen just never showed up, with nothing
+    // anywhere pointing at why. debugPrint at minimum makes a future
+    // failure of this listener, for any reason, visible in the device
+    // log instead of invisible.
+    onError: (Object e) => debugPrint('watchPendingApprovalRequest error: $e'),
+  );
 }
 
 void _setUpPushNotifications() {
