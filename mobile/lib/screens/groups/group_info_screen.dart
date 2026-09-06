@@ -382,6 +382,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 subtitle: Text(group.chatTtlHours == null || group.chatTtlHours == 0 ? 'Never' : '${group.chatTtlHours} hours'),
                 onTap: amAdmin ? () => _openTtlPicker(group) : null,
               ),
+              // Feature: group security setting. Admin-only, same pattern
+              // as the disappearing-messages setting above — the toggle
+              // itself is only interactive for admins (onChanged: null
+              // otherwise), and GroupService.setOnlyAdminsCanSend is
+              // additionally only reachable via a firestore.rules write
+              // that already requires isGroupAdmin() on this same
+              // document, so a non-admin can't call it directly either.
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.campaign_outlined),
+                title: const Text('Only admins can send messages'),
+                subtitle: const Text('Everyone can still read and react — only sending is restricted'),
+                value: group.onlyAdminsCanSend,
+                onChanged: amAdmin ? (v) => GroupService.instance.setOnlyAdminsCanSend(widget.groupId, v) : null,
+              ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
                 title: const Text('Mute notifications'),
