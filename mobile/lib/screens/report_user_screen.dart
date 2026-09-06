@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/moderation_service.dart';
+import 'settings/community_guidelines_screen.dart';
 
 /// Replaces the old one-tap "report" action in ChatSettingsScreen. Lets
 /// the reporter pick WHICH specific rule was broken (not just a generic
@@ -72,8 +73,15 @@ class _ReportUserScreenState extends State<ReportUserScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _submitting = false);
+      // BUGFIX-IN-PROGRESS: this used to always show the same generic
+      // message no matter what actually went wrong, which made "fails
+      // with a photo attached, works without one" impossible to pin down
+      // further — the real Supabase/Firestore error was thrown away right
+      // here. Showing it directly (still with a plain-language lead-in)
+      // means the exact cause is now visible the next time this happens,
+      // instead of needing to guess blind.
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not submit the report. Please try again.')),
+        SnackBar(content: Text('Could not submit the report: $e'), duration: const Duration(seconds: 8)),
       );
     }
   }
@@ -88,6 +96,17 @@ class _ReportUserScreenState extends State<ReportUserScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             Text('What rule did this break?', style: Theme.of(context).textTheme.titleSmall),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: Size.zero),
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const CommunityGuidelinesScreen()),
+                ),
+                child: const Text("Not sure? See what each rule means"),
+              ),
+            ),
             const SizedBox(height: 4),
             ...reportableRules.map(
               (rule) => RadioListTile<String>(
