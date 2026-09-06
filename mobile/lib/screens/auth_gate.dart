@@ -9,6 +9,7 @@ import '../services/settings_service.dart';
 import '../widgets/contact_developer_sheet.dart';
 import 'chat_list_screen.dart';
 import 'login_screen.dart';
+import 'onboarding_screen.dart';
 import 'reactivate_account_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'suspended_account_screen.dart';
@@ -23,13 +24,14 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   final _authService = AuthService();
-  late final Future<bool> _stayLoggedIn;
+  late final Future<_GateState> _prepared;
+  bool _onboardingJustFinished = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _stayLoggedIn = _prepare();
+    _prepared = _prepare();
   }
 
   @override
@@ -50,21 +52,28 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _prepare() async {
+  Future<_GateState> _prepare() async {
+    // Feature: first-run onboarding walkthrough. Checked once here,
+    // alongside the existing "stay signed in" check, rather than as a
+    // separate Future — one loading spinner instead of two back-to-back.
+    final hasSeenOnboarding = await SettingsService.getHasSeenOnboarding();
     final stayLoggedIn = await SettingsService.getStayLoggedIn();
     if (!stayLoggedIn) {
       await _authService.logout();
     }
-    return stayLoggedIn;
+    return _GateState(hasSeenOnboarding: hasSeenOnboarding, stayLoggedIn: stayLoggedIn);
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: _stayLoggedIn,
+    return FutureBuilder<_GateState>(
+      future: _prepared,
       builder: (context, prefSnapshot) {
         if (!prefSnapshot.hasData) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (!prefSnapshot.data!.hasSeenOnboarding && !_onboardingJustFinished) {
+          return OnboardingScreen(onDone: () => setState(() => _onboardingJustFinished = true));
         }
         return StreamBuilder(
           stream: _authService.authStateChanges,
@@ -82,6 +91,12 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       },
     );
   }
+}
+
+class _GateState {
+  final bool hasSeenOnboarding;
+  final bool stayLoggedIn;
+  const _GateState({required this.hasSeenOnboarding, required this.stayLoggedIn});
 }
 
 /// Sits between "signed in" and the actual app, watching this account's
