@@ -58,6 +58,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   List<String> _memberUids = [];
   final Map<String, String> _usernames = {}; // uid -> username, resolved lazily
   String _groupName = 'Group';
+  bool _onlyAdminsCanSend = false;
+  bool _amAdmin = false;
   String? _groupAvatarUrl;
   int _ttlHours = 0;
   LocalMessage? _replyingTo;
@@ -117,6 +119,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _groupAvatarUrl = data['avatarUrl'] as String?;
         _memberUids = List<String>.from(data['members'] ?? []);
         _ttlHours = (data['chatTtlHours'] as num?)?.toInt() ?? 0;
+        // Feature: group security setting — see GroupInfoScreen's "Only
+        // admins can send messages" toggle and Group.onlyAdminsCanSend.
+        _onlyAdminsCanSend = (data['onlyAdminsCanSend'] as bool?) ?? false;
+        _amAdmin = List<String>.from(data['admins'] ?? []).contains(_myUid);
       });
       _resolveUsernames(_memberUids);
     });
@@ -822,6 +828,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  /// Feature: message timestamps with seconds — shown on the bottom-right
+  /// corner of EVERY bubble (sent and received), same as the 1:1 chat
+  /// screen. Formatted by hand rather than via intl DateFormat, to avoid
+  /// pulling in a locale/formatting dependency for something this simple.
+  String _formatTimestamp(DateTime dt) {
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
   Widget _bubbleFor(LocalMessage message) {
     final scheme = Theme.of(context).colorScheme;
     final mine = message.isMine;
@@ -910,6 +927,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
                   child: _reactionsPill(message, scheme, mine),
                 ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    _formatTimestamp(message.createdAt),
+                    style: TextStyle(fontSize: 10, color: (mine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.6)),
+                  ),
+                ),
+              ),
               if (mine) _statusRow(message, scheme),
             ],
           ),
@@ -1110,7 +1137,32 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     onCancel: _cancelVoiceRecording,
                     onSend: _stopAndSendVoiceRecording,
                   )
-                : _buildComposeBar(scheme),
+                : (_onlyAdminsCanSend && !_amAdmin)
+                    ? _buildAdminsOnlyNotice(scheme)
+                    : _buildComposeBar(scheme),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Feature: group security setting — shown instead of the normal
+  /// compose bar for a non-admin member when GroupInfoScreen's "Only
+  /// admins can send messages" toggle is on. Everyone can still read and
+  /// react to messages as normal; only sending is restricted.
+  Widget _buildAdminsOnlyNotice(ColorScheme scheme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      color: scheme.surfaceContainerHighest,
+      child: Row(
+        children: [
+          Icon(Icons.campaign_outlined, size: 18, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Only admins can send messages in this group',
+              style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+            ),
           ),
         ],
       ),
