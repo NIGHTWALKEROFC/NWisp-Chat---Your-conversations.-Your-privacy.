@@ -70,6 +70,13 @@ class GroupService {
 
   Future<void> setChatTtlHours(String groupId, int? hours) => _ref(groupId).update({'chatTtlHours': hours});
 
+  /// Feature: group security setting — see Group.onlyAdminsCanSend. Admin
+  /// only, enforced by firestore.rules' existing isGroupAdmin() check on
+  /// this same groups/{groupId} document (no rules change needed — that
+  /// check already covers ANY field on this doc, this is just one more).
+  Future<void> setOnlyAdminsCanSend(String groupId, bool value) =>
+      _ref(groupId).update({'onlyAdminsCanSend': value});
+
   /// Mute/archive, same per-person model as ConversationService's 1:1
   /// versions — a "mutedBy"/"archivedBy" array on the group doc rather
   /// than one shared flag, so muting or archiving a group on your device
