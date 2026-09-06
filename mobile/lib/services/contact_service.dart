@@ -19,6 +19,13 @@ class ContactService {
         .get();
     return snap.docs
         .where((d) => d.id != _myUid)
+        // Feature: deactivated/suspended accounts show as "not found",
+        // the same way Instagram hides a deactivated profile from
+        // search — see AccountLifecycleService.setSelfDisabled and
+        // MODERATION_GUIDE.md for where this flag actually gets set.
+        // Missing entirely (an account from before this feature existed)
+        // is treated as active, not hidden.
+        .where((d) => (d.data()['isActive'] as bool?) ?? true)
         .map((d) => {'uid': d.id, ...d.data()})
         .toList();
   }
@@ -106,6 +113,8 @@ class ContactService {
     if (uid == _myUid) return null;
     final doc = await _db.collection('users').doc(uid).get();
     if (!doc.exists) return null;
+    // Same "not found" treatment as searchUsers above — see its comment.
+    if (!((doc.data()?['isActive'] as bool?) ?? true)) return null;
     return {'uid': doc.id, ...?doc.data()};
   }
 
