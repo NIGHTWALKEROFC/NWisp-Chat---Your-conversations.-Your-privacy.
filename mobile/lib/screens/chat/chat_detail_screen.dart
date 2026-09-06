@@ -814,6 +814,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             text: msg.text,
                             messageType: msg.messageType,
                             mediaPath: msg.mediaPath,
+                            createdAt: msg.createdAt,
                             replyPreview: replySource?.text,
                             reactions: msg.reactions.values.toList(),
                             myReaction: uid != null ? msg.reactions[uid] : null,
@@ -1254,6 +1255,7 @@ class _MessageBubble extends StatelessWidget {
   final String text;
   final String messageType;
   final String? mediaPath;
+  final DateTime createdAt;
   final String? replyPreview;
   final List<String> reactions;
   final String? myReaction;
@@ -1276,6 +1278,7 @@ class _MessageBubble extends StatelessWidget {
     required this.text,
     this.messageType = 'text',
     this.mediaPath,
+    required this.createdAt,
     required this.replyPreview,
     required this.reactions,
     required this.myReaction,
@@ -1291,6 +1294,18 @@ class _MessageBubble extends StatelessWidget {
     required this.onRetry,
     required this.onSwipeReply,
   });
+
+  /// Feature: message timestamps with seconds — shown on the bottom-right
+  /// corner of EVERY bubble (sent and received alike), unlike the
+  /// tick-mark status row next to it which only ever applies to messages
+  /// you sent. Formatted by hand (no intl DateFormat) to avoid pulling in
+  /// a locale/formatting dependency for something this simple.
+  static String _formatTimestamp(DateTime dt) {
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1411,14 +1426,26 @@ class _MessageBubble extends StatelessWidget {
                               ],
                             ),
                           ),
-                        if (isMine && status != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Align(
-                              alignment: Alignment.centerRight,
-                              child: _StatusIndicator(id: id, status: status!, isMine: isMine, onRetry: onRetry),
-                            ),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              Text(
+                                _formatTimestamp(createdAt),
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: (isMine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.65),
+                                ),
+                              ),
+                              if (isMine && status != null) ...[
+                                const SizedBox(width: 4),
+                                _StatusIndicator(id: id, status: status!, isMine: isMine, onRetry: onRetry),
+                              ],
+                            ],
                           ),
+                        ),
                       ],
                     ),
                   ),
