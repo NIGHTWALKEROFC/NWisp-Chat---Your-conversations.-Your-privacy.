@@ -40,6 +40,14 @@ class _LoginScreenState extends State<LoginScreen> {
       _loading = true;
       _error = null;
     });
+    // BUGFIX: covers the ENTIRE login attempt, not just the approval wait
+    // — see DeviceSessionService.isClaimPending's doc comment for the
+    // full explanation. In short: this device hasn't claimed itself as
+    // active yet at any point between here and finishLogin() actually
+    // completing below, so watchForRemoteLogout (running independently in
+    // main.dart the moment Firebase Auth signs in) needs to know not to
+    // treat that as "someone else logged in" for this whole window.
+    DeviceSessionService.instance.isClaimPending = true;
     try {
       final uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
 
@@ -67,6 +75,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = _friendlyError(e));
     } finally {
+      DeviceSessionService.instance.isClaimPending = false;
       if (mounted) setState(() => _loading = false);
     }
   }
