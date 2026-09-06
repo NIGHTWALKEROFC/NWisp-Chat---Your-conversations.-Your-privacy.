@@ -27,19 +27,41 @@ class DeviceSessionService {
   StreamSubscription? _watchSub;
   String? _myDeviceId;
 
-  // BUGFIX: [watchForRemoteLogout] used to judge its very first Firestore
-  // snapshot as-is. That snapshot can easily arrive BEFORE this device's
-  // own [claimThisDevice] write has actually landed — claimThisDevice does
-  // a device-info lookup, a network geolocation call (up to 5s), and two
-  // Firestore writes before it's done, while main.dart's authStateChanges
-  // listener calls watchForRemoteLogout almost immediately after sign-in.
-  // The result: the listener's first snapshot still reflected whatever was
-  // in Firestore from BEFORE this login (which never matches this
-  // device), reading as "signed in elsewhere" and signing the person
-  // straight back out of the login they just completed — every time.
-  // [_lastClaim] lets [watchForRemoteLogout] wait for any of THIS
-  // instance's own in-flight claims to finish, then re-read fresh data,
-  // before ever judging a mismatch as a real takeover.
+  // BUGFIX (regression fix): [watchForRemoteLogout] used to judge its very
+  // first Firestore snapshot as-is. That snapshot can easily arrive BEFORE
+  // this device's own [claimThisDevice] write has actually landed —
+  // claimThisDevice does a device-info lookup, a network geolocation call
+  // (up to 5s), and two Firestore writes before it's done. [_lastClaim]
+  // originally covered this by letting [watchForRemoteLogout] wait for any
+  // of THIS instance's own in-flight claims to finish before judging a
+  // mismatch — which worked because the old, single-method login flow
+  // called claimThisDevice essentially back-to-back with signing in, so
+  // _lastClaim was reliably already set by the time any snapshot fired.
+  //
+  // Splitting login into beginEmailLogin()/finishLogin() (for the
+  // new-login-approval feature) reopened this exact race: main.dart's
+  // authStateChanges fires the INSTANT signInWithEmailAndPassword
+  // succeeds — before claimThisDevice has even been called yet, let alone
+  // finished. If approval is required, that gap can be up to the full
+  // 60-second wait; even without it, it's however long finishLogin's own
+  // async work takes. In that window, _lastClaim is still null (nothing
+  // has called claimThisDevice yet to set it), so the old guard didn't
+  // apply, watchForRemoteLogout read the stale activeDeviceId, and signed
+  // the device right back out mid-login — the "immediately logs out" /
+  // "need 2-3 tries to log in" bug, and (as a knock-on effect) very likely
+  // also the cause of a suspended account's re-login attempt showing a
+  // confusing generic sign-in error instead of ever reaching the
+  // suspension screen, since the interrupted sign-in never got a chance
+  // to finish normally.
+  //
+  // [isClaimPending] closes that whole window at the source: LoginScreen
+  // sets it true for the ENTIRE span of a login attempt (from the moment
+  // credentials are verified through claimThisDevice actually completing)
+  // and false again once that's done, success or not. While true,
+  // [watchForRemoteLogout] ignores any mismatch outright — it isn't a
+  // real takeover, this device just legitimately hasn't claimed yet, on
+  // purpose.
+  bool isClaimPending = false;
   Future<void>? _lastClaim;
 
   DocumentReference<Map<String, dynamic>> _sessionRef(String uid) =>
@@ -179,6 +201,7 @@ class DeviceSessionService {
   void watchForRemoteLogout(String uid, void Function() onSupersededByAnotherDevice) {
     _watchSub?.cancel();
     _watchSub = _sessionRef(uid).snapshots().listen((_) async {
+      if (isClaimPending) return; // see isClaimPending's doc comment above
       // BUGFIX: deliberately ignore the snapshot's own payload and always
       // re-read fresh below, once any of THIS device's own in-flight
       // claimThisDevice() write has finished. Trusting the delivered
@@ -332,9 +355,20 @@ class DeviceSessionService {
   /// login requests approval, without waiting on a push at all. Only ever
   /// the single latest still-pending request — normal use never has more
   /// than one outstanding at a time.
+  /// BUGFIX: this used to add `.orderBy('createdAt', descending: true)` on
+  /// top of the `.where('status', ...)` filter — combining an equality
+  /// filter with an orderBy on a DIFFERENT field requires a Firestore
+  /// composite index that was never created (nowhere in this repo asks
+  /// you to deploy one). Without it, this query doesn't just return
+  /// fewer results — it fails outright (FAILED_PRECONDITION), and since
+  /// nothing here was listening for stream errors, that failure was
+  /// silently swallowed: the OLD/active device's live "someone wants to
+  /// log in" screen never appeared, full stop, no error visible anywhere.
+  /// Dropping the orderBy avoids needing that index at all — in normal
+  /// use there's only ever one pending request at a time anyway, so
+  /// which one `.limit(1)` happens to return doesn't meaningfully matter.
   Stream<Map<String, dynamic>?> watchPendingApprovalRequest(String uid) => _approvalsRef(uid)
       .where('status', isEqualTo: 'pending')
-      .orderBy('createdAt', descending: true)
       .limit(1)
       .snapshots()
       .map((snap) => snap.docs.isEmpty ? null : {'requestId': snap.docs.first.id, ...snap.docs.first.data()});
