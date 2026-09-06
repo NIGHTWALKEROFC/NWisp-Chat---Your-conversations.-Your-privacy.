@@ -21,6 +21,14 @@ class Group {
   /// convention `name` already uses.
   final String description;
 
+  /// Feature: group security setting. When true, only admins can send
+  /// messages — everyone else can still read and react, same as
+  /// Telegram/WhatsApp's own "only admins can send" toggle. Defaults to
+  /// false (missing) so every existing group keeps working exactly as
+  /// before. See GroupService.setOnlyAdminsCanSend and GroupChatScreen's
+  /// input-bar gating.
+  final bool onlyAdminsCanSend;
+
   const Group({
     required this.id,
     required this.name,
@@ -31,6 +39,7 @@ class Group {
     required this.createdAt,
     this.chatTtlHours,
     this.description = '',
+    this.onlyAdminsCanSend = false,
   });
 
   factory Group.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -45,6 +54,7 @@ class Group {
       createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       chatTtlHours: (data['chatTtlHours'] as num?)?.toInt(),
       description: (data['description'] as String?) ?? '',
+      onlyAdminsCanSend: (data['onlyAdminsCanSend'] as bool?) ?? false,
     );
   }
 
