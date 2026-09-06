@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'crypto_service.dart';
@@ -130,9 +131,19 @@ class MessageRelayService {
           table: 'message_relay',
           filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'recipient_uid', value: myUid),
           callback: (payload) {
-            _handleRow(payload.newRecord).catchError((_) {
-              // Leave it in the relay table — it'll be retried on the next
-              // catch-up instead of being silently lost.
+            _handleRow(payload.newRecord).catchError((Object e) {
+              // BUGFIX: this used to swallow the error completely — a
+              // message stuck failing to decrypt (e.g. a Signal session
+              // that's gotten out of sync between two people) looked
+              // EXACTLY like "sent but never received": the sender's row
+              // inserts fine (that's sending), the row stays in
+              // message_relay because _handleRow's own catch below
+              // deliberately doesn't delete it on failure, and it keeps
+              // retrying — and keeps silently failing — forever, with
+              // nothing anywhere showing that anything is wrong.
+              // debugPrint at minimum surfaces it in the device log
+              // instead of it looking like nothing happened at all.
+              debugPrint('message_relay: failed to handle live row ${payload.newRecord['id']}: $e');
             });
           },
         )
@@ -168,9 +179,12 @@ class MessageRelayService {
     for (final row in rows) {
       try {
         await _handleRow(row);
-      } catch (_) {
+      } catch (e) {
         // Leave this one for the next catch-up rather than letting one bad
-        // row block the rest of the inbox from being processed.
+        // row block the rest of the inbox from being processed — but log
+        // it (see the matching comment in _subscribe above for why this
+        // used to be a silent, invisible failure).
+        debugPrint('message_relay: failed to handle catch-up row ${row['id']}: $e');
       }
     }
   }
