@@ -16,7 +16,21 @@ service cloud.firestore {
     // other users for search / contacts / encryption to work at all.
     match /users/{uid} {
       allow read: if isSignedIn();
-      allow write: if isOwner(uid);
+      allow create: if isOwner(uid);
+      // BUGFIX (consistency with the private/profile rule below): without
+      // this, the account owner could set isActive back to true on their
+      // own PUBLIC doc — making a genuinely suspended account
+      // discoverable/messageable again — while private/profile's
+      // accountStatus rule already correctly stops them from lifting the
+      // suspension itself. Same restriction, same reasoning, just mirrored
+      // onto the other field that a suspension touches. Every other field
+      // on this doc (username, publicKey, avatarUrl, etc) is untouched by
+      // this and keeps working exactly as before.
+      allow update: if isOwner(uid) && (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isActive']) ||
+        get(/databases/$(database)/documents/users/$(uid)/private/profile).data.get('accountStatus', 'active') != 'suspended'
+      );
+      allow delete: if isOwner(uid);
 
       match /contacts/{contactId} {
         allow read: if isOwner(uid);
