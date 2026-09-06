@@ -68,7 +68,7 @@ class _SubmitAppealScreenState extends State<SubmitAppealScreen> {
       if (!mounted) return;
       setState(() => _submitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not submit your appeal. Please try again.')),
+        SnackBar(content: Text('Could not submit your appeal: $e'), duration: const Duration(seconds: 8)),
       );
     }
   }
