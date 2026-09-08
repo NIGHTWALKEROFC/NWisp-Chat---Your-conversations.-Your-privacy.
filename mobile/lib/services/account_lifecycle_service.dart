@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'crypto_service.dart';
+import 'chat_lock_service.dart';
 import 'local_message_store.dart';
 import 'pin_service.dart';
 import 'secure_storage_service.dart';
@@ -234,6 +235,7 @@ class AccountLifecycleService {
     CryptoService.clearInMemoryKeys();
     await LocalMessageStore.resetForNewUser();
     await PinService.clearAll();
+    await ChatLockService.clearAll();
     await SignalSessionService.instance.wipe();
 
     // 5) Finally, delete the Firebase Auth user itself. AuthGate's
