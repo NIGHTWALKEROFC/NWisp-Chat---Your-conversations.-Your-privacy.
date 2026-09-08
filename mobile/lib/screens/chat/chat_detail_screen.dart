@@ -18,6 +18,7 @@ import '../../services/presence_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
+import '../../widgets/attachment_menu.dart';
 import '../../widgets/media_viewer_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
@@ -321,47 +322,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       );
       return;
     }
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Take a photo'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pickAndSendImage(ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_outlined),
-              title: const Text('Choose a photo'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pickAndSendImage(ImageSource.gallery);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined),
-              title: const Text('Record a video'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pickAndSendVideo(ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.video_library_outlined),
-              title: const Text('Choose a video'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pickAndSendVideo(ImageSource.gallery);
-              },
-            ),
-          ],
-        ),
-      ),
+    showAttachmentMenu(
+      context,
+      onCameraPhoto: () => _pickAndSendImage(ImageSource.camera),
+      onGalleryPhoto: () => _pickAndSendImage(ImageSource.gallery),
+      onCameraVideo: () => _pickAndSendVideo(ImageSource.camera),
+      onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
     );
   }
 
