@@ -5,6 +5,7 @@ import '../../services/settings_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import '../login_screen.dart';
 import '../security/pin_screen.dart';
+import 'chat_lock_setup_screen.dart';
 import 'edit_profile_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
@@ -281,6 +282,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: const Text('Require a PIN every time you open the app'),
                   value: _appLockEnabled,
                   onChanged: _toggleAppLock,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.visibility_off_outlined),
+                  title: const Text('Chat hiding'),
+                  subtitle: const Text('Hide specific chats behind a password or emoji code'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ChatLockSetupScreen()),
+                  ),
                 ),
                 ListTile(
                   leading: const Icon(Icons.timer_outlined),
