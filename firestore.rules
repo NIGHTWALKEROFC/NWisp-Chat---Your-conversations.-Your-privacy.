@@ -324,6 +324,29 @@ service cloud.firestore {
       allow update: if false;
     }
 
+    // Feature: mutual timed block ("Pause this chat", chosen duration).
+    // Fully symmetric — unlike blocks/{blockerUid}_{blockedUid} above,
+    // BOTH people are equally blocked from each other while this exists,
+    // and either one can end it early. participants is always exactly
+    // the two uids involved (see ChatFreezeService._pairKey), which is
+    // what lets [read]/[delete] use a plain membership check instead of
+    // needing to know which of the two the caller is.
+    match /timedFreezes/{pairKey} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() &&
+        request.auth.uid in request.resource.data.participants &&
+        request.resource.data.participants.size() == 2 &&
+        request.resource.data.initiatedBy == request.auth.uid;
+      // Ending early is available to EITHER participant, not just
+      // whoever started it — mutual by design, so undoing it is mutual
+      // too.
+      allow delete: if isSignedIn() && request.auth.uid in resource.data.participants;
+      // Re-pausing after this expires or is cancelled is a fresh create,
+      // not an update — keeps initiatedBy/createdAt honest for whichever
+      // person starts the NEW one.
+      allow update: if false;
+    }
+
     match /reports/{reportId} {
       allow read: if false;
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
