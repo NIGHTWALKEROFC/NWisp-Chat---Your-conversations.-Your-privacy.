@@ -6,6 +6,7 @@ import '../../widgets/contact_developer_sheet.dart';
 import '../login_screen.dart';
 import '../security/pin_screen.dart';
 import 'chat_lock_setup_screen.dart';
+import 'paused_chats_screen.dart';
 import 'edit_profile_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
@@ -291,6 +292,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const ChatLockSetupScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.pause_circle_outline),
+                  title: const Text('Paused chats'),
+                  subtitle: const Text('See and end any mutually paused conversations early'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const PausedChatsScreen()),
                   ),
                 ),
                 ListTile(
