@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../services/chat_lock_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
@@ -47,6 +48,16 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
       });
       return;
     }
+    // Feature: chat hiding. This search field deliberately doubles as
+    // the (unlabeled, on purpose) unlock spot for hidden chats — see
+    // ChatLockService and ChatListScreen's search IconButton. Checked
+    // before the debounce timer below so a correct code never triggers
+    // a visible "no users found" flash first.
+    ChatLockService.verify(trimmed).then((matched) {
+      if (matched && mounted) {
+        Navigator.pop(context, 'unlock_hidden');
+      }
+    });
     _debounce = Timer(const Duration(milliseconds: 350), () => _search(trimmed));
   }
 
