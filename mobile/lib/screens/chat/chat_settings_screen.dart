@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
+import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../report_user_screen.dart';
@@ -28,6 +29,36 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   final _conversationService = ConversationService();
   final _moderationService = ModerationService();
   bool _clearing = false;
+  bool _hideLocked = true; // chat hiding not set up at all, until proven otherwise
+  bool _hidden = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHideState();
+  }
+
+  Future<void> _loadHideState() async {
+    final setUp = await ChatLockService.isSetUp();
+    final hidden = await ChatLockService.isHidden(widget.conversationId);
+    if (!mounted) return;
+    setState(() {
+      _hideLocked = !setUp;
+      _hidden = hidden;
+    });
+  }
+
+  Future<void> _toggleHidden(bool value) async {
+    await ChatLockService.setHidden(widget.conversationId, value);
+    if (!mounted) return;
+    setState(() => _hidden = value);
+    if (value && mounted) {
+      // Hiding a chat you're currently looking at needs to actually take
+      // you out of it — otherwise it'd be "hidden" from the list but
+      // still sitting open right in front of you.
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
+  }
 
   String _ttlLabel(int? hours) {
     if (hours == null) return 'Use app default';
@@ -199,6 +230,17 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 subtitle: const Text('Hide from your main chat list — new messages still arrive normally'),
                 value: archived,
                 onChanged: (v) => _conversationService.setArchived(widget.conversationId, v),
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.visibility_off_outlined),
+                title: const Text('Hide this chat'),
+                subtitle: Text(
+                  _hideLocked
+                      ? 'Set up chat hiding in Settings > Chat hiding first'
+                      : 'Removed from your chat list entirely — type your code into search to bring it back',
+                ),
+                value: _hidden,
+                onChanged: _hideLocked ? null : _toggleHidden,
               ),
               ListTile(
                 leading: const Icon(Icons.timer_outlined),
