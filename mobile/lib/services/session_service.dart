@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'chat_lock_service.dart';
 import 'crypto_service.dart';
 import 'local_message_store.dart';
 import 'pin_service.dart';
@@ -43,6 +44,10 @@ class SessionService {
       await LocalMessageStore.resetForNewUser();
       await PinService.clearAll();
       await SignalSessionService.instance.wipe();
+      // Feature: chat hiding — see ChatLockService's own header comment
+      // for why this needs the same account-scoped wipe treatment as
+      // PinService above.
+      await ChatLockService.clearAll();
     }
 
     await SecureStorageService.setActiveUid(uid);
