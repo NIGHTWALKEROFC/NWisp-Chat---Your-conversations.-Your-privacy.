@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
 import '../services/auth_service.dart';
+import '../services/chat_freeze_service.dart';
 import '../services/chat_lock_service.dart';
 import '../services/conversation_service.dart';
 import '../services/group_service.dart';
@@ -90,6 +91,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
     setState(() => _hiddenIds = ids);
   }
 
+  /// Feature: mutual timed block ("Pause this chat" — see
+  /// ChatFreezeService). Both sides of a paused 1:1 chat need it gone
+  /// from their list, not just whoever started it, which is why this is
+  /// keyed by the OTHER person's uid (not a conversationId) — the same
+  /// freeze doc is visible and enforced identically from either side.
+  Set<String> _frozenPeerUids = {};
+  StreamSubscription? _freezeSub;
+  Timer? _freezeSweepTimer;
+  List<FrozenChatInfo> _activeFreezes = [];
+
+  void _recomputeFrozenPeers() {
+    final now = DateTime.now();
+    final active = _activeFreezes.where((f) => f.expiresAt.isAfter(now)).map((f) => f.otherUid).toSet();
+    if (!mounted) return;
+    setState(() => _frozenPeerUids = active);
+  }
+
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
   late final StreamSubscription _groupsSub;
@@ -98,6 +116,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void initState() {
     super.initState();
     _loadHiddenIds();
+    _freezeSub = ChatFreezeService.instance.watchMyActiveFreezes().listen((freezes) {
+      _activeFreezes = freezes;
+      _recomputeFrozenPeers();
+    });
+    // Firestore only pushes a new snapshot when the DOCUMENT changes —
+    // nothing fires just because time passed and an expiresAt is now in
+    // the past, so this is what actually lets a paused chat quietly
+    // reappear once its time is up, without needing anyone to touch
+    // anything (the same "no server compute" client-side-timer pattern
+    // main.dart already uses for disappearing messages).
+    _freezeSweepTimer = Timer.periodic(const Duration(seconds: 30), (_) => _recomputeFrozenPeers());
     _localSub = LocalMessageStore.watchSummaries().listen((list) {
       if (!mounted) return;
       setState(() {
@@ -146,6 +175,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _localSub.cancel();
     _convoSub.cancel();
     _groupsSub.cancel();
+    _freezeSub?.cancel();
+    _freezeSweepTimer?.cancel();
     super.dispose();
   }
 
@@ -375,10 +406,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           final allRows = _mergedRows(myUid);
-          final archivedCount = allRows.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
+          // Feature: mutual timed block. A frozen 1:1 chat is invisible
+          // everywhere, full stop — including the hidden-chats view, if
+          // it happened to also be hidden. Groups are never frozen (this
+          // feature is 1:1-only — see ChatFreezeService), so isGroup rows
+          // never match this regardless of peerUid contents.
+          final notFrozen = allRows.where((r) => r.isGroup || !_frozenPeerUids.contains(r.peerUid)).toList();
+          final archivedCount = notFrozen.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
           final rows = _showHiddenOnly
-              ? allRows.where((r) => _hiddenIds.contains(r.conversationId)).toList()
-              : allRows.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
+              ? notFrozen.where((r) => _hiddenIds.contains(r.conversationId)).toList()
+              : notFrozen.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
           if (rows.isEmpty && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
             return Center(
               child: Padding(
