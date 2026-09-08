@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
 import '../services/auth_service.dart';
+import '../services/chat_lock_service.dart';
 import '../services/conversation_service.dart';
 import '../services/group_service.dart';
 import '../services/local_message_store.dart';
@@ -74,6 +75,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
   /// arrow in the app bar while active.
   bool _showArchived = false;
 
+  /// Feature: chat hiding — see ChatLockService. No visible toggle for
+  /// this anywhere in the UI on purpose (unlike _showArchived, which has
+  /// a normal "Archived chats" row) — the only way in is typing the
+  /// configured code into the search screen (see the search IconButton
+  /// below), which pops back here with a result telling us to show this
+  /// view instead of pushing a whole separate screen.
+  bool _showHiddenOnly = false;
+  Set<String> _hiddenIds = {};
+
+  Future<void> _loadHiddenIds() async {
+    final ids = await ChatLockService.getHiddenConversationIds();
+    if (!mounted) return;
+    setState(() => _hiddenIds = ids);
+  }
+
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
   late final StreamSubscription _groupsSub;
@@ -81,6 +97,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   @override
   void initState() {
     super.initState();
+    _loadHiddenIds();
     _localSub = LocalMessageStore.watchSummaries().listen((list) {
       if (!mounted) return;
       setState(() {
@@ -278,11 +295,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        leading: _showArchived
-            ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() => _showArchived = false))
+        leading: (_showArchived || _showHiddenOnly)
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => setState(() {
+                  _showArchived = false;
+                  _showHiddenOnly = false;
+                }),
+              )
             : null,
-        title: Text(_showArchived ? 'Archived chats' : 'Chats'),
-        actions: _showArchived
+        title: Text(_showHiddenOnly ? 'Hidden chats' : (_showArchived ? 'Archived chats' : 'Chats')),
+        actions: (_showArchived || _showHiddenOnly)
             ? null
             : [
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -303,7 +326,19 @@ class _ChatListScreenState extends State<ChatListScreen> {
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: 'Search people',
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FindUsersScreen())),
+            onPressed: () async {
+              // Feature: chat hiding. FindUsersScreen's own search field
+              // doubles as the (deliberately unlabeled) unlock spot for
+              // hidden chats — typing the exact configured code there
+              // pops it back here with 'unlock_hidden' instead of
+              // running a normal user search. See ChatLockService and
+              // FindUsersScreen's _onChanged for the other half of this.
+              final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => const FindUsersScreen()));
+              await _loadHiddenIds();
+              if (result == 'unlock_hidden' && mounted) {
+                setState(() => _showHiddenOnly = true);
+              }
+            },
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
@@ -340,9 +375,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           final allRows = _mergedRows(myUid);
-          final archivedCount = allRows.where((r) => r.archived).length;
-          final rows = allRows.where((r) => r.archived == _showArchived).toList();
-          if (rows.isEmpty && !(_showArchived == false && archivedCount > 0)) {
+          final archivedCount = allRows.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
+          final rows = _showHiddenOnly
+              ? allRows.where((r) => _hiddenIds.contains(r.conversationId)).toList()
+              : allRows.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
+          if (rows.isEmpty && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
@@ -350,16 +387,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      _showArchived ? Icons.archive_outlined : Icons.chat_bubble_outline_rounded,
+                      _showHiddenOnly
+                          ? Icons.visibility_off_outlined
+                          : (_showArchived ? Icons.archive_outlined : Icons.chat_bubble_outline_rounded),
                       size: 72,
                       color: scheme.primary.withValues(alpha: 0.5),
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      _showArchived ? 'No archived chats' : 'No conversations yet',
+                      _showHiddenOnly ? 'No hidden chats' : (_showArchived ? 'No archived chats' : 'No conversations yet'),
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
-                    if (!_showArchived) ...[
+                    if (!_showArchived && !_showHiddenOnly) ...[
                       const SizedBox(height: 8),
                       Text(
                         'Tap the button below to message a contact, or use the menu above for a new chat or group.',
@@ -373,9 +412,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
             );
           }
           return ListView.builder(
-            itemCount: rows.length + (!_showArchived && archivedCount > 0 ? 1 : 0),
+            itemCount: rows.length + (!_showArchived && !_showHiddenOnly && archivedCount > 0 ? 1 : 0),
             itemBuilder: (context, i) {
-              if (!_showArchived && archivedCount > 0) {
+              if (!_showArchived && !_showHiddenOnly && archivedCount > 0) {
                 if (i == 0) {
                   return ListTile(
                     leading: CircleAvatar(
@@ -522,7 +561,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 },
               ),
         trailing: trailing,
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId))),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId)))
+            .then((_) => _loadHiddenIds()),
         onLongPress: () => _showChatOptions(context, scheme, row),
       );
     }
@@ -549,7 +589,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             MaterialPageRoute(
               builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
             ),
-          ),
+          ).then((_) => _loadHiddenIds()),
           onLongPress: () => _showChatOptions(context, scheme, row),
         );
       },
