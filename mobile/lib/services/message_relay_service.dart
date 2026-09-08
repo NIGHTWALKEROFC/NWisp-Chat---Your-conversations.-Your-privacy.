@@ -38,6 +38,20 @@ class RateLimitedException implements Exception {
   String toString() => message;
 }
 
+/// Feature: mutual timed block ("Pause this chat" — see
+/// ChatFreezeService). Thrown by [MessageRelayService._checkNotFrozen]
+/// when the person you're sending to has an active mutual freeze with
+/// you — deliberately vague about exactly when it lifts in the message
+/// text itself (PausedChatsScreen shows the precise time; this is just
+/// what shows up as a send error).
+class ChatFrozenException implements Exception {
+  final DateTime expiresAt;
+  ChatFrozenException(this.expiresAt);
+  String get message => "This chat is paused right now. Check Paused chats in Settings to see when it reopens.";
+  @override
+  String toString() => message;
+}
+
 /// Every message_relay insert, in BOTH relay services (this one and
 /// GroupMessageRelayService), goes through this instead of calling
 /// `_client.from('message_relay').insert` directly. It's the one place
@@ -362,6 +376,22 @@ class MessageRelayService {
     }
   }
 
+  /// Feature: mutual timed block. Same doc id convention as
+  /// ChatFreezeService — sorted pair, so both people's sends check the
+  /// exact same document. Only gates actually sending new content
+  /// (called from [sendMessage]/[sendMediaMessage]); receipts, reactions,
+  /// edits, and deletes for messages already sent before the freeze
+  /// started are left alone, matching the requested scope of "can't send
+  /// messages", not "the app stops working entirely".
+  static Future<void> _checkNotFrozen(String otherUid) async {
+    final ids = [_myUid, otherUid]..sort();
+    final doc = await _db.collection('timedFreezes').doc('${ids[0]}_${ids[1]}').get();
+    final expiresAt = (doc.data()?['expiresAt'] as Timestamp?)?.toDate();
+    if (expiresAt != null && expiresAt.isAfter(DateTime.now())) {
+      throw ChatFrozenException(expiresAt);
+    }
+  }
+
   /// Sends a message. Every step that can fail (auth, blocking, missing
   /// recipient keys, the network insert) happens BEFORE anything is written
   /// to the local message store — so a failed send never shows up as a
@@ -378,6 +408,7 @@ class MessageRelayService {
     if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
 
     await _checkNotBlocked(recipientUid);
+    await _checkNotFrozen(recipientUid);
     final clientId = _uuid.v4();
     // Always fetch a live public key for sends specifically — if we
     // silently encrypted with a stale cached key here, the recipient would
@@ -439,6 +470,7 @@ class MessageRelayService {
   }) async {
     if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
     await _checkNotBlocked(recipientUid);
+    await _checkNotFrozen(recipientUid);
 
     final clientId = _uuid.v4();
 
@@ -539,6 +571,7 @@ class MessageRelayService {
     final recipientUid = pending.recipientUid;
     if (recipientUid == null) throw Exception('Missing recipient for retry.');
     await _checkNotBlocked(recipientUid);
+    await _checkNotFrozen(recipientUid);
 
     await LocalMessageStore.setStatus(clientId, 'sending');
     try {
