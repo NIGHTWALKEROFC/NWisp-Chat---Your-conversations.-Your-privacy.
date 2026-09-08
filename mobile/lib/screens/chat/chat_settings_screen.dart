@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
+import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
@@ -46,6 +47,94 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
       _hideLocked = !setUp;
       _hidden = hidden;
     });
+  }
+
+  Future<void> _pauseChat() async {
+    final choice = await showModalBottomSheet<Duration>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Pause this chat for…', style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
+            ),
+            ListTile(title: const Text('1 hour'), onTap: () => Navigator.pop(sheetContext, const Duration(hours: 1))),
+            ListTile(title: const Text('1 day'), onTap: () => Navigator.pop(sheetContext, const Duration(days: 1))),
+            ListTile(title: const Text('1 week'), onTap: () => Navigator.pop(sheetContext, const Duration(days: 7))),
+            ListTile(
+              title: const Text('Custom'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                final picked = await _pickCustomDuration();
+                if (picked != null) await _confirmAndFreeze(picked);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice != null) await _confirmAndFreeze(choice);
+  }
+
+  Future<Duration?> _pickCustomDuration() async {
+    final days = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        final controller = TextEditingController(text: '3');
+        return AlertDialog(
+          title: const Text('Pause for how many days?'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Days'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, int.tryParse(controller.text.trim())),
+              child: const Text('Continue'),
+            ),
+          ],
+        );
+      },
+    );
+    if (days == null || days <= 0) return null;
+    return Duration(days: days);
+  }
+
+  Future<void> _confirmAndFreeze(Duration duration) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Pause this chat?'),
+        content: Text(
+          "Neither of you will be able to see this conversation or message each other for ${_describeDuration(duration)}. "
+          'Either of you can end it early from Paused chats in Settings.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Pause')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ChatFreezeService.instance.freeze(otherUid: widget.peerUid, duration: duration);
+    if (!mounted) return;
+    // Both sides lose access immediately — nothing left to do here but
+    // leave, the same way hiding a chat also backs out of it.
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
+  String _describeDuration(Duration d) {
+    if (d.inDays >= 7 && d.inDays % 7 == 0) return '${d.inDays ~/ 7} week${d.inDays ~/ 7 == 1 ? '' : 's'}';
+    if (d.inDays >= 1) return '${d.inDays} day${d.inDays == 1 ? '' : 's'}';
+    return '${d.inHours} hour${d.inHours == 1 ? '' : 's'}';
   }
 
   Future<void> _toggleHidden(bool value) async {
@@ -241,6 +330,14 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ),
                 value: _hidden,
                 onChanged: _hideLocked ? null : _toggleHidden,
+              ),
+              ListTile(
+                leading: const Icon(Icons.pause_circle_outline),
+                title: const Text('Pause this chat'),
+                subtitle: const Text(
+                  "Hide this chat and stop messages both ways for a set time — either of you can end it early",
+                ),
+                onTap: _pauseChat,
               ),
               ListTile(
                 leading: const Icon(Icons.timer_outlined),
