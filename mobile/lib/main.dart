@@ -120,8 +120,15 @@ void _handleNotificationData(Map<String, dynamic> data) {
   }
   final conversationId = data['conversationId'] as String?;
   final peerUid = data['senderUid'] as String?;
-  final peerUsername = data['senderUsername'] as String?;
+  final rawPeerUsername = data['senderUsername'] as String?;
   if (conversationId == null || peerUid == null) return;
+  // BUGFIX: `?? 'Chat'` below only substitutes on null — send-push now
+  // deliberately sends an EMPTY string (not omitted) for senderUsername
+  // when "Hide name in notifications" is on for this contact (see that
+  // function's own comment), which would otherwise flow straight through
+  // as a blank chat title for a moment before the chat screen re-resolves
+  // the real name live from Firestore. Treat empty the same as missing.
+  final peerUsername = (rawPeerUsername == null || rawPeerUsername.isEmpty) ? null : rawPeerUsername;
   _openChat(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername ?? 'Chat');
 }
 
