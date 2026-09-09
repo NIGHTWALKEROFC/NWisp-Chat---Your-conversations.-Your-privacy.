@@ -145,7 +145,18 @@ Deno.serve(async (req) => {
     const tokens: string[] = recipientProfile?.fcmTokens ?? [];
     if (tokens.length === 0) return new Response("No tokens", { status: 200 });
 
+    // Feature: 1:1 chat security setting "Hide name in notifications"
+    // (see ModerationService.setNotificationPrivacy /
+    // ChatSettingsScreen). Message CONTENT was already never in a
+    // notification (this relay never has decrypted content to put in
+    // one to begin with) — this closes the other real leak: the sender's
+    // username showing on the lock screen by default, for someone the
+    // recipient specifically doesn't want to see there.
+    const notificationPrivacyPeers: string[] = recipientProfile?.notificationPrivacyPeers ?? [];
+    const hideSenderName = notificationPrivacyPeers.includes(String(record.sender_uid ?? ""));
+
     const senderUsername = (sender?.username as string | undefined) ?? "Someone";
+    const notificationTitle = hideSenderName ? "New message" : senderUsername;
     // Deliberately generic body text - this relay never has decrypted
     // content to begin with (see message_relay_service.dart), and the
     // notification shouldn't either.
@@ -163,12 +174,19 @@ Deno.serve(async (req) => {
           body: JSON.stringify({
             message: {
               token,
-              notification: { title: senderUsername, body: bodyText },
+              notification: { title: notificationTitle, body: bodyText },
               data: {
                 type: "new_message",
                 conversationId: String(record.conversation_id ?? ""),
                 senderUid: String(record.sender_uid ?? ""),
-                senderUsername,
+                // Same reasoning as the notification title above — if
+                // the name is hidden on the lock screen, it shouldn't
+                // reappear the instant the notification is tapped
+                // either. ChatListScreen already resolves the real
+                // username itself once the app opens the right
+                // conversation, so this field is only ever used as a
+                // fallback label in main.dart's tap handler.
+                senderUsername: hideSenderName ? "" : senderUsername,
               },
               android: { priority: "high" },
               apns: { headers: { "apns-priority": "10" } },
