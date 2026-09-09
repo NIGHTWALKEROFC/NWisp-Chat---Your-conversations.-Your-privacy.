@@ -4,6 +4,7 @@ import '../main.dart';
 import '../services/account_lifecycle_service.dart';
 import '../services/app_lock_service.dart';
 import '../services/auth_service.dart';
+import '../services/device_session_service.dart';
 import '../services/presence_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/contact_developer_sheet.dart';
@@ -81,11 +82,32 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Scaffold(body: Center(child: CircularProgressIndicator()));
             }
-            if (snapshot.hasData) {
-              PresenceService.goOnline();
-              return const _PostAuthGate();
-            }
-            return const LoginScreen();
+            // BUGFIX: this used to switch to _PostAuthGate() as soon as
+            // Firebase Auth reported a signed-in user. But
+            // signInWithEmailAndPassword (inside LoginScreen's
+            // beginEmailLogin) makes that true immediately — well before
+            // an in-progress login has actually been through the
+            // new-login-approval wait and claimThisDevice. That let this
+            // device jump straight into the main app UI while a login
+            // approval was still pending (or had just been denied/timed
+            // out), racing against LoginScreen's own dialog and against
+            // the self-approval bug described in
+            // DeviceSessionService.claimPendingNotifier's doc comment.
+            // ValueListenableBuilder here holds this on LoginScreen for
+            // the entire span of a login attempt — exactly the same
+            // window isClaimPending already covers for
+            // watchForRemoteLogout — and only proceeds once that flag
+            // flips back to false, success or not.
+            return ValueListenableBuilder<bool>(
+              valueListenable: DeviceSessionService.instance.claimPendingNotifier,
+              builder: (context, claimPending, _) {
+                if (snapshot.hasData && !claimPending) {
+                  PresenceService.goOnline();
+                  return const _PostAuthGate();
+                }
+                return const LoginScreen();
+              },
+            );
           },
         );
       },
