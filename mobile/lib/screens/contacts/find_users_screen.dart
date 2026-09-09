@@ -6,6 +6,7 @@ import '../../services/chat_lock_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
+import '../security/hidden_chat_pin_screen.dart';
 
 class FindUsersScreen extends StatefulWidget {
   const FindUsersScreen({super.key});
@@ -52,13 +53,29 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
     // the (unlabeled, on purpose) unlock spot for hidden chats — see
     // ChatLockService and ChatListScreen's search IconButton. Checked
     // before the debounce timer below so a correct code never triggers
-    // a visible "no users found" flash first.
-    ChatLockService.verify(trimmed).then((matched) {
-      if (matched && mounted) {
-        Navigator.pop(context, 'unlock_hidden');
-      }
-    });
+    // a visible "no users found" flash first. The result now says WHICH
+    // code matched — the common one (reveal every common-hidden chat) or
+    // one specific chat's own custom code (reveal only that chat) — see
+    // ChatUnlockResult.
+    ChatLockService.verifyAny(trimmed).then((result) => _handleUnlock(result));
     _debounce = Timer(const Duration(milliseconds: 350), () => _search(trimmed));
+  }
+
+  Future<void> _handleUnlock(ChatUnlockResult? result) async {
+    if (result == null || !mounted) return;
+    // Optional second factor: if a separate hidden-chats PIN is turned on
+    // (see ChatLockSetupScreen), the correct code alone isn't enough —
+    // this must also be confirmed before anything is actually revealed.
+    if (await ChatLockService.isPinEnabled()) {
+      if (!mounted) return;
+      final ok = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(builder: (_) => const HiddenChatPinScreen(mode: HiddenChatPinScreenMode.verify)),
+      );
+      if (ok != true || !mounted) return;
+    }
+    if (!mounted) return;
+    Navigator.pop(context, result.isCommon ? 'unlock_common' : 'unlock_custom:${result.conversationId}');
   }
 
   Future<void> _search(String query) async {
