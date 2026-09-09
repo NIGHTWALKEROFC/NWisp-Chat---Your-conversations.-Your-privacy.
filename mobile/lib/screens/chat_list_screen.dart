@@ -78,15 +78,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   /// Feature: chat hiding — see ChatLockService. No visible toggle for
   /// this anywhere in the UI on purpose (unlike _showArchived, which has
-  /// a normal "Archived chats" row) — the only way in is typing the
+  /// a normal "Archived chats" row) — the only way in is typing a
   /// configured code into the search screen (see the search IconButton
   /// below), which pops back here with a result telling us to show this
   /// view instead of pushing a whole separate screen.
+  ///
+  /// The common code reveals every chat hidden with it (_hiddenViewChatId
+  /// stays null). A chat's own custom code reveals ONLY that one chat —
+  /// _hiddenViewChatId is set to its conversationId and the rows list
+  /// below is narrowed to just that.
   bool _showHiddenOnly = false;
-  Set<String> _hiddenIds = {};
+  String? _hiddenViewChatId;
+  Set<String> _hiddenIds = {}; // union of common + custom, used to filter the NORMAL view
 
   Future<void> _loadHiddenIds() async {
-    final ids = await ChatLockService.getHiddenConversationIds();
+    final ids = await ChatLockService.getAllHiddenIds();
     if (!mounted) return;
     setState(() => _hiddenIds = ids);
   }
@@ -332,6 +338,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 onPressed: () => setState(() {
                   _showArchived = false;
                   _showHiddenOnly = false;
+                  _hiddenViewChatId = null;
                 }),
               )
             : null,
@@ -360,14 +367,25 @@ class _ChatListScreenState extends State<ChatListScreen> {
             onPressed: () async {
               // Feature: chat hiding. FindUsersScreen's own search field
               // doubles as the (deliberately unlabeled) unlock spot for
-              // hidden chats — typing the exact configured code there
-              // pops it back here with 'unlock_hidden' instead of
-              // running a normal user search. See ChatLockService and
-              // FindUsersScreen's _onChanged for the other half of this.
+              // hidden chats — typing a configured code there pops it
+              // back here with 'unlock_common' (reveal every common-
+              // hidden chat) or 'unlock_custom:<conversationId>' (reveal
+              // only that one chat) instead of running a normal user
+              // search. See ChatLockService and FindUsersScreen's
+              // _onChanged/_handleUnlock for the other half of this.
               final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => const FindUsersScreen()));
               await _loadHiddenIds();
-              if (result == 'unlock_hidden' && mounted) {
-                setState(() => _showHiddenOnly = true);
+              if (!mounted || result is! String) return;
+              if (result == 'unlock_common') {
+                setState(() {
+                  _showHiddenOnly = true;
+                  _hiddenViewChatId = null;
+                });
+              } else if (result.startsWith('unlock_custom:')) {
+                setState(() {
+                  _showHiddenOnly = true;
+                  _hiddenViewChatId = result.substring('unlock_custom:'.length);
+                });
               }
             },
           ),
@@ -414,7 +432,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
           final notFrozen = allRows.where((r) => r.isGroup || !_frozenPeerUids.contains(r.peerUid)).toList();
           final archivedCount = notFrozen.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
           final rows = _showHiddenOnly
-              ? notFrozen.where((r) => _hiddenIds.contains(r.conversationId)).toList()
+              ? notFrozen
+                  .where((r) => _hiddenViewChatId != null ? r.conversationId == _hiddenViewChatId : _hiddenIds.contains(r.conversationId))
+                  .toList()
               : notFrozen.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
           if (rows.isEmpty && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
             return Center(
