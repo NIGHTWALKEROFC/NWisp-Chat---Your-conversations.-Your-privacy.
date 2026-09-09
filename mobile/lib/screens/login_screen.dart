@@ -51,7 +51,12 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
 
-      if (await DeviceSessionService.instance.isLoginApprovalRequired(uid)) {
+      // BUGFIX: was DeviceSessionService.instance.isLoginApprovalRequired(uid)
+      // — the raw toggle check, with no regard for whether the account's
+      // other device is actually still around to answer. See
+      // shouldRequireApprovalForNewLogin's doc comment for why that
+      // permanently locked people out after an app delete/reinstall.
+      if (await DeviceSessionService.instance.shouldRequireApprovalForNewLogin(uid)) {
         final requestId = await DeviceSessionService.instance.createLoginApprovalRequest(uid);
         final outcome = await _waitForApproval(uid, requestId);
         if (outcome != _ApprovalOutcome.accepted) {
