@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
+import '../../services/chat_lock_service.dart';
 import '../../services/conversation_service.dart';
 import '../../services/local_message_store.dart';
 import '../../services/media_compression_service.dart';
@@ -23,6 +24,7 @@ import '../../widgets/media_viewer_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import 'chat_search_screen.dart';
+import '../security/pin_screen.dart';
 import 'chat_settings_screen.dart';
 
 // Expanded quick-reaction set (was 6, now 12) — tapping the same emoji you
@@ -65,6 +67,16 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   bool _peerBlockedByMe = false;
   bool _sendingMedia = false;
 
+  // Feature: more 1:1 chat security settings — "Lock this chat" (see
+  // ChatSettingsScreen). [_isChatLocked] just records whether THIS chat
+  // is configured to require a PIN; [_chatUnlockedThisSession] is what
+  // actually gates the UI below and starts false whenever locking is on,
+  // requiring a fresh PIN entry (via AppLockService/PinScreen) every time
+  // this screen opens — it does NOT persist across re-opening the chat,
+  // on purpose, the same way the feature is meant to work.
+  bool _isChatLocked = false;
+  bool _chatUnlockedThisSession = true;
+
   // Feature: unified voice/media UI (chat + group) — shared controller
   // instead of this screen's own duplicated recording state/logic.
   late final _voiceController = VoiceRecordingController(
@@ -93,6 +105,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
     // see ScreenshotGuardService. Released in dispose() below.
     ScreenshotGuardService.acquire();
+    _checkChatLock();
     _conversationService.ensureConversation(otherUid: widget.peerUid);
     // BUGFIX: messageTtlHours/readReceiptsEnabled moved to the owner-only
     // users/{uid}/private/profile doc (see firestore.rules) — read from
@@ -133,6 +146,58 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   void _onTextChanged(String value) {
     _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
     setState(() {}); // toggles the compose bar between the mic icon and the send icon
+  }
+
+  Future<void> _checkChatLock() async {
+    final locked = await ChatLockService.isLocked(widget.conversationId);
+    if (!locked || !mounted) return;
+    setState(() {
+      _isChatLocked = true;
+      _chatUnlockedThisSession = false;
+    });
+  }
+
+  Future<void> _unlockChatNow() async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const PinScreen(mode: PinScreenMode.verify)),
+    );
+    if (!mounted) return;
+    if (result == true) {
+      setState(() => _chatUnlockedThisSession = true);
+    } else {
+      // Wrong PIN or backed out — don't leave the chat sitting half-open,
+      // just back out of it entirely, same as tapping the app back button.
+      Navigator.of(context).pop();
+    }
+  }
+
+  Widget _buildLockedPlaceholder() {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.peerUsername)),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.lock_outline, size: 56, color: scheme.primary),
+              const SizedBox(height: 16),
+              const Text('This chat is locked', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+              const SizedBox(height: 8),
+              Text(
+                'Enter your PIN to open it.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 24),
+              FilledButton(onPressed: _unlockChatNow, child: const Text('Unlock')),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   GlobalKey _bubbleKeyFor(String id) => _bubbleKeys.putIfAbsent(id, () => GlobalKey());
@@ -705,6 +770,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Feature: "Lock this chat" (see ChatSettingsScreen + ChatLockService).
+    // A single early return, before any of the normal chat UI below is
+    // ever built — deliberately not folded into the Scaffold below it,
+    // to keep this check isolated from (and safe alongside) everything
+    // else this screen already does.
+    if (_isChatLocked && !_chatUnlockedThisSession) {
+      return _buildLockedPlaceholder();
+    }
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: _selectedIds.isEmpty ? _buildNormalAppBar(scheme) : _buildSelectionAppBar(scheme),
