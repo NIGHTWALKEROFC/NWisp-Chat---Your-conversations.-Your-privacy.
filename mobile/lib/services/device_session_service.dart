@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -61,7 +62,36 @@ class DeviceSessionService {
   // [watchForRemoteLogout] ignores any mismatch outright — it isn't a
   // real takeover, this device just legitimately hasn't claimed yet, on
   // purpose.
-  bool isClaimPending = false;
+  //
+  // BUGFIX (2nd round): the exact same premature-authStateChanges gap
+  // ALSO reached AuthGate and _setUpMessagingLifecycle in main.dart —
+  // signInWithEmailAndPassword (inside beginEmailLogin) makes Firebase
+  // Auth report a signed-in user immediately, long before
+  // isLoginApprovalRequired/createLoginApprovalRequest/claimThisDevice
+  // ever run. AuthGate was reacting to that raw signal and jumping
+  // straight to the main app UI before approval had even been asked
+  // for, and _watchForIncomingLoginApprovals (also started right then)
+  // was listening for pending approval requests on THIS SAME
+  // still-logging-in device — so it would catch the request THIS device
+  // itself had just created and pop the "approve this login" screen on
+  // itself, asking the person to approve their own sign-in. Accepting
+  // that self-prompt raced against LoginScreen's own approval listener
+  // and AuthGate's premature switch, which is what actually caused
+  // "need to approve/deny several times before it sticks."
+  //
+  // isClaimPending was a plain bool, which AuthGate's StreamBuilder had
+  // no way to react to (it only rebuilds on new authStateChanges events,
+  // and there isn't a fresh one just because this flag flipped). Backing
+  // it with a ValueNotifier lets AuthGate listen for that flip directly
+  // (see AuthGate's ValueListenableBuilder) so it now correctly holds on
+  // LoginScreen for the entire login attempt — approval wait included —
+  // and only proceeds to the real app once claimThisDevice has actually
+  // finished. The public get/set below keep every existing call site
+  // (`DeviceSessionService.instance.isClaimPending = true/false`, `if
+  // (isClaimPending) return;`) working unchanged.
+  final ValueNotifier<bool> claimPendingNotifier = ValueNotifier<bool>(false);
+  bool get isClaimPending => claimPendingNotifier.value;
+  set isClaimPending(bool value) => claimPendingNotifier.value = value;
   Future<void>? _lastClaim;
 
   DocumentReference<Map<String, dynamic>> _sessionRef(String uid) =>
@@ -89,6 +119,13 @@ class DeviceSessionService {
     _myDeviceId = id;
     return id;
   }
+
+  /// Public accessor for this device's own local id — used by main.dart to
+  /// tell "a genuinely different device's login request" apart from "a
+  /// pending request THIS device just created about itself" (see the
+  /// self-approval bugfix in [claimPendingNotifier]'s doc comment and in
+  /// main.dart's `_watchForIncomingLoginApprovals`).
+  Future<String> localDeviceId() => _localDeviceId();
 
   String _deviceLabel(String deviceId) => 'Android phone (…${deviceId.substring(deviceId.length - 4)})';
 
@@ -292,6 +329,51 @@ class DeviceSessionService {
 
   Future<void> setRequireLoginApproval(String uid, bool required) =>
       _sessionRef(uid).set({'requireLoginApproval': required}, SetOptions(merge: true));
+
+  /// BUGFIX: [isLoginApprovalRequired] alone gated purely on the toggle,
+  /// with no regard for whether there's actually anyone around to answer
+  /// the request. That produced a real lock-out: delete the app and
+  /// reinstall (a brand-new deviceId, since secure storage is wiped) and
+  /// the ONLY device that could ever have approved it is gone for good —
+  /// the new login creates a pending request nobody can ever respond to,
+  /// every attempt just times out after 60 seconds, forever.
+  ///
+  /// This is what LoginScreen now calls instead. It keeps the toggle
+  /// check, but only actually requires approval if the account's active
+  /// device looks genuinely, currently online — reusing the same
+  /// self-owned presence doc PresenceService already heartbeats every
+  /// ~45s while foregrounded (users/{uid}/private/presence). That matches
+  /// what was actually asked for: approval when logging in "while
+  /// actively logged in somewhere else," not approval forever because
+  /// Firestore still remembers a device that no longer exists.
+  ///
+  /// Honest limitation: presence is best-effort (see PresenceService's
+  /// own doc comment — it can't detect a hard kill or lost network the
+  /// way a Realtime Database onDisconnect() could). A device that dies
+  /// without a clean pause can look "online" for up to one heartbeat
+  /// interval after it's actually gone. That's the safer direction to be
+  /// wrong in: it occasionally still asks for approval when it strictly
+  /// didn't need to, rather than ever silently skipping a check that
+  /// should have fired.
+  Future<bool> shouldRequireApprovalForNewLogin(String uid) async {
+    if (!await isLoginApprovalRequired(uid)) return false;
+    try {
+      final presence = await _db.collection('users').doc(uid).collection('private').doc('presence').get();
+      final data = presence.data();
+      if (data == null) return false; // never seen online - nothing to protect against
+      final online = data['online'] as bool? ?? false;
+      final lastSeen = data['lastSeen'] as Timestamp?;
+      if (!online || lastSeen == null) return false;
+      final age = DateTime.now().difference(lastSeen.toDate());
+      return age < const Duration(minutes: 3); // heartbeat interval is 45s, generous buffer for lag
+    } catch (_) {
+      // Best-effort — if presence can't be read for any reason, don't let
+      // that lock the person out of their own account. Falling through to
+      // "approval not required" here just means this one login proceeds
+      // like the toggle was off; it does NOT disable the toggle itself.
+      return false;
+    }
+  }
 
   /// Called by the NEW device once it's verified the account's password
   /// but before it's allowed to claim itself as active. Writes the
