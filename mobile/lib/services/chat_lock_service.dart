@@ -32,6 +32,7 @@ class ChatLockService {
   static const _codeSaltKey = 'chat_lock_code_salt';
   static const _methodKey = 'chat_lock_method'; // 'password' | 'emoji'
   static const _hiddenIdsKey = 'chat_lock_hidden_ids';
+  static const _lockedIdsKey = 'chat_lock_locked_ids';
   static final _sha256 = Sha256();
 
   static Future<bool> isSetUp() async {
@@ -103,6 +104,43 @@ class ChatLockService {
     return (await getHiddenConversationIds()).contains(conversationId);
   }
 
+  // ---------------------------------------------------------------------
+  // Per-chat lock (feature: more 1:1 chat security settings)
+  // ---------------------------------------------------------------------
+  //
+  // Distinct from chat hiding above: a locked chat stays fully visible
+  // and findable in the normal chat list — this isn't about concealing
+  // that it exists, it's about requiring your app PIN again to actually
+  // open it, the same way a locked note or a locked app would.
+  // Complementary rather than overlapping: hide a chat you don't want
+  // anyone to know exists at all, lock one you're fine being SEEN but
+  // don't want casually opened if someone picks up your unlocked phone.
+  //
+  // Deliberately reuses AppLockService's existing PIN (see PinScreen)
+  // rather than inventing a second code — requires App Lock to already
+  // be set up (ChatSettingsScreen enforces this, mirroring how the "Hide
+  // this chat" toggle above requires chat hiding to be set up first).
+
+  static Future<Set<String>> getLockedConversationIds() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (prefs.getStringList(_lockedIdsKey) ?? []).toSet();
+  }
+
+  static Future<void> setLocked(String conversationId, bool locked) async {
+    final prefs = await SharedPreferences.getInstance();
+    final current = (prefs.getStringList(_lockedIdsKey) ?? []).toSet();
+    if (locked) {
+      current.add(conversationId);
+    } else {
+      current.remove(conversationId);
+    }
+    await prefs.setStringList(_lockedIdsKey, current.toList());
+  }
+
+  static Future<bool> isLocked(String conversationId) async {
+    return (await getLockedConversationIds()).contains(conversationId);
+  }
+
   /// See this class's own header comment — called from SessionService
   /// whenever a different account signs in on this device, the same way
   /// PinService.clearAll() already is.
@@ -112,5 +150,6 @@ class ChatLockService {
     await _storage.delete(key: _methodKey);
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_hiddenIdsKey);
+    await prefs.remove(_lockedIdsKey);
   }
 }
