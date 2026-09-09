@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
+import '../../services/app_lock_service.dart';
 import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
@@ -32,11 +33,28 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   bool _clearing = false;
   bool _hideLocked = true; // chat hiding not set up at all, until proven otherwise
   bool _hidden = false;
+  bool _appLockNotSetUp = true; // App Lock (PIN) not set up at all, until proven otherwise
+  bool _chatLocked = false;
+  bool _hideNameInNotifications = false;
 
   @override
   void initState() {
     super.initState();
     _loadHideState();
+    _loadChatLockState();
+    _loadNotificationPrivacyState();
+  }
+
+  Future<void> _loadNotificationPrivacyState() async {
+    final enabled = await _moderationService.isNotificationPrivacyEnabled(widget.peerUid);
+    if (!mounted) return;
+    setState(() => _hideNameInNotifications = enabled);
+  }
+
+  Future<void> _toggleNotificationPrivacy(bool value) async {
+    await _moderationService.setNotificationPrivacy(widget.peerUid, value);
+    if (!mounted) return;
+    setState(() => _hideNameInNotifications = value);
   }
 
   Future<void> _loadHideState() async {
@@ -47,6 +65,22 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
       _hideLocked = !setUp;
       _hidden = hidden;
     });
+  }
+
+  Future<void> _loadChatLockState() async {
+    final appLockOn = await AppLockService.isEnabled();
+    final locked = await ChatLockService.isLocked(widget.conversationId);
+    if (!mounted) return;
+    setState(() {
+      _appLockNotSetUp = !appLockOn;
+      _chatLocked = locked;
+    });
+  }
+
+  Future<void> _toggleChatLocked(bool value) async {
+    await ChatLockService.setLocked(widget.conversationId, value);
+    if (!mounted) return;
+    setState(() => _chatLocked = value);
   }
 
   Future<void> _pauseChat() async {
@@ -330,6 +364,27 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ),
                 value: _hidden,
                 onChanged: _hideLocked ? null : _toggleHidden,
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.lock_outline),
+                title: const Text('Lock this chat'),
+                subtitle: Text(
+                  _appLockNotSetUp
+                      ? 'Set up App lock (PIN) in Settings first'
+                      : 'Stays visible in your chat list, but needs your PIN to open — even if App lock itself is unlocked',
+                ),
+                value: _chatLocked,
+                onChanged: _appLockNotSetUp ? null : _toggleChatLocked,
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.notifications_off_outlined),
+                title: const Text('Hide name in notifications'),
+                subtitle: Text(
+                  'Notifications from ${widget.peerUsername} show as "New message" instead of their name — '
+                  'message content never shows either way',
+                ),
+                value: _hideNameInNotifications,
+                onChanged: _toggleNotificationPrivacy,
               ),
               ListTile(
                 leading: const Icon(Icons.pause_circle_outline),
