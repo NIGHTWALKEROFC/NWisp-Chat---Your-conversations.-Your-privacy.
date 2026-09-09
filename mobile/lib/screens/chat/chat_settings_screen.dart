@@ -1,13 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/conversation_service.dart';
-import '../../services/app_lock_service.dart';
 import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../report_user_screen.dart';
 import '../security/safety_number_screen.dart';
+import '../settings/chat_lock_setup_screen.dart';
 
 const _chatTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never for THIS chat specifically, hours after that
 
@@ -31,56 +31,108 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   final _conversationService = ConversationService();
   final _moderationService = ModerationService();
   bool _clearing = false;
-  bool _hideLocked = true; // chat hiding not set up at all, until proven otherwise
-  bool _hidden = false;
-  bool _appLockNotSetUp = true; // App Lock (PIN) not set up at all, until proven otherwise
-  bool _chatLocked = false;
-  bool _hideNameInNotifications = false;
+  bool _commonSetUp = false;
+  bool _hiddenViaCommon = false;
+  bool _hiddenViaCustom = false;
 
   @override
   void initState() {
     super.initState();
     _loadHideState();
-    _loadChatLockState();
-    _loadNotificationPrivacyState();
-  }
-
-  Future<void> _loadNotificationPrivacyState() async {
-    final enabled = await _moderationService.isNotificationPrivacyEnabled(widget.peerUid);
-    if (!mounted) return;
-    setState(() => _hideNameInNotifications = enabled);
-  }
-
-  Future<void> _toggleNotificationPrivacy(bool value) async {
-    await _moderationService.setNotificationPrivacy(widget.peerUid, value);
-    if (!mounted) return;
-    setState(() => _hideNameInNotifications = value);
   }
 
   Future<void> _loadHideState() async {
-    final setUp = await ChatLockService.isSetUp();
-    final hidden = await ChatLockService.isHidden(widget.conversationId);
+    final commonSetUp = await ChatLockService.isCommonSetUp();
+    final commonHidden = (await ChatLockService.getCommonHiddenIds()).contains(widget.conversationId);
+    final customHidden = await ChatLockService.hasCustomCode(widget.conversationId);
     if (!mounted) return;
     setState(() {
-      _hideLocked = !setUp;
-      _hidden = hidden;
+      _commonSetUp = commonSetUp;
+      _hiddenViaCommon = commonHidden;
+      _hiddenViaCustom = customHidden;
     });
   }
 
-  Future<void> _loadChatLockState() async {
-    final appLockOn = await AppLockService.isEnabled();
-    final locked = await ChatLockService.isLocked(widget.conversationId);
+  /// Chat is already open, so no extra verification needed here (unlike
+  /// the forgot-code recovery flow in Settings > Hidden chats, which
+  /// requires a password) — this is just "stop hiding," content untouched.
+  Future<void> _unhide() async {
+    if (_hiddenViaCommon) {
+      await ChatLockService.setHiddenCommon(widget.conversationId, false);
+    } else if (_hiddenViaCustom) {
+      await ChatLockService.removeCustomHiding(widget.conversationId);
+    }
     if (!mounted) return;
     setState(() {
-      _appLockNotSetUp = !appLockOn;
-      _chatLocked = locked;
+      _hiddenViaCommon = false;
+      _hiddenViaCustom = false;
     });
   }
 
-  Future<void> _toggleChatLocked(bool value) async {
-    await ChatLockService.setLocked(widget.conversationId, value);
+  Future<void> _openHideOptions() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Hide this chat using…', style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.groups_2_outlined),
+              title: const Text('The common code'),
+              subtitle: Text(_commonSetUp ? 'Same code as your other common-hidden chats' : "Not set up yet — you'll set it up in Settings first"),
+              onTap: () => Navigator.pop(sheetContext, 'common'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.vpn_key_outlined),
+              title: const Text('A custom code just for this chat'),
+              subtitle: const Text("A different code, used only to unlock this one chat"),
+              onTap: () => Navigator.pop(sheetContext, 'custom'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    if (choice == 'common') {
+      await _hideWithCommon();
+    } else {
+      await _hideWithCustom();
+    }
+  }
+
+  Future<void> _hideWithCommon() async {
+    if (!_commonSetUp) {
+      final result = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const ChatLockSetupScreen()));
+      await _loadHideState();
+      if (result != true || !_commonSetUp) return;
+    }
+    await ChatLockService.setHiddenCommon(widget.conversationId, true);
     if (!mounted) return;
-    setState(() => _chatLocked = value);
+    // Hiding a chat you're currently looking at needs to actually take you
+    // out of it — otherwise it'd be "hidden" from the list but still
+    // sitting open right in front of you.
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
+  Future<void> _hideWithCustom() async {
+    final entry = await showModalBottomSheet<_CustomCodeEntry>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => const _CustomCodeSheet(),
+    );
+    if (entry == null || !mounted) return;
+    await ChatLockService.setUpCustom(conversationId: widget.conversationId, method: entry.method, code: entry.code);
+    if (!mounted) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   Future<void> _pauseChat() async {
@@ -169,18 +221,6 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     if (d.inDays >= 7 && d.inDays % 7 == 0) return '${d.inDays ~/ 7} week${d.inDays ~/ 7 == 1 ? '' : 's'}';
     if (d.inDays >= 1) return '${d.inDays} day${d.inDays == 1 ? '' : 's'}';
     return '${d.inHours} hour${d.inHours == 1 ? '' : 's'}';
-  }
-
-  Future<void> _toggleHidden(bool value) async {
-    await ChatLockService.setHidden(widget.conversationId, value);
-    if (!mounted) return;
-    setState(() => _hidden = value);
-    if (value && mounted) {
-      // Hiding a chat you're currently looking at needs to actually take
-      // you out of it — otherwise it'd be "hidden" from the list but
-      // still sitting open right in front of you.
-      Navigator.of(context).popUntil((route) => route.isFirst);
-    }
   }
 
   String _ttlLabel(int? hours) {
@@ -354,38 +394,24 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 value: archived,
                 onChanged: (v) => _conversationService.setArchived(widget.conversationId, v),
               ),
-              SwitchListTile.adaptive(
-                secondary: const Icon(Icons.visibility_off_outlined),
-                title: const Text('Hide this chat'),
-                subtitle: Text(
-                  _hideLocked
-                      ? 'Set up chat hiding in Settings > Chat hiding first'
-                      : 'Removed from your chat list entirely — type your code into search to bring it back',
-                ),
-                value: _hidden,
-                onChanged: _hideLocked ? null : _toggleHidden,
-              ),
-              SwitchListTile.adaptive(
-                secondary: const Icon(Icons.lock_outline),
-                title: const Text('Lock this chat'),
-                subtitle: Text(
-                  _appLockNotSetUp
-                      ? 'Set up App lock (PIN) in Settings first'
-                      : 'Stays visible in your chat list, but needs your PIN to open — even if App lock itself is unlocked',
-                ),
-                value: _chatLocked,
-                onChanged: _appLockNotSetUp ? null : _toggleChatLocked,
-              ),
-              SwitchListTile.adaptive(
-                secondary: const Icon(Icons.notifications_off_outlined),
-                title: const Text('Hide name in notifications'),
-                subtitle: Text(
-                  'Notifications from ${widget.peerUsername} show as "New message" instead of their name — '
-                  'message content never shows either way',
-                ),
-                value: _hideNameInNotifications,
-                onChanged: _toggleNotificationPrivacy,
-              ),
+              (_hiddenViaCommon || _hiddenViaCustom)
+                  ? ListTile(
+                      leading: const Icon(Icons.visibility_off_outlined),
+                      title: const Text('This chat is hidden'),
+                      subtitle: Text(
+                        _hiddenViaCommon
+                            ? 'Using your common code — type it into search to bring it back'
+                            : "Using a custom code just for this chat — type it into search to bring it back",
+                      ),
+                      trailing: TextButton(onPressed: _unhide, child: const Text('Unhide')),
+                    )
+                  : ListTile(
+                      leading: const Icon(Icons.visibility_off_outlined),
+                      title: const Text('Hide this chat'),
+                      subtitle: const Text('Removed from your chat list entirely — pick the common code or set one just for this chat'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: _openHideOptions,
+                    ),
               ListTile(
                 leading: const Icon(Icons.pause_circle_outline),
                 title: const Text('Pause this chat'),
@@ -442,3 +468,172 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     );
   }
 }
+
+class _CustomCodeEntry {
+  final String method;
+  final String code;
+  const _CustomCodeEntry({required this.method, required this.code});
+}
+
+/// Bottom-sheet content: choose password or emoji, enter it, confirm it —
+/// same enter/confirm shape as the common-code setup flow in
+/// ChatLockSetupScreen, just scoped to one chat and returned via
+/// Navigator.pop instead of written straight to storage, since the
+/// caller (chat_settings_screen's _hideWithCustom) needs conversationId to
+/// actually save it.
+class _CustomCodeSheet extends StatefulWidget {
+  const _CustomCodeSheet();
+
+  @override
+  State<_CustomCodeSheet> createState() => _CustomCodeSheetState();
+}
+
+enum _CustomStep { chooseMethod, enterCode, confirmCode }
+
+class _CustomCodeSheetState extends State<_CustomCodeSheet> {
+  _CustomStep _step = _CustomStep.chooseMethod;
+  String _method = 'password';
+  final _passwordController = TextEditingController();
+  final List<String> _emojiSequence = [];
+  String? _firstEntry;
+  String? _error;
+
+  @override
+  void dispose() {
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  String get _currentCode =>
+      _method == 'password' ? _passwordController.text.trim() : _emojiSequence.join();
+
+  void _startWith(String method) {
+    setState(() {
+      _method = method;
+      _step = _CustomStep.enterCode;
+      _firstEntry = null;
+      _error = null;
+      _passwordController.clear();
+      _emojiSequence.clear();
+    });
+  }
+
+  void _submit() {
+    final code = _currentCode;
+    if (code.isEmpty) return;
+    if (_step == _CustomStep.enterCode) {
+      setState(() {
+        _firstEntry = code;
+        _step = _CustomStep.confirmCode;
+        _error = null;
+        _passwordController.clear();
+        _emojiSequence.clear();
+      });
+      return;
+    }
+    if (code != _firstEntry) {
+      setState(() {
+        _error = "Those didn't match — try again from the start.";
+        _step = _CustomStep.enterCode;
+        _firstEntry = null;
+        _passwordController.clear();
+        _emojiSequence.clear();
+      });
+      return;
+    }
+    Navigator.pop(context, _CustomCodeEntry(method: _method, code: code));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(20, 8, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_step == _CustomStep.chooseMethod) ...[
+            const Text('Choose how to unlock this chat:', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 16),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.password_outlined),
+                title: const Text('Password'),
+                onTap: () => _startWith('password'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: const Text('😀', style: TextStyle(fontSize: 20)),
+                title: const Text('Emoji sequence'),
+                onTap: () => _startWith('emoji'),
+              ),
+            ),
+          ] else ...[
+            Text(
+              _step == _CustomStep.confirmCode ? 'Enter it again to confirm' : (_method == 'password' ? 'Choose a password' : 'Choose your emoji sequence'),
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 16),
+            if (_method == 'password')
+              TextField(
+                controller: _passwordController,
+                obscureText: true,
+                autofocus: true,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(border: OutlineInputBorder(), labelText: 'Password'),
+              )
+            else ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Center(
+                  child: Text(_emojiSequence.isEmpty ? 'Tap emoji below' : _emojiSequence.join(' '), style: const TextStyle(fontSize: 20)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _suggestedEmoji
+                    .map((e) => InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () => setState(() => _emojiSequence.add(e)),
+                          child: Padding(padding: const EdgeInsets.all(4), child: Text(e, style: const TextStyle(fontSize: 22))),
+                        ))
+                    .toList(),
+              ),
+              if (_emojiSequence.isNotEmpty)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(onPressed: () => setState(() => _emojiSequence.removeLast()), child: const Text('Remove last')),
+                ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: _currentCode.isEmpty ? null : _submit,
+                child: Text(_step == _CustomStep.confirmCode ? 'Confirm' : 'Next'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+const _suggestedEmoji = [
+  '🔒', '🗝️', '⭐', '🌙', '🔥', '💎', '🎯', '🐱', '🌸', '☕',
+  '🎵', '🍀', '🦋', '⚡', '🌊', '🍎', '🎈', '🐧', '🌵', '🎧',
+];
