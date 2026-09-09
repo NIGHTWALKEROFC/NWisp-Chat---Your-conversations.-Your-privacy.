@@ -10,6 +10,7 @@ import 'firebase_options.dart';
 import 'services/theme_service.dart';
 import 'services/branding_service.dart';
 import 'services/auth_service.dart';
+import 'services/chat_lock_service.dart';
 import 'services/device_session_service.dart';
 import 'services/group_service.dart';
 import 'services/local_message_store.dart';
@@ -120,15 +121,8 @@ void _handleNotificationData(Map<String, dynamic> data) {
   }
   final conversationId = data['conversationId'] as String?;
   final peerUid = data['senderUid'] as String?;
-  final rawPeerUsername = data['senderUsername'] as String?;
+  final peerUsername = data['senderUsername'] as String?;
   if (conversationId == null || peerUid == null) return;
-  // BUGFIX: `?? 'Chat'` below only substitutes on null — send-push now
-  // deliberately sends an EMPTY string (not omitted) for senderUsername
-  // when "Hide name in notifications" is on for this contact (see that
-  // function's own comment), which would otherwise flow straight through
-  // as a blank chat title for a moment before the chat screen re-resolves
-  // the real name live from Firestore. Treat empty the same as missing.
-  final peerUsername = (rawPeerUsername == null || rawPeerUsername.isEmpty) ? null : rawPeerUsername;
   _openChat(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername ?? 'Chat');
 }
 
@@ -137,10 +131,22 @@ void _handleNotificationData(Map<String, dynamic> data) {
 /// GroupChatScreen instead of the 1:1 ChatDetailScreen. [peerUid] is
 /// unused in that branch (the group screen resolves its own member list
 /// from Firestore) but is still required by the shared call sites above.
+///
+/// BUGFIX/feature: a hidden chat "can't be accessed anywhere" was one of
+/// the explicit asks for the chat-hiding redesign — but a tapped push or
+/// local notification used to jump straight into ChatDetailScreen/
+/// GroupChatScreen regardless of hidden status, which was a real way
+/// around the hide code entirely (whoever's holding the unlocked phone
+/// just taps the notification). Now checked first and silently refused —
+/// no error, no toast, nothing that would itself reveal a hidden chat
+/// exists — the app just comes to the foreground without navigating
+/// anywhere. The person still gets to it the normal way: their hide code
+/// typed into search.
 void _openChat({required String conversationId, required String peerUid, required String peerUsername}) {
   // Post-frame so this is safe even if it fires before the first widget
   // tree (e.g. cold start) has finished building.
-  WidgetsBinding.instance.addPostFrameCallback((_) {
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    if (await ChatLockService.isHidden(conversationId)) return;
     if (conversationId.startsWith('group_')) {
       navigatorKey.currentState?.push(
         MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: conversationId)),
@@ -236,10 +242,24 @@ void _setUpMessagingLifecycle() {
 String? _lastHandledApprovalRequestId;
 void _watchForIncomingLoginApprovals(String uid) {
   DeviceSessionService.instance.watchPendingApprovalRequest(uid).listen(
-    (request) {
+    (request) async {
       if (request == null) return;
       final requestId = request['requestId'] as String?;
       if (requestId == null || requestId == _lastHandledApprovalRequestId) return;
+      // BUGFIX: this listener is (re)started the instant Firebase Auth
+      // reports a signed-in user — which fires the moment
+      // signInWithEmailAndPassword succeeds inside beginEmailLogin, well
+      // before THIS SAME device (if it's the one currently logging in)
+      // has gone on to create its own approval request and finish
+      // claiming itself. Without this check, a device could catch the
+      // pending request it had just created about itself and pop the
+      // "approve this login" screen on itself — asking the person to
+      // approve their own sign-in. Racing that self-prompt against
+      // LoginScreen's own approval wait is what caused needing to
+      // accept/deny several times before a login actually went through.
+      // A device must never be asked to approve its own login.
+      final myDeviceId = await DeviceSessionService.instance.localDeviceId();
+      if (request['requestingDeviceId'] == myDeviceId) return;
       _lastHandledApprovalRequestId = requestId;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         navigatorKey.currentState?.push(
