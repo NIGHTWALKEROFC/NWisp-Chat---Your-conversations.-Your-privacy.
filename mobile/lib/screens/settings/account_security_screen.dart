@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/device_session_service.dart';
+import '../../services/moderation_service.dart';
 import 'forgot_password_screen.dart';
 
 class AccountSecurityScreen extends StatelessWidget {
@@ -81,6 +82,26 @@ class AccountSecurityScreen extends StatelessWidget {
               'in somewhere else, that device is automatically signed out here.',
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
             ),
+          ),
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: ModerationService().myProfileStream(),
+            builder: (context, profileSnapshot) {
+              final hideNames = (profileSnapshot.data?.data()?['notificationPrivacyGlobal'] as bool?) ?? false;
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.visibility_off_outlined),
+                  title: const Text('Hide name in notifications'),
+                  subtitle: Text(
+                    hideNames
+                        ? 'On for every chat — notifications show "New message" instead of who sent it'
+                        : 'Off — you can still turn this on for one specific chat from that chat\'s own settings',
+                  ),
+                  value: hideNames,
+                  onChanged: (v) => ModerationService().setNotificationPrivacyGlobal(v),
+                ),
+              );
+            },
           ),
           StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
             stream: DeviceSessionService.instance.sessionStream(uid),
