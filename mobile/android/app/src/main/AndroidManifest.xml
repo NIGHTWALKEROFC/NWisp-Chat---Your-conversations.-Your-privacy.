@@ -13,8 +13,19 @@
     <application
         android:label="Secure Chat"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
-        <activity
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false">
+        <!-- SECURITY FIX (app-wide audit, 2026-09-09): android:allowBackup
+             defaults to true when unset, which lets `adb backup` (and on
+             some OEM builds, cloud/local device-transfer backups) pull
+             this app's private files off the device — including the
+             on-device SQLite databases. Message content and Signal
+             Protocol keys/sessions in those files are now encrypted at
+             rest either way (see local_message_store.dart /
+             signal_store.dart), but there's no reason to also leave a
+             whole-app-data extraction path open as a second layer
+             someone would have to get through. Explicitly disabled. -->        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
