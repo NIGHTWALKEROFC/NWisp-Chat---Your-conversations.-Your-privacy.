@@ -1,11 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../../services/app_lock_service.dart';
 import '../../services/conversation_service.dart';
 import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../report_user_screen.dart';
+import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import '../settings/chat_lock_setup_screen.dart';
 
@@ -34,11 +36,46 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   bool _commonSetUp = false;
   bool _hiddenViaCommon = false;
   bool _hiddenViaCustom = false;
+  bool _locked = false;
 
   @override
   void initState() {
     super.initState();
     _loadHideState();
+    _loadLockState();
+  }
+
+  Future<void> _loadLockState() async {
+    final locked = await ChatLockService.isLocked(widget.conversationId);
+    if (!mounted) return;
+    setState(() => _locked = locked);
+  }
+
+  /// Turning ON requires the app PIN to already be set up (this feature
+  /// deliberately reuses it rather than adding a third PIN type — see
+  /// chat_pin_guard.dart). Turning OFF doesn't need re-verification: you
+  /// can only be looking at this screen because you already got past the
+  /// PIN to open this chat in the first place.
+  Future<void> _toggleLocked(bool value) async {
+    if (value && !await AppLockService.isEnabled()) {
+      final setUp = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Set up a PIN first'),
+          content: const Text('"Lock this chat" uses your app PIN, which isn\'t set up yet.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Set up PIN')),
+          ],
+        ),
+      );
+      if (setUp != true || !mounted) return;
+      final result = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const PinScreen(mode: PinScreenMode.setup)));
+      if (result != true || !mounted) return;
+    }
+    await ChatLockService.setLocked(widget.conversationId, value);
+    if (!mounted) return;
+    setState(() => _locked = value);
   }
 
   Future<void> _loadHideState() async {
@@ -412,6 +449,39 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                       trailing: const Icon(Icons.chevron_right),
                       onTap: _openHideOptions,
                     ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.lock_outline),
+                title: const Text('Lock this chat'),
+                subtitle: Text(
+                  _locked
+                      ? 'Your app PIN is required to open this chat — still shows normally in your chat list'
+                      : 'Require your app PIN to open this chat. Independent of hiding — this chat still shows normally in your list',
+                ),
+                value: _locked,
+                onChanged: _toggleLocked,
+              ),
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: _moderationService.myProfileStream(),
+                builder: (context, profileSnapshot) {
+                  final data = profileSnapshot.data?.data();
+                  final global = (data?['notificationPrivacyGlobal'] as bool?) ?? false;
+                  final peers = List<String>.from(data?['notificationPrivacyPeers'] ?? []);
+                  final hideForThisChat = global || peers.contains(widget.peerUid);
+                  return SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.notifications_off_outlined),
+                    title: const Text('Hide name in notifications'),
+                    subtitle: Text(
+                      global
+                          ? 'On for every chat (set in Settings > Account security) — can\'t turn off just for this one'
+                          : hideForThisChat
+                              ? 'On for this chat — notifications from ${widget.peerUsername} show "New message" instead of their name'
+                              : 'Off for this chat',
+                    ),
+                    value: hideForThisChat,
+                    onChanged: global ? null : (v) => _moderationService.setNotificationPrivacyForPeer(widget.peerUid, v),
+                  );
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.pause_circle_outline),
                 title: const Text('Pause this chat'),
