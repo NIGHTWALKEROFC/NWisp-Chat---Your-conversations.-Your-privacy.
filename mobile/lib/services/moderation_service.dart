@@ -73,29 +73,38 @@ class ModerationService {
     return blocked.contains(uid);
   }
 
-  /// Feature: more 1:1 chat security settings — "Hide sender name in
-  /// notifications" (see ChatSettingsScreen). Push notification bodies
-  /// already never contain message content (there's nothing to leak —
-  /// this app never has decrypted content server-side to put in one, see
-  /// send-push's own comment on that), but the notification TITLE still
-  /// shows the sender's username by default, which is its own real
-  /// lock-screen privacy leak for a specific contact someone would
-  /// rather keep off their lock screen entirely. `notificationPrivacyPeers`
-  /// lives on the SAME owner-only private/profile doc blockedUsers
-  /// already does — send-push reads it (using its existing service-role
-  /// Firestore access, same as it already reads fcmTokens/mutedBy) to
-  /// decide whether to show "New message" instead of the real username
-  /// for that one sender.
-  Future<void> setNotificationPrivacy(String otherUid, bool hideSenderName) async {
-    await _profileRef.set({
-      'notificationPrivacyPeers': hideSenderName ? FieldValue.arrayUnion([otherUid]) : FieldValue.arrayRemove([otherUid]),
-    }, SetOptions(merge: true));
+  /// Feature: "Hide name in notifications". Two independent switches on
+  /// the SAME private/profile doc the send-push Edge Function already
+  /// reads (see that function — it's the one that actually decides what
+  /// goes in a push, this is just where the setting lives):
+  /// - Global: hides the sender's name in every notification, for every
+  ///   contact and group member.
+  /// - Per-contact ([setNotificationPrivacyForPeer], set from that
+  ///   contact's own Chat Settings screen): hides it just for messages
+  ///   from that one sender uid, independent of the global switch — so
+  ///   turning this on for one contact doesn't require turning it on for
+  ///   everyone.
+  Future<void> setNotificationPrivacyGlobal(bool enabled) =>
+      _profileRef.set({'notificationPrivacyGlobal': enabled}, SetOptions(merge: true));
+
+  Future<bool> isNotificationPrivacyGlobalEnabled() async {
+    final doc = await _profileRef.get();
+    return doc.data()?['notificationPrivacyGlobal'] as bool? ?? false;
   }
 
-  Future<bool> isNotificationPrivacyEnabled(String otherUid) async {
+  Future<void> setNotificationPrivacyForPeer(String peerUid, bool hide) => _profileRef.set({
+        'notificationPrivacyPeers': hide ? FieldValue.arrayUnion([peerUid]) : FieldValue.arrayRemove([peerUid]),
+      }, SetOptions(merge: true));
+
+  /// True if this specific sender's name is currently hidden in your
+  /// notifications — either because the global switch is on, or because
+  /// you turned it on just for them.
+  Future<bool> isNotificationPrivacyEnabledForPeer(String peerUid) async {
     final doc = await _profileRef.get();
-    final peers = List<String>.from(doc.data()?['notificationPrivacyPeers'] ?? []);
-    return peers.contains(otherUid);
+    final data = doc.data();
+    if ((data?['notificationPrivacyGlobal'] as bool?) ?? false) return true;
+    final peers = List<String>.from(data?['notificationPrivacyPeers'] ?? []);
+    return peers.contains(peerUid);
   }
 
   /// Feature: reporting + admin review + suspension + appeals.
