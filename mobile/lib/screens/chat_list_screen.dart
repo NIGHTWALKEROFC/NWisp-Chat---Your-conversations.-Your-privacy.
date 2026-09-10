@@ -15,6 +15,7 @@ import 'contacts/find_users_screen.dart';
 import 'groups/create_group_screen.dart';
 import 'groups/group_chat_screen.dart';
 import 'groups/group_invites_screen.dart';
+import 'security/chat_pin_guard.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
 import 'settings/settings_screen.dart';
@@ -618,8 +619,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 },
               ),
         trailing: trailing,
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId)))
-            .then((_) => _loadHiddenIds()),
+        onTap: () async {
+          if (!await requireChatPinIfLocked(context, row.conversationId)) return;
+          if (!context.mounted) return;
+          await Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId)));
+          await _loadHiddenIds();
+        },
         onLongPress: () => _showChatOptions(context, scheme, row),
       );
     }
@@ -641,12 +646,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
             style: row.isPlaceholder ? TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic) : null,
           ),
           trailing: trailing,
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
-            ),
-          ).then((_) => _loadHiddenIds()),
+          onTap: () async {
+            if (!await requireChatPinIfLocked(context, row.conversationId)) return;
+            if (!context.mounted) return;
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
+              ),
+            );
+            await _loadHiddenIds();
+          },
           onLongPress: () => _showChatOptions(context, scheme, row),
         );
       },
