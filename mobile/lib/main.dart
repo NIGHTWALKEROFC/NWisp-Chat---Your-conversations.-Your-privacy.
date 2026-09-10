@@ -21,6 +21,7 @@ import 'screens/auth_gate.dart';
 import 'screens/chat/chat_detail_screen.dart';
 import 'screens/groups/group_chat_screen.dart';
 import 'screens/login_approval_screen.dart';
+import 'screens/security/chat_pin_guard.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -142,11 +143,20 @@ void _handleNotificationData(Map<String, dynamic> data) {
 /// exists — the app just comes to the foreground without navigating
 /// anywhere. The person still gets to it the normal way: their hide code
 /// typed into search.
+///
+/// Same reasoning applies to "Lock this chat" — a locked chat isn't
+/// hidden (it still shows in the list normally), but a notification tap
+/// still shouldn't be a way around its PIN. Unlike the hidden check
+/// above, a locked chat SHOULD still open — just behind the PIN prompt —
+/// since locking was never meant to hide that the chat exists.
 void _openChat({required String conversationId, required String peerUid, required String peerUsername}) {
   // Post-frame so this is safe even if it fires before the first widget
   // tree (e.g. cold start) has finished building.
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     if (await ChatLockService.isHidden(conversationId)) return;
+    final context = navigatorKey.currentContext;
+    if (context == null) return;
+    if (!await requireChatPinIfLocked(context, conversationId)) return;
     if (conversationId.startsWith('group_')) {
       navigatorKey.currentState?.push(
         MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: conversationId)),
