@@ -292,5 +292,43 @@ class ChatLockService {
     await _storage.delete(key: _pinEnabledKey);
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_commonHiddenIdsKey);
+    await prefs.remove(_lockedIdsKey);
+  }
+
+  // -----------------------------------------------------------------------
+  // "Lock this chat" — per-chat PIN re-entry, INDEPENDENT of hiding.
+  //
+  // A locked chat still shows normally in the chat list (unlike hiding,
+  // which removes it entirely) — but opening it, from anywhere (the chat
+  // list, a group list, or a tapped notification), requires the PIN
+  // first. Deliberately reuses AppLockService's existing whole-app PIN
+  // rather than introducing a third PIN type (on top of the app-lock PIN
+  // and the hidden-chats PIN already in this file) — one more PIN to
+  // remember for a feature that isn't trying to hide the chat's
+  // existence, just gate re-opening it, didn't seem worth it. See
+  // chat_pin_guard.dart for the actual "check + prompt" flow used at
+  // every place a chat can be opened from.
+  // -----------------------------------------------------------------------
+
+  static const _lockedIdsKey = 'chat_lock_locked_ids'; // SharedPreferences
+
+  static Future<Set<String>> getLockedIds() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (prefs.getStringList(_lockedIdsKey) ?? []).toSet();
+  }
+
+  static Future<bool> isLocked(String conversationId) async {
+    return (await getLockedIds()).contains(conversationId);
+  }
+
+  static Future<void> setLocked(String conversationId, bool locked) async {
+    final prefs = await SharedPreferences.getInstance();
+    final current = (prefs.getStringList(_lockedIdsKey) ?? []).toSet();
+    if (locked) {
+      current.add(conversationId);
+    } else {
+      current.remove(conversationId);
+    }
+    await prefs.setStringList(_lockedIdsKey, current.toList());
   }
 }
