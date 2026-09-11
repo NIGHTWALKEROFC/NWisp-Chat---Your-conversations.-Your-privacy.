@@ -34,7 +34,7 @@ class LocalMessageStore {
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -52,7 +52,8 @@ class LocalMessageStore {
             status TEXT NOT NULL DEFAULT 'sent',
             created_at INTEGER NOT NULL,
             expires_at INTEGER,
-            edited_at INTEGER
+            edited_at INTEGER,
+            pending_media_meta TEXT
           )
         ''');
         await db.execute('CREATE INDEX idx_conv ON messages(conversation_id, created_at)');
@@ -110,6 +111,18 @@ class LocalMessageStore {
         // See MessageRelayService.sendMediaMessage / retryMediaMessage.
         if (oldVersion < 6) {
           await _createPendingMediaSendsTable(db);
+        }
+        // v6 -> v7: adds `pending_media_meta` — group security setting
+        // "media auto-download restrictions". When a group has that
+        // turned on, an incoming photo/video isn't fetched automatically;
+        // this column holds the (locally re-encrypted) key/location info
+        // a later manual download needs, since the message_relay row
+        // carrying the only other copy of that info gets deleted right
+        // after being processed either way. NULL for every normal
+        // message. See MessageRelayService._receiveMediaMessage /
+        // downloadPendingMedia.
+        if (oldVersion < 7) {
+          await db.execute('ALTER TABLE messages ADD COLUMN pending_media_meta TEXT');
         }
       },
     );
@@ -291,8 +304,14 @@ class LocalMessageStore {
     String status = 'sent',
     required DateTime createdAt,
     DateTime? expiresAt,
+    Map<String, dynamic>? pendingMediaMeta,
   }) async {
     final (encText, nonce) = await CryptoService.encryptLocal(text);
+    String? encPendingMeta;
+    if (pendingMediaMeta != null) {
+      final (metaCipher, metaNonce) = await CryptoService.encryptLocal(jsonEncode(pendingMediaMeta));
+      encPendingMeta = jsonEncode({'c': metaCipher, 'n': metaNonce});
+    }
     await _db!.insert('messages', {
       'id': id,
       'conversation_id': conversationId,
@@ -309,6 +328,7 @@ class LocalMessageStore {
       'created_at': createdAt.millisecondsSinceEpoch,
       'expires_at': expiresAt?.millisecondsSinceEpoch,
       'edited_at': null,
+      'pending_media_meta': encPendingMeta,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     final msg = LocalMessage(
@@ -324,6 +344,7 @@ class LocalMessageStore {
       status: status,
       createdAt: createdAt,
       expiresAt: expiresAt,
+      hasPendingMedia: encPendingMeta != null,
     );
     _notifyConversation(conversationId);
     _notifySummaries();
@@ -509,6 +530,37 @@ class LocalMessageStore {
     _notifySummaries();
   }
 
+  /// Group security setting: media auto-download restrictions. Decrypts
+  /// and returns the key/location info [MessageRelayService._receiveMediaMessage]
+  /// stashed instead of downloading, so [MessageRelayService.downloadPendingMedia]
+  /// can fetch it on demand. Null if this message has no pending download
+  /// (either it's not a media message, or it already downloaded normally).
+  static Future<Map<String, dynamic>?> getPendingMediaMeta(String id) async {
+    final rows = await _db!.query('messages', columns: ['pending_media_meta'], where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return null;
+    final raw = rows.first['pending_media_meta'] as String?;
+    if (raw == null) return null;
+    final wrapper = jsonDecode(raw) as Map<String, dynamic>;
+    final json = await CryptoService.decryptLocal(wrapper['c'] as String, wrapper['n'] as String);
+    return jsonDecode(json) as Map<String, dynamic>;
+  }
+
+  /// Completes a manual download: sets the real local media path and
+  /// caption, and clears the pending-download meta (its job is done —
+  /// nothing sensitive should linger in it longer than necessary).
+  static Future<void> resolvePendingMedia(String id, String mediaPath, String caption) async {
+    final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return;
+    final (encText, nonce) = await CryptoService.encryptLocal(caption);
+    await _db!.update(
+      'messages',
+      {'media_path': mediaPath, 'enc_text': encText, 'enc_nonce': nonce, 'pending_media_meta': null},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    _notifyConversation(rows.first['conversation_id'] as String);
+  } // resolvePendingMedia
+
   /// Single-row lookup, decrypted — used by the "Resend to X" group-send
   /// retry action (it needs the original text again) and by the edit flow
   /// (to check the original send time against the edit window).
@@ -629,6 +681,7 @@ class LocalMessageStore {
       createdAt: DateTime.fromMillisecondsSinceEpoch(r['created_at'] as int),
       expiresAt: r['expires_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['expires_at'] as int) : null,
       editedAt: r['edited_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['edited_at'] as int) : null,
+      hasPendingMedia: r['pending_media_meta'] != null,
     );
   }
 
