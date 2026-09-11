@@ -29,6 +29,13 @@ class Group {
   /// input-bar gating.
   final bool onlyAdminsCanSend;
 
+  /// Group security settings added 2026-09-10 — all default to their
+  /// current always-on-before-this behavior, so an existing group with
+  /// none of these fields set keeps working exactly as it did before:
+  final bool mediaAutoDownload; // default true — off means members must tap to fetch photos/videos
+  final bool readReceiptsEnabled; // default true — off means no "seen by" tracking group-wide
+  final bool hideMemberListFromNonAdmins; // default false
+
   const Group({
     required this.id,
     required this.name,
@@ -40,6 +47,9 @@ class Group {
     this.chatTtlHours,
     this.description = '',
     this.onlyAdminsCanSend = false,
+    this.mediaAutoDownload = true,
+    this.readReceiptsEnabled = true,
+    this.hideMemberListFromNonAdmins = false,
   });
 
   factory Group.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -55,6 +65,9 @@ class Group {
       chatTtlHours: (data['chatTtlHours'] as num?)?.toInt(),
       description: (data['description'] as String?) ?? '',
       onlyAdminsCanSend: (data['onlyAdminsCanSend'] as bool?) ?? false,
+      mediaAutoDownload: (data['mediaAutoDownload'] as bool?) ?? true,
+      readReceiptsEnabled: (data['readReceiptsEnabled'] as bool?) ?? true,
+      hideMemberListFromNonAdmins: (data['hideMemberListFromNonAdmins'] as bool?) ?? false,
     );
   }
 
