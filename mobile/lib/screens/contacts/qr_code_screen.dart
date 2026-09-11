@@ -6,6 +6,7 @@ import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
+import '../security/chat_pin_guard.dart';
 
 /// QR-code based contact adding — faster and more private than typing a
 /// username into FindUsersScreen's search, and a natural fit for a
@@ -110,6 +111,11 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
                         final myUid = FirebaseAuth.instance.currentUser!.uid;
                         final conversationId = _conversationService.conversationIdFor(myUid, uid);
                         await _conversationService.ensureConversation(otherUid: uid);
+                        if (!mounted) return;
+                        // BUGFIX: see chat_pin_guard.dart's canOpenChat doc
+                        // comment — a scanned QR code was another way to
+                        // reach an already-hidden or paused chat directly.
+                        if (!await canOpenChat(context, conversationId: conversationId, otherUid: uid)) return;
                         if (!mounted) return;
                         Navigator.pushReplacement(
                           context,
