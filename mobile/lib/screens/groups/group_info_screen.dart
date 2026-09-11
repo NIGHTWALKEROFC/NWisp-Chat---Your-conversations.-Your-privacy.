@@ -7,7 +7,9 @@ import '../../models/group.dart';
 import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
 import '../../services/media_service.dart';
+import '../../services/screenshot_settings_service.dart';
 import '../chat_list_screen.dart';
+import 'report_group_screen.dart';
 import '../security/safety_number_screen.dart';
 
 const _groupTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never, hours after that
@@ -396,6 +398,68 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 value: group.onlyAdminsCanSend,
                 onChanged: amAdmin ? (v) => GroupService.instance.setOnlyAdminsCanSend(widget.groupId, v) : null,
               ),
+              // Group security settings added 2026-09-10 — same admin-only
+              // pattern as the toggle above (isGroupAdmin() already covers
+              // every field on this document, so no rules change needed).
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.download_outlined),
+                title: const Text('Auto-download media'),
+                subtitle: Text(
+                  group.mediaAutoDownload
+                      ? 'Photos and videos download automatically'
+                      : 'Off — members tap to download each photo/video',
+                ),
+                value: group.mediaAutoDownload,
+                onChanged: amAdmin ? (v) => GroupService.instance.setMediaAutoDownload(widget.groupId, v) : null,
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.done_all),
+                title: const Text('Read receipts'),
+                subtitle: Text(group.readReceiptsEnabled ? '"Seen by" is tracked for this group' : 'Off for everyone in this group'),
+                value: group.readReceiptsEnabled,
+                onChanged: amAdmin ? (v) => GroupService.instance.setReadReceiptsEnabled(widget.groupId, v) : null,
+              ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.visibility_off_outlined),
+                title: const Text('Hide member list'),
+                subtitle: Text(group.hideMemberListFromNonAdmins ? 'Only admins can see the full member list' : 'Everyone can see who\'s in this group'),
+                value: group.hideMemberListFromNonAdmins,
+                onChanged: amAdmin ? (v) => GroupService.instance.setHideMemberListFromNonAdmins(widget.groupId, v) : null,
+              ),
+              // Screenshot restriction, made optional 2026-09-11 — default
+              // follows the app-wide setting (Settings > Account security)
+              // unless overridden here for just this group. Any member can
+              // set this for themselves — it's a per-DEVICE protection
+              // setting, not something that needs to be the same for
+              // everyone in the group, so it's not admin-gated like the
+              // settings above.
+              FutureBuilder<bool?>(
+                future: ScreenshotSettingsService.getOverride(widget.groupId),
+                builder: (context, overrideSnap) {
+                  return FutureBuilder<bool>(
+                    future: ScreenshotSettingsService.isGlobalEnabled(),
+                    builder: (context, globalSnap) {
+                      final override = overrideSnap.data;
+                      final global = globalSnap.data ?? true;
+                      final effective = override ?? global;
+                      return SwitchListTile.adaptive(
+                        secondary: const Icon(Icons.screenshot_outlined),
+                        title: const Text('Block screenshots'),
+                        subtitle: Text(
+                          override != null
+                              ? (override ? 'On for this group (overrides your app default)' : 'Off for this group (overrides your app default)')
+                              : (global ? 'On, following your app default' : 'Off, following your app default'),
+                        ),
+                        value: effective,
+                        onChanged: (v) async {
+                          await ScreenshotSettingsService.setOverride(widget.groupId, v == global ? null : v);
+                          if (mounted) setState(() {});
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
                 title: const Text('Mute notifications'),
@@ -436,7 +500,21 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   ],
                 ),
               ),
-              for (final uid in group.members)
+              // Group security setting: hide member list. Members can
+              // still see THEMSELVES and the overall count (shown up top)
+              // — just not who else is in the group. Admins always see
+              // the full list regardless, since they need it to do
+              // anything member-related at all.
+              if (!amAdmin && group.hideMemberListFromNonAdmins)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Text(
+                    'The member list is hidden by this group\'s admins.',
+                    style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic),
+                  ),
+                )
+              else
+                for (final uid in group.members)
                 FutureBuilder<String>(
                   future: _usernameFor(uid),
                   builder: (context, nameSnap) {
@@ -482,6 +560,14 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   },
                 ),
               const Divider(),
+              ListTile(
+                leading: Icon(Icons.flag_outlined, color: scheme.error),
+                title: Text('Report this group', style: TextStyle(color: scheme.error)),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => ReportGroupScreen(groupId: widget.groupId, groupName: group.name)),
+                ),
+              ),
               ListTile(
                 leading: Icon(Icons.exit_to_app, color: scheme.error),
                 title: Text('Leave group', style: TextStyle(color: scheme.error)),
