@@ -6,6 +6,7 @@ import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
+import '../../services/screenshot_settings_service.dart';
 import '../report_user_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
@@ -431,6 +432,11 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 value: archived,
                 onChanged: (v) => _conversationService.setArchived(widget.conversationId, v),
               ),
+              const Divider(height: 24),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                child: Text('Privacy & security', style: Theme.of(context).textTheme.titleSmall),
+              ),
               (_hiddenViaCommon || _hiddenViaCustom)
                   ? ListTile(
                       leading: const Icon(Icons.visibility_off_outlined),
@@ -479,6 +485,33 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                     ),
                     value: hideForThisChat,
                     onChanged: global ? null : (v) => _moderationService.setNotificationPrivacyForPeer(widget.peerUid, v),
+                  );
+                },
+              ),
+              FutureBuilder<bool?>(
+                future: ScreenshotSettingsService.getOverride(widget.conversationId),
+                builder: (context, overrideSnap) {
+                  return FutureBuilder<bool>(
+                    future: ScreenshotSettingsService.isGlobalEnabled(),
+                    builder: (context, globalSnap) {
+                      final override = overrideSnap.data;
+                      final global = globalSnap.data ?? true;
+                      final effective = override ?? global;
+                      return SwitchListTile.adaptive(
+                        secondary: const Icon(Icons.screenshot_outlined),
+                        title: const Text('Block screenshots'),
+                        subtitle: Text(
+                          override != null
+                              ? (override ? 'On for this chat (overrides your app default)' : 'Off for this chat (overrides your app default)')
+                              : (global ? 'On, following your app default' : 'Off, following your app default'),
+                        ),
+                        value: effective,
+                        onChanged: (v) async {
+                          await ScreenshotSettingsService.setOverride(widget.conversationId, v == global ? null : v);
+                          if (mounted) setState(() {});
+                        },
+                      );
+                    },
                   );
                 },
               ),
