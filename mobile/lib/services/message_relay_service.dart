@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'crypto_service.dart';
+import 'group_service.dart';
 import 'local_media_files.dart';
 import 'local_message_store.dart';
 import 'media_service.dart';
@@ -319,6 +320,33 @@ class MessageRelayService {
     if (remotePath == null) {
       throw Exception('Media message is missing its storage path.');
     }
+    final conversationId = row['conversation_id'] as String;
+
+    // Group security setting: media auto-download restrictions. When a
+    // group has this off, don't fetch/decrypt now — store what a manual
+    // download will need instead (this relay row, the only OTHER place
+    // that info exists, gets deleted right after this method returns
+    // either way — see _handleRow) and let the person tap to fetch it
+    // later (see downloadPendingMedia). 1:1 chats are unaffected — this
+    // setting only exists on group docs.
+    if (conversationId.startsWith(_groupIdPrefix) && !await GroupService.instance.isMediaAutoDownloadEnabled(conversationId)) {
+      await LocalMessageStore.insert(
+        id: row['client_id'] as String,
+        conversationId: conversationId,
+        peerUid: senderUid,
+        senderUid: senderUid,
+        isMine: false,
+        text: (meta['caption'] as String?) ?? '',
+        messageType: row['message_type'] as String,
+        mediaPath: null,
+        replyToId: row['reply_to_id'] as String?,
+        status: 'delivered',
+        createdAt: createdAt,
+        expiresAt: _expiryFor(createdAt, ttlHours),
+        pendingMediaMeta: {...meta, 'remotePath': remotePath},
+      );
+      return;
+    }
 
     final encryptedBytes = await MediaService.downloadBytes(_mediaBucket, remotePath);
     final plainBytes = await CryptoService.decryptFileBytes(
@@ -331,7 +359,7 @@ class MessageRelayService {
 
     await LocalMessageStore.insert(
       id: row['client_id'] as String,
-      conversationId: row['conversation_id'] as String,
+      conversationId: conversationId,
       peerUid: senderUid,
       senderUid: senderUid,
       isMine: false,
@@ -362,6 +390,27 @@ class MessageRelayService {
         await MediaService.deleteRemote(_mediaBucket, remotePath);
       } catch (_) {}
     }
+  }
+
+  /// Group security setting: media auto-download restrictions — completes
+  /// a download [_receiveMediaMessage] deliberately deferred. Called from
+  /// a tap on the "tap to download" bubble state (see GroupChatScreen).
+  /// Leaves the remote blob in place either way — same TTL-cleanup
+  /// reasoning as the group branch above, since another member who
+  /// hasn't opened the chat yet may still need it.
+  static Future<void> downloadPendingMedia(String messageId) async {
+    final meta = await LocalMessageStore.getPendingMediaMeta(messageId);
+    if (meta == null) return; // nothing pending (already downloaded, or not a media message)
+    final remotePath = meta['remotePath'] as String;
+    final encryptedBytes = await MediaService.downloadBytes(_mediaBucket, remotePath);
+    final plainBytes = await CryptoService.decryptFileBytes(
+      encryptedBytes,
+      meta['nonce'] as String,
+      meta['fileKey'] as String,
+    );
+    final extension = (meta['extension'] as String?) ?? 'bin';
+    final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
+    await LocalMessageStore.resolvePendingMedia(messageId, localPath, (meta['caption'] as String?) ?? '');
   }
 
   /// Reads the narrow blocks/{recipientUid}_{myUid} lookup doc (see
@@ -680,7 +729,19 @@ class MessageRelayService {
     });
   }
 
-  static Future<void> sendReadReceipt({required String conversationId, required String toUid, required String ref}) {
+  /// Group security setting: read receipts toggle. Gated right here,
+  /// rather than in the UI that calls this — so it works no matter which
+  /// screen calls it, and so a group with receipts off never even
+  /// generates the relay row in the first place (nothing to leak, not
+  /// just nothing shown). 1:1 conversationIds (which never start with
+  /// "group_") are completely unaffected — this feature is group-only.
+  static Future<bool> _receiptsAllowed(String conversationId) async {
+    if (!conversationId.startsWith(_groupIdPrefix)) return true;
+    return GroupService.instance.isReadReceiptsEnabled(conversationId);
+  }
+
+  static Future<void> sendReadReceipt({required String conversationId, required String toUid, required String ref}) async {
+    if (!await _receiptsAllowed(conversationId)) return;
     return _sendReceipt(conversationId: conversationId, toUid: toUid, ref: ref, status: 'read');
   }
 
