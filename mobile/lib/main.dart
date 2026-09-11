@@ -10,7 +10,6 @@ import 'firebase_options.dart';
 import 'services/theme_service.dart';
 import 'services/branding_service.dart';
 import 'services/auth_service.dart';
-import 'services/chat_lock_service.dart';
 import 'services/device_session_service.dart';
 import 'services/group_service.dart';
 import 'services/local_message_store.dart';
@@ -153,11 +152,16 @@ void _openChat({required String conversationId, required String peerUid, require
   // Post-frame so this is safe even if it fires before the first widget
   // tree (e.g. cold start) has finished building.
   WidgetsBinding.instance.addPostFrameCallback((_) async {
-    if (await ChatLockService.isHidden(conversationId)) return;
     final context = navigatorKey.currentContext;
     if (context == null) return;
-    if (!await requireChatPinIfLocked(context, conversationId)) return;
-    if (conversationId.startsWith('group_')) {
+    final isGroup = conversationId.startsWith('group_');
+    // BUGFIX: also now covers paused chats, not just hidden/locked ones —
+    // see chat_pin_guard.dart's canOpenChat. A paused chat shouldn't
+    // generate a new-message notification in the first place (sending is
+    // blocked while frozen), but a delayed/stale one reaching here
+    // shouldn't be a way back in either.
+    if (!await canOpenChat(context, conversationId: conversationId, otherUid: isGroup ? null : peerUid)) return;
+    if (isGroup) {
       navigatorKey.currentState?.push(
         MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: conversationId)),
       );
