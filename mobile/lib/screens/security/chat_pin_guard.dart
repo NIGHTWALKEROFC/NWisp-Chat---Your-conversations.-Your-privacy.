@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
+import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import 'pin_screen.dart';
 
@@ -42,4 +43,41 @@ Future<bool> requireChatPinIfLocked(BuildContext context, String conversationId)
   if (!context.mounted) return false;
   final result = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const PinScreen(mode: PinScreenMode.verify)));
   return result == true;
+}
+
+/// BUGFIX (2026-09-11): hidden chats and paused chats were only ever kept
+/// out of the normal chat list — [requireChatPinIfLocked] above (and the
+/// hidden check in main.dart's notification handler) covered the intended
+/// front doors, but three OTHER doors into the exact same conversationId
+/// were left wide open: tapping a contact from ContactsScreen, tapping a
+/// scanned QR code, and tapping a search result in FindUsersScreen all
+/// pushed straight into ChatDetailScreen/GroupChatScreen with no check at
+/// all. Any of those reaches the SAME conversation a hidden or paused chat
+/// already lives at (the id is deterministic from the two uids), so all
+/// three were a real way around both features. This is the combined check
+/// those three call sites now use instead of pushing directly.
+///
+/// [otherUid] is only meaningful for 1:1 (pass null for a group — pausing
+/// is a 1:1-only feature, see ChatFreezeService's own doc comment).
+/// Returns true only if it's fine to navigate in.
+Future<bool> canOpenChat(BuildContext context, {required String conversationId, String? otherUid}) async {
+  if (await ChatLockService.isHidden(conversationId)) return false; // silent, same as the notification-tap case — no hint it exists
+
+  if (otherUid != null) {
+    final frozenUntil = await ChatFreezeService.instance.activeFreezeExpiry(otherUid);
+    if (frozenUntil != null) {
+      if (!context.mounted) return false;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('This chat is paused'),
+          content: const Text('Resume it from Paused Chats in Settings to open it again.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('OK'))],
+        ),
+      );
+      return false;
+    }
+  }
+
+  return requireChatPinIfLocked(context, conversationId);
 }
