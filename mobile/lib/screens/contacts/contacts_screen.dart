@@ -4,6 +4,7 @@ import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
 import '../groups/create_group_screen.dart';
+import '../security/chat_pin_guard.dart';
 import 'find_users_screen.dart';
 import 'qr_code_screen.dart';
 
@@ -68,6 +69,12 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
       final myUid = FirebaseAuth.instance.currentUser!.uid;
       final conversationId = _conversationService.conversationIdFor(myUid, uid);
       await _conversationService.ensureConversation(otherUid: uid);
+      if (!mounted) return;
+      // BUGFIX: tapping a contact used to open ChatDetailScreen directly
+      // with no check at all — a real way around both hiding and pausing,
+      // since this reaches the exact same conversationId either feature
+      // already applies to. See chat_pin_guard.dart's canOpenChat.
+      if (!await canOpenChat(context, conversationId: conversationId, otherUid: uid)) return;
       if (!mounted) return;
       await Navigator.push(
         context,
