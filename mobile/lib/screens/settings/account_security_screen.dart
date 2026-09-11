@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/device_session_service.dart';
 import '../../services/moderation_service.dart';
+import '../../services/screenshot_settings_service.dart';
 import 'forgot_password_screen.dart';
 
 class AccountSecurityScreen extends StatelessWidget {
@@ -99,6 +100,26 @@ class AccountSecurityScreen extends StatelessWidget {
                   ),
                   value: hideNames,
                   onChanged: (v) => ModerationService().setNotificationPrivacyGlobal(v),
+                ),
+              );
+            },
+          ),
+          FutureBuilder<bool>(
+            future: ScreenshotSettingsService.isGlobalEnabled(),
+            builder: (context, snap) {
+              final enabled = snap.data ?? true;
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.screenshot_outlined),
+                  title: const Text('Block screenshots'),
+                  subtitle: Text(
+                    enabled
+                        ? 'On by default for every chat and group — screenshots and screen recording are blocked'
+                        : 'Off by default — you can still turn this on for one specific chat or group from its own settings',
+                  ),
+                  value: enabled,
+                  onChanged: (v) => ScreenshotSettingsService.setGlobalEnabled(v),
                 ),
               );
             },
