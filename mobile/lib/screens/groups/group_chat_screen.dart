@@ -11,7 +11,7 @@ import '../../services/group_service.dart';
 import '../../services/local_message_store.dart';
 import '../../services/media_compression_service.dart';
 import '../../services/media_service.dart';
-import '../../services/message_relay_service.dart' show NotSignedInException;
+import '../../services/message_relay_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
@@ -97,7 +97,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
-    ScreenshotGuardService.acquire();
+    ScreenshotGuardService.acquire(conversationId: widget.groupId);
     // Silently flush any messages that were queued because a member
     // hadn't updated the app yet (see ContactNotUpgradedException /
     // retryPendingResends) — opening the group is a natural, frequent
@@ -145,7 +145,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
-    ScreenshotGuardService.release();
+    ScreenshotGuardService.release(conversationId: widget.groupId);
     GroupService.instance.setTyping(widget.groupId, false);
     _msgSub.cancel();
     _groupSub.cancel();
@@ -821,13 +821,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
     Widget? mediaWidget;
     if (message.messageType == 'image') {
-      mediaWidget = message.mediaPath == null
-          ? _brokenMediaTile(scheme, 'Photo unavailable')
-          : _ImageBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
+      mediaWidget = message.hasPendingMedia
+          ? _pendingMediaTile(scheme, message.id, isVideo: false)
+          : message.mediaPath == null
+              ? _brokenMediaTile(scheme, 'Photo unavailable')
+              : _ImageBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
     } else if (message.messageType == 'video') {
-      mediaWidget = message.mediaPath == null
-          ? _brokenMediaTile(scheme, 'Video unavailable')
-          : _VideoBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
+      mediaWidget = message.hasPendingMedia
+          ? _pendingMediaTile(scheme, message.id, isVideo: true)
+          : message.mediaPath == null
+              ? _brokenMediaTile(scheme, 'Video unavailable')
+              : _VideoBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
     }
 
     final radius = BorderRadius.only(
@@ -958,6 +962,51 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           const SizedBox(height: 4),
           Text(label, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
         ],
+      ),
+    );
+  }
+
+  // Group security setting: media auto-download restrictions. Tracks
+  // which pending-media messages currently have a manual download in
+  // flight, purely so the tile can show a spinner instead of being
+  // tappable again mid-download.
+  final Set<String> _downloadingMediaIds = {};
+
+  Widget _pendingMediaTile(ColorScheme scheme, String messageId, {required bool isVideo}) {
+    final downloading = _downloadingMediaIds.contains(messageId);
+    return InkWell(
+      onTap: downloading
+          ? null
+          : () async {
+              setState(() => _downloadingMediaIds.add(messageId));
+              try {
+                await MessageRelayService.downloadPendingMedia(messageId);
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not download: $e')));
+                }
+              } finally {
+                if (mounted) setState(() => _downloadingMediaIds.remove(messageId));
+              }
+            },
+      child: Container(
+        height: 140,
+        alignment: Alignment.center,
+        color: scheme.surfaceContainerHighest,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (downloading)
+              const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 2))
+            else
+              Icon(isVideo ? Icons.videocam_outlined : Icons.image_outlined, color: scheme.onSurfaceVariant, size: 28),
+            const SizedBox(height: 6),
+            Text(
+              downloading ? 'Downloading…' : 'Tap to download ${isVideo ? 'video' : 'photo'}',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
       ),
     );
   }
