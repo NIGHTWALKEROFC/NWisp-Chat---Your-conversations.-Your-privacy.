@@ -77,6 +77,34 @@ class GroupService {
   Future<void> setOnlyAdminsCanSend(String groupId, bool value) =>
       _ref(groupId).update({'onlyAdminsCanSend': value});
 
+  /// Group security settings added 2026-09-10 — same admin-only pattern
+  /// and same "no rules change needed" reasoning as setOnlyAdminsCanSend
+  /// above (isGroupAdmin() already covers every field on this document).
+  Future<void> setMediaAutoDownload(String groupId, bool value) =>
+      _ref(groupId).update({'mediaAutoDownload': value});
+
+  Future<void> setReadReceiptsEnabled(String groupId, bool value) =>
+      _ref(groupId).update({'readReceiptsEnabled': value});
+
+  Future<void> setHideMemberListFromNonAdmins(String groupId, bool value) =>
+      _ref(groupId).update({'hideMemberListFromNonAdmins': value});
+
+  /// One-shot (not a stream) lookups for MessageRelayService, which needs
+  /// to check a group's setting once per incoming message/receipt rather
+  /// than keep a live subscription open per group. Defaults match
+  /// Group.fromDoc's defaults (true/true) so a group with neither field
+  /// set yet — i.e. every group that existed before this feature —
+  /// behaves exactly as it always has.
+  Future<bool> isMediaAutoDownloadEnabled(String groupId) async {
+    final doc = await _ref(groupId).get();
+    return (doc.data()?['mediaAutoDownload'] as bool?) ?? true;
+  }
+
+  Future<bool> isReadReceiptsEnabled(String groupId) async {
+    final doc = await _ref(groupId).get();
+    return (doc.data()?['readReceiptsEnabled'] as bool?) ?? true;
+  }
+
   /// Mute/archive, same per-person model as ConversationService's 1:1
   /// versions — a "mutedBy"/"archivedBy" array on the group doc rather
   /// than one shared flag, so muting or archiving a group on your device
