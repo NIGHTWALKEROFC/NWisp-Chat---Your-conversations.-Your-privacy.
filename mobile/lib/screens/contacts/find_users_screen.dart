@@ -6,6 +6,7 @@ import '../../services/chat_lock_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../chat/chat_detail_screen.dart';
+import '../security/chat_pin_guard.dart';
 import '../security/hidden_chat_pin_screen.dart';
 
 class FindUsersScreen extends StatefulWidget {
@@ -131,6 +132,11 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
       final myUid = FirebaseAuth.instance.currentUser!.uid;
       final conversationId = _conversationService.conversationIdFor(myUid, uid);
       await _conversationService.ensureConversation(otherUid: uid);
+      if (!mounted) return;
+      // BUGFIX: see chat_pin_guard.dart's canOpenChat doc comment — a
+      // search result was another way to reach an already-hidden or
+      // paused chat directly, bypassing both features.
+      if (!await canOpenChat(context, conversationId: conversationId, otherUid: uid)) return;
       if (!mounted) return;
       Navigator.push(
         context,
