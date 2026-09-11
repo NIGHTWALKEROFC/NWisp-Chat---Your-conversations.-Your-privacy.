@@ -154,6 +154,41 @@ class ModerationService {
     return reportRef.id;
   }
 
+  /// Feature: report a GROUP (as opposed to [reportUser] for an
+  /// individual) — same collection, same manual-review-in-console model,
+  /// same rule (`reports/{reportId}`'s create rule only checks
+  /// `reporterUid`, so no firestore.rules change was needed for this).
+  /// `reportedGroupId` is the only thing that distinguishes this from a
+  /// user report when you're reading it in the console.
+  Future<String> reportGroup({
+    required String groupId,
+    required String ruleViolated,
+    String? details,
+    File? proofFile,
+  }) async {
+    final reportRef = _db.collection('reports').doc();
+    String? proofPath;
+    if (proofFile != null) {
+      final ext = proofFile.path.split('.').last;
+      proofPath = await MediaService.uploadFile(
+        proofFile,
+        'media',
+        'report-proof/$_myUid/${reportRef.id}.$ext',
+      );
+    }
+    await reportRef.set({
+      'reporterUid': _myUid,
+      'reporterEmail': _auth.currentUser?.email,
+      'reportedGroupId': groupId,
+      'ruleViolated': ruleViolated,
+      'details': details,
+      'proofPath': proofPath,
+      'status': 'pending', // you flip this by hand in the console — see MODERATION_GUIDE.md
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    return reportRef.id;
+  }
+
   /// Feature: appeals. Same reasoning as [reportUser] for the attached
   /// email and the proof-upload path. [proofFile] is optional — a person
   /// appealing doesn't necessarily have anything to attach, unlike a
