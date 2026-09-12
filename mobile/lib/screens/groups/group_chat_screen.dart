@@ -834,11 +834,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               : _VideoBubble(path: message.mediaPath!, gallery: gallery, galleryIndex: galleryIndex);
     }
 
+    // Full theme rebuild, 2026-09-12 — bubbles get a subtle gradient
+    // instead of a flat fill (adds real depth without shouting for
+    // attention), a touch more corner rounding for a softer/friendlier
+    // shape, and a slightly more present shadow so bubbles read as
+    // sitting just above the background instead of flat against it.
     final radius = BorderRadius.only(
-      topLeft: const Radius.circular(18),
-      topRight: const Radius.circular(18),
-      bottomLeft: Radius.circular(mine ? 18 : 4),
-      bottomRight: Radius.circular(mine ? 4 : 18),
+      topLeft: const Radius.circular(20),
+      topRight: const Radius.circular(20),
+      bottomLeft: Radius.circular(mine ? 20 : 5),
+      bottomRight: Radius.circular(mine ? 5 : 20),
+    );
+    final bubbleGradient = LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: mine
+          ? [scheme.primary, Color.lerp(scheme.primary, Colors.black, 0.12)!]
+          : [scheme.surfaceContainerHigh, scheme.surfaceContainerHighest],
     );
 
     return GestureDetector(
@@ -850,9 +862,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 10),
           clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            color: mine ? scheme.primary : scheme.surfaceContainerHigh,
+            gradient: bubbleGradient,
             borderRadius: radius,
-            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 4, offset: const Offset(0, 1))],
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 10, offset: const Offset(0, 3))],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
