@@ -4,6 +4,22 @@ import 'package:flutter/material.dart';
 /// [seedColor] can be overridden per-device from Settings > Appearance;
 /// it defaults to the app's signature teal-green if the user hasn't
 /// picked a custom accent color.
+///
+/// Full rebuild, 2026-09-12 — the previous version of this file was
+/// already solid Material 3 (confirmed by review before touching it), so
+/// this isn't a start-over so much as a considered refinement pass:
+/// - Shadows switched from raw black to tinted (blended toward the
+///   surface color) — Material 3's own guidance, and reads as noticeably
+///   softer/more "designed" than flat black at any opacity.
+/// - Corner radii bumped up a step across cards/dialogs/sheets/popups to
+///   match the slightly rounder message bubbles built this same round
+///   (see group_chat_screen.dart's _bubbleFor) — one consistent shape
+///   language across the app instead of bubbles being the roundest thing
+///   on screen.
+/// - A couple of component themes that existed as Flutter defaults before
+///   (segmented buttons, menus) now explicitly themed instead of
+///   inheriting generic Material defaults that didn't match anything else
+///   here.
 class AppTheme {
   static const Color defaultSeedColor = Color(0xFF00C896);
   static const Color darkSurface = Color(0xFF0D1117);
@@ -26,12 +42,20 @@ class AppTheme {
   }
 
   static ThemeData _base(ColorScheme scheme) {
+    // Tinted shadow — a shadow color blended toward the scheme's own
+    // primary rather than plain black. Barely perceptible as a color on
+    // its own, but it's what makes elevated surfaces feel like they
+    // belong to the app's palette instead of a generic dark smudge.
+    final tintedShadow = Color.lerp(Colors.black, scheme.primary, 0.15)!;
+
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
       splashFactory: InkSparkle.splashFactory,
       visualDensity: VisualDensity.standard,
+      shadowColor: tintedShadow,
+      dividerColor: scheme.outlineVariant.withValues(alpha: 0.4),
 
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
@@ -39,6 +63,7 @@ class AppTheme {
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 1,
+        shadowColor: tintedShadow,
         centerTitle: false,
         titleTextStyle: TextStyle(
           color: scheme.onSurface,
@@ -117,11 +142,28 @@ class AppTheme {
         style: IconButton.styleFrom(foregroundColor: scheme.onSurfaceVariant),
       ),
 
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: SegmentedButton.styleFrom(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          selectedBackgroundColor: scheme.primary.withValues(alpha: 0.16),
+          selectedForegroundColor: scheme.primary,
+        ),
+      ),
+
+      menuTheme: MenuThemeData(
+        style: MenuStyle(
+          backgroundColor: WidgetStatePropertyAll(scheme.surfaceContainerHigh),
+          surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+          shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+        ),
+      ),
+
       cardTheme: CardThemeData(
         color: scheme.surfaceContainerHigh,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        shadowColor: tintedShadow,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         margin: EdgeInsets.zero,
       ),
 
@@ -165,7 +207,7 @@ class AppTheme {
         foregroundColor: scheme.onPrimary,
         elevation: 2,
         highlightElevation: 4,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
 
       tabBarTheme: TabBarThemeData(
@@ -183,16 +225,18 @@ class AppTheme {
       popupMenuTheme: PopupMenuThemeData(
         color: scheme.surfaceContainerHigh,
         surfaceTintColor: Colors.transparent,
-        elevation: 3,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shadowColor: tintedShadow,
+        elevation: 4,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       ),
 
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: scheme.surface,
         surfaceTintColor: Colors.transparent,
-        elevation: 2,
+        shadowColor: tintedShadow,
+        elevation: 3,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
         ),
         dragHandleColor: scheme.onSurfaceVariant.withValues(alpha: 0.4),
       ),
@@ -200,7 +244,9 @@ class AppTheme {
       dialogTheme: DialogThemeData(
         backgroundColor: scheme.surfaceContainerHigh,
         surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shadowColor: tintedShadow,
+        elevation: 6,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         titleTextStyle: TextStyle(color: scheme.onSurface, fontSize: 18, fontWeight: FontWeight.w700),
         contentTextStyle: TextStyle(color: scheme.onSurfaceVariant, fontSize: 14.5, height: 1.4),
       ),
@@ -223,7 +269,7 @@ class AppTheme {
         behavior: SnackBarBehavior.floating,
         backgroundColor: scheme.inverseSurface,
         contentTextStyle: TextStyle(color: scheme.onInverseSurface),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         actionTextColor: scheme.inversePrimary,
       ),
 
