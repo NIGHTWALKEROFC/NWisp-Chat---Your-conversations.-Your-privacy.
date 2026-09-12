@@ -104,7 +104,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     super.initState();
     // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
     // see ScreenshotGuardService. Released in dispose() below.
-    ScreenshotGuardService.acquire();
+    ScreenshotGuardService.acquire(conversationId: widget.conversationId);
     _checkChatLock();
     _conversationService.ensureConversation(otherUid: widget.peerUid);
     // BUGFIX: messageTtlHours/readReceiptsEnabled moved to the owner-only
@@ -133,7 +133,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   void dispose() {
-    ScreenshotGuardService.release();
+    ScreenshotGuardService.release(conversationId: widget.conversationId);
     _conversationService.setTyping(widget.conversationId, false);
     _convoSub?.cancel();
     _blockSub?.cancel();
@@ -1364,11 +1364,24 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Full theme rebuild, 2026-09-12 — matches the same treatment just
+    // applied to group_chat_screen.dart's bubbles: a touch more rounding
+    // (was 18/4, now 20/5), a deliberate darker-blend gradient instead of
+    // a flat-alpha one for "mine", and a new subtle gradient for
+    // "theirs" too (previously flat surfaceContainerHigh) so both chat
+    // surfaces in the app now share one consistent bubble language.
     final radius = BorderRadius.only(
-      topLeft: const Radius.circular(18),
-      topRight: const Radius.circular(18),
-      bottomLeft: Radius.circular(isMine ? 18 : 4),
-      bottomRight: Radius.circular(isMine ? 4 : 18),
+      topLeft: const Radius.circular(20),
+      topRight: const Radius.circular(20),
+      bottomLeft: Radius.circular(isMine ? 20 : 5),
+      bottomRight: Radius.circular(isMine ? 5 : 20),
+    );
+    final bubbleGradient = LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: isMine
+          ? [scheme.primary, Color.lerp(scheme.primary, Colors.black, 0.12)!]
+          : [scheme.surfaceContainerHigh, scheme.surfaceContainerHighest],
     );
 
     return Container(
@@ -1406,24 +1419,15 @@ class _MessageBubble extends StatelessWidget {
                     padding: const EdgeInsets.all(12),
                     constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
                     decoration: BoxDecoration(
-                      gradient: isMine
-                          ? LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [scheme.primary, scheme.primary.withValues(alpha: 0.82)],
-                            )
-                          : null,
-                      color: isMine ? null : scheme.surfaceContainerHigh,
+                      gradient: bubbleGradient,
                       borderRadius: radius,
-                      boxShadow: isMine
-                          ? [
-                              BoxShadow(
-                                color: scheme.primary.withValues(alpha: 0.25),
-                                blurRadius: 10,
-                                offset: const Offset(0, 3),
-                              ),
-                            ]
-                          : null,
+                      boxShadow: [
+                        BoxShadow(
+                          color: isMine ? scheme.primary.withValues(alpha: 0.25) : Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
