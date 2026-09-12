@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import '../services/moderation_service.dart';
-import 'settings/community_guidelines_screen.dart';
+import '../../services/moderation_service.dart';
+import '../settings/community_guidelines_screen.dart';
 
 /// Group security setting: "Report a group" — separate from
 /// ReportUserScreen (reporting an individual). Same flow, same
