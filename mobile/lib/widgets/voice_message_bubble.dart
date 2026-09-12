@@ -96,7 +96,11 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
                 child: Container(
                   width: 34,
                   height: 34,
-                  decoration: BoxDecoration(color: fg.withValues(alpha: 0.15), shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                  color: fg.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: fg.withValues(alpha: 0.18), width: 1),
+                ),
                   child: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: fg, size: 20),
                 ),
               );
