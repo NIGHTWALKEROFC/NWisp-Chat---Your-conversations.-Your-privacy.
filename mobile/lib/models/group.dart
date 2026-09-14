@@ -36,6 +36,16 @@ class Group {
   final bool readReceiptsEnabled; // default true — off means no "seen by" tracking group-wide
   final bool hideMemberListFromNonAdmins; // default false
 
+  /// Feature: "clear on exit" ephemeral view mode, group version.
+  /// Admin-only to turn on/off (enforced by firestore.rules — same
+  /// admin-only gate already covers every field on this whole document,
+  /// see GroupService.setEphemeralViewEnabled). Default false. When true,
+  /// each member's OWN device independently wipes ITS OWN local copy of
+  /// this one group's messages when THEIR OWN GroupChatScreen closes —
+  /// never a bulk clear of every member at once, and never anything
+  /// besides this one groupId. See GroupChatScreen.dispose().
+  final bool ephemeralViewEnabled;
+
   const Group({
     required this.id,
     required this.name,
@@ -50,6 +60,7 @@ class Group {
     this.mediaAutoDownload = true,
     this.readReceiptsEnabled = true,
     this.hideMemberListFromNonAdmins = false,
+    this.ephemeralViewEnabled = false,
   });
 
   factory Group.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -68,6 +79,7 @@ class Group {
       mediaAutoDownload: (data['mediaAutoDownload'] as bool?) ?? true,
       readReceiptsEnabled: (data['readReceiptsEnabled'] as bool?) ?? true,
       hideMemberListFromNonAdmins: (data['hideMemberListFromNonAdmins'] as bool?) ?? false,
+      ephemeralViewEnabled: (data['ephemeralViewEnabled'] as bool?) ?? false,
     );
   }
 
