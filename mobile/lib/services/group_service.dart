@@ -89,6 +89,13 @@ class GroupService {
   Future<void> setHideMemberListFromNonAdmins(String groupId, bool value) =>
       _ref(groupId).update({'hideMemberListFromNonAdmins': value});
 
+  /// Feature: "clear on exit" ephemeral view mode, group version.
+  /// Admin-only — enforced the same way as setOnlyAdminsCanSend above
+  /// (existing firestore.rules already gate writes to this whole
+  /// document to admins, so no rules change needed here either).
+  Future<void> setEphemeralViewEnabled(String groupId, bool value) =>
+      _ref(groupId).update({'ephemeralViewEnabled': value});
+
   /// One-shot (not a stream) lookups for MessageRelayService, which needs
   /// to check a group's setting once per incoming message/receipt rather
   /// than keep a live subscription open per group. Defaults match
