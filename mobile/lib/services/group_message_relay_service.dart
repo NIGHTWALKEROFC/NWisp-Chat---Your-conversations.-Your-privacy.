@@ -171,6 +171,7 @@ class GroupMessageRelayService {
     String? caption,
     int? durationMs,
     required int ttlHours,
+    bool isViewOnce = false,
   }) async {
     final myUid = _myUid;
     final clientId = _uuid.v4();
@@ -198,6 +199,7 @@ class GroupMessageRelayService {
       status: 'sending',
       createdAt: createdAt,
       expiresAt: _expiryFor(createdAt, ttlHours),
+      isViewOnce: isViewOnce,
     );
     await LocalMessageStore.savePendingMediaSend(
       clientId: clientId,
@@ -236,6 +238,7 @@ class GroupMessageRelayService {
       'extension': extension,
       if (caption != null && caption.isNotEmpty) 'caption': caption,
       if (durationMs != null) 'durationMs': durationMs,
+      if (isViewOnce) 'viewOnce': true,
     });
 
     final failures = <GroupMemberSendFailure>[];
@@ -325,6 +328,7 @@ class GroupMessageRelayService {
       'extension': pending.extension,
       if (message.text.isNotEmpty) 'caption': message.text,
       if (pending.durationMs != null) 'durationMs': pending.durationMs,
+      if (message.isViewOnce) 'viewOnce': true,
     });
 
     final failures = <GroupMemberSendFailure>[];
