@@ -33,4 +33,20 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_hasSeenOnboardingKey, value);
   }
+
+  /// Feature: separate groups and chats on the home screen. Off by
+  /// default — the chat list stays merged (chats and groups mixed
+  /// together by recency, the way it's always worked) unless someone
+  /// deliberately turns this on in Settings.
+  static const _separateGroupsAndChatsKey = 'separate_groups_and_chats';
+
+  static Future<bool> getSeparateGroupsAndChats() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_separateGroupsAndChatsKey) ?? false;
+  }
+
+  static Future<void> setSeparateGroupsAndChats(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_separateGroupsAndChatsKey, value);
+  }
 }
