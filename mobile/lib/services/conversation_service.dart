@@ -25,6 +25,7 @@ class ConversationService {
         'archivedBy': <String>[],
         'pinnedBy': <String>[],
         'chatTtlHours': null,
+        'ephemeralViewEnabled': false,
       });
     }
   }
@@ -82,6 +83,20 @@ class ConversationService {
   Future<void> setChatTtlHours(String conversationId, int? hours) {
     return _db.collection('conversations').doc(conversationId).update({'chatTtlHours': hours});
   }
+
+  /// Feature: "clear on exit" ephemeral view mode. Shared/visible to both
+  /// people (either can turn it on or off — there's no per-person owner
+  /// for a 1:1 chat the way group admin gates it), default false. This
+  /// flag only controls whether each device wipes ITS OWN local copy of
+  /// THIS ONE conversation when its chat screen closes — see
+  /// LocalMessageStore.clearConversation, called from
+  /// ChatDetailScreen.dispose(). Turning this on never sends anything to
+  /// the relay and never deletes anything on the other person's device.
+  Future<void> setEphemeralViewEnabled(String conversationId, bool value) {
+    return _db.collection('conversations').doc(conversationId).update({'ephemeralViewEnabled': value});
+  }
+
+  bool isEphemeralViewEnabled(Map<String, dynamic> data) => data['ephemeralViewEnabled'] == true;
 
   /// Short-lived typing flag — this is presence-style metadata, not message
   /// content, so it's fine to keep in Firestore.
