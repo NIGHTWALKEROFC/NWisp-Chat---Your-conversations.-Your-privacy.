@@ -34,7 +34,7 @@ class LocalMessageStore {
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 7,
+      version: 9,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -53,11 +53,15 @@ class LocalMessageStore {
             created_at INTEGER NOT NULL,
             expires_at INTEGER,
             edited_at INTEGER,
-            pending_media_meta TEXT
+            pending_media_meta TEXT,
+            is_view_once INTEGER NOT NULL DEFAULT 0,
+            view_once_consumed INTEGER NOT NULL DEFAULT 0,
+            starred INTEGER NOT NULL DEFAULT 0
           )
         ''');
         await db.execute('CREATE INDEX idx_conv ON messages(conversation_id, created_at)');
         await db.execute('CREATE INDEX idx_expiry ON messages(expires_at)');
+        await db.execute('CREATE INDEX idx_starred ON messages(starred)');
         await _createGroupMetaTable(db);
         await _createPendingResendTable(db);
         await _createReceiptsTable(db);
@@ -123,6 +127,24 @@ class LocalMessageStore {
         // downloadPendingMedia.
         if (oldVersion < 7) {
           await db.execute('ALTER TABLE messages ADD COLUMN pending_media_meta TEXT');
+        }
+        // v7 -> v8: adds `is_view_once` / `view_once_consumed` — feature:
+        // view-once media. See LocalMessage.isViewOnce/viewOnceConsumed
+        // and LocalMessageStore.consumeViewOnce. Existing rows default to
+        // 0/0 ("not view-once"), which is exactly right — no message sent
+        // before this feature existed was ever view-once.
+        if (oldVersion < 8) {
+          await db.execute('ALTER TABLE messages ADD COLUMN is_view_once INTEGER NOT NULL DEFAULT 0');
+          await db.execute('ALTER TABLE messages ADD COLUMN view_once_consumed INTEGER NOT NULL DEFAULT 0');
+        }
+        // v8 -> v9: adds `starred` — feature: starred/saved messages, a
+        // personal, device-local bookmark list (never synced, never
+        // visible to anyone else — see LocalMessage.starred's doc
+        // comment). Existing rows default to 0 ("not starred"), which is
+        // correct — nothing was starred before this feature existed.
+        if (oldVersion < 9) {
+          await db.execute('ALTER TABLE messages ADD COLUMN starred INTEGER NOT NULL DEFAULT 0');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_starred ON messages(starred)');
         }
       },
     );
@@ -305,6 +327,7 @@ class LocalMessageStore {
     required DateTime createdAt,
     DateTime? expiresAt,
     Map<String, dynamic>? pendingMediaMeta,
+    bool isViewOnce = false,
   }) async {
     final (encText, nonce) = await CryptoService.encryptLocal(text);
     String? encPendingMeta;
@@ -329,6 +352,9 @@ class LocalMessageStore {
       'expires_at': expiresAt?.millisecondsSinceEpoch,
       'edited_at': null,
       'pending_media_meta': encPendingMeta,
+      'is_view_once': isViewOnce ? 1 : 0,
+      'view_once_consumed': 0,
+      'starred': 0,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     final msg = LocalMessage(
@@ -345,6 +371,7 @@ class LocalMessageStore {
       createdAt: createdAt,
       expiresAt: expiresAt,
       hasPendingMedia: encPendingMeta != null,
+      isViewOnce: isViewOnce,
     );
     _notifyConversation(conversationId);
     _notifySummaries();
@@ -586,6 +613,99 @@ class LocalMessageStore {
     return all.where((m) => m.text.toLowerCase().contains(needle)).toList();
   }
 
+  /// Feature: global search across all chats. Same in-memory substring
+  /// approach as [searchConversation], just over every conversation
+  /// instead of one — still no server-side index (there's nothing for a
+  /// server to index; it never sees plaintext at all). Capped at 300
+  /// matches, most recent first, so a very broad query against years of
+  /// history can't stall the UI decrypting thousands of rows just to
+  /// throw most of them away unread.
+  static Future<List<LocalMessage>> searchAll(String query) async {
+    final needle = query.trim().toLowerCase();
+    if (needle.isEmpty) return [];
+    final rows = await _db!.query('messages', orderBy: 'created_at DESC', limit: 2000);
+    final results = <LocalMessage>[];
+    for (final r in rows) {
+      final msg = await _rowToMessage(r);
+      if (msg.text.toLowerCase().contains(needle)) {
+        results.add(msg);
+        if (results.length >= 300) break;
+      }
+    }
+    return results;
+  }
+
+  /// Feature: starred/saved messages. Device-local only — see
+  /// LocalMessage.starred's doc comment for why nothing here ever talks
+  /// to the relay or to Firestore.
+  static Future<void> toggleStar(String id) async {
+    final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return;
+    final currentlyStarred = (rows.first['starred'] as int? ?? 0) == 1;
+    await _db!.update('messages', {'starred': currentlyStarred ? 0 : 1}, where: 'id = ?', whereArgs: [id]);
+    _notifyConversation(rows.first['conversation_id'] as String);
+    _notifyStarred();
+  }
+
+  static Future<void> setStarredBulk(List<String> ids, bool starred) async {
+    if (ids.isEmpty) return;
+    final placeholders = List.filled(ids.length, '?').join(',');
+    await _db!.update('messages', {'starred': starred ? 1 : 0}, where: 'id IN ($placeholders)', whereArgs: ids);
+    final rows = await _db!.rawQuery('SELECT DISTINCT conversation_id FROM messages WHERE id IN ($placeholders)', ids);
+    for (final r in rows) {
+      _notifyConversation(r['conversation_id'] as String);
+    }
+    _notifyStarred();
+  }
+
+  static final _starredController = StreamController<List<LocalMessage>>.broadcast();
+
+  static Future<void> _notifyStarred() async {
+    if (_starredController.isClosed) return;
+    final rows = await _db!.query('messages', where: 'starred = 1', orderBy: 'created_at DESC');
+    final result = <LocalMessage>[];
+    for (final r in rows) {
+      result.add(await _rowToMessage(r));
+    }
+    _starredController.add(result);
+  }
+
+  static Stream<List<LocalMessage>> watchStarred() {
+    _notifyStarred();
+    return _starredController.stream;
+  }
+
+  /// Feature: "jump to unread" button. Called ONCE, right when a chat
+  /// screen opens, BEFORE [markConversationRead] has a chance to run for
+  /// this visit — the whole point is capturing what was unread the
+  /// moment this chat was opened, as a fixed target to scroll back to,
+  /// not a live "still unread right now" value that would change out
+  /// from under the button the instant the messages currently on screen
+  /// get marked read.
+  static Future<String?> getFirstUnreadId(String conversationId) async {
+    final rows = await _db!.query(
+      'messages',
+      columns: ['id'],
+      where: "conversation_id = ? AND is_mine = 0 AND status != 'read'",
+      whereArgs: [conversationId],
+      orderBy: 'created_at ASC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['id'] as String;
+  }
+
+  /// Feature: multi-select + bulk actions. Deletes several messages in
+  /// one pass — just [deleteMessage] called per id, kept as its own
+  /// method so callers (the bulk-delete confirmation dialog) only need
+  /// one call and one round of conversation/summary notifications
+  /// instead of one per message.
+  static Future<void> deleteMessages(List<String> ids) async {
+    for (final id in ids) {
+      await deleteMessage(id);
+    }
+  }
+
   static Future<void> deleteMessage(String id) async {
     final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
     if (rows.isEmpty) return;
@@ -599,6 +719,34 @@ class LocalMessageStore {
     await _db!.delete('pending_media_sends', where: 'client_id = ?', whereArgs: [id]);
     _notifyConversation(rows.first['conversation_id'] as String);
     _notifyGroupReceipts(rows.first['conversation_id'] as String);
+    _notifySummaries();
+    _notifyStarred();
+  }
+
+  /// Feature: view-once media. Called when the RECIPIENT closes the
+  /// full-screen viewer for a view-once photo/video (see
+  /// widgets/view_once_media_screen.dart) — permanently deletes the media
+  /// file from disk and clears media_path, and flips view_once_consumed
+  /// so it can never be opened again. No-op (and safe to call) if the
+  /// message isn't view-once, was already consumed, or has no media
+  /// (e.g. it was sent by ME — the sender's own copy is never consumed,
+  /// see ChatDetailScreen/GroupChatScreen, which only ever call this for
+  /// a message where isMine is false).
+  static Future<void> consumeViewOnce(String id) async {
+    final rows = await _db!.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    if ((row['is_view_once'] as int? ?? 0) != 1) return;
+    if ((row['view_once_consumed'] as int? ?? 0) == 1) return;
+    final mediaPath = row['media_path'] as String?;
+    await _db!.update(
+      'messages',
+      {'view_once_consumed': 1, 'media_path': null},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    await LocalMediaFiles.delete(mediaPath);
+    _notifyConversation(row['conversation_id'] as String);
     _notifySummaries();
   }
 
@@ -682,8 +830,20 @@ class LocalMessageStore {
       expiresAt: r['expires_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['expires_at'] as int) : null,
       editedAt: r['edited_at'] != null ? DateTime.fromMillisecondsSinceEpoch(r['edited_at'] as int) : null,
       hasPendingMedia: r['pending_media_meta'] != null,
+      isViewOnce: (r['is_view_once'] as int? ?? 0) == 1,
+      viewOnceConsumed: (r['view_once_consumed'] as int? ?? 0) == 1,
+      starred: (r['starred'] as int? ?? 0) == 1,
     );
   }
+
+  /// Feature: per-chat media/links browser. Thin public wrapper around
+  /// the same already-private [_loadConversation] load used for opening
+  /// a chat normally — the browser screen does its own client-side
+  /// filtering into Media / Voice / Links tabs from this one list rather
+  /// than three separate queries, since it's already the full
+  /// conversation and there's no meaningful cost difference for a single
+  /// chat's message count.
+  static Future<List<LocalMessage>> loadConversationForBrowsing(String conversationId) => _loadConversation(conversationId);
 
   static Future<List<LocalMessage>> _loadConversation(String conversationId) async {
     final rows = await _db!.query('messages', where: 'conversation_id = ?', whereArgs: [conversationId], orderBy: 'created_at ASC');
