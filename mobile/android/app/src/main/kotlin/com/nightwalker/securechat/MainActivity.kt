@@ -1,7 +1,7 @@
 package com.nightwalker.securechat
 
 import android.view.WindowManager
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -21,7 +21,13 @@ import io.flutter.plugin.common.MethodChannel
 /// group chat, fullscreen media viewers, the safety-number screen).
 /// Screens that were never asking for it (login, settings, etc.) are
 /// unaffected.
-class MainActivity : FlutterActivity() {
+// UPDATED for the biometric-unlock feature: local_auth's Android side needs
+// a FragmentActivity to show the native BiometricPrompt dialog — the plain
+// FlutterActivity this used to extend doesn't support it and biometric
+// prompts would silently fail/crash. FlutterFragmentActivity is Flutter's
+// own drop-in FragmentActivity subclass made for exactly this, so nothing
+// else about how this Activity behaves changes.
+class MainActivity : FlutterFragmentActivity() {
     private val channelName = "com.nightwalker.securechat/screenshot_guard"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
