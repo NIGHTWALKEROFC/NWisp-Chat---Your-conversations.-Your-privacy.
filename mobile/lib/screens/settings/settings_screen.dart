@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
+import '../../services/biometric_unlock_service.dart';
 import '../../services/settings_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import '../login_screen.dart';
+import '../security/duress_pin_setup_screen.dart';
 import '../security/pin_screen.dart';
 import 'chat_lock_setup_screen.dart';
 import 'paused_chats_screen.dart';
@@ -28,9 +30,14 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _authService = AuthService();
   bool _stayLoggedIn = true;
+  bool _separateGroupsAndChats = false;
   bool _lastSeenVisible = true;
   bool _readReceiptsEnabled = true;
   bool _appLockEnabled = false;
+  bool _biometricEnabled = false;
+  bool _biometricAvailable = false;
+  // Feature: auto-lock on idle. null = off (default).
+  int? _idleTimeoutMinutes;
   int _ttlHours = 0; // 0 = never auto-delete — the default; disappearing messages are opt-in
   String _username = '';
   String _email = '';
@@ -44,7 +51,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _load() async {
     final stay = await SettingsService.getStayLoggedIn();
+    final separateGroupsAndChats = await SettingsService.getSeparateGroupsAndChats();
     final appLock = await AppLockService.isEnabled();
+    final biometricEnabled = await AppLockService.isBiometricEnabled();
+    final biometricAvailable = await BiometricUnlockService.isAvailable();
+    final idleTimeoutMinutes = await AppLockService.getIdleTimeoutMinutes();
     final doc = await _authService.currentUserProfile();
     final data = doc.data() ?? {};
     // BUGFIX: lastSeenVisible/readReceiptsEnabled/messageTtlHours moved to
@@ -55,7 +66,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _stayLoggedIn = stay;
+      _separateGroupsAndChats = separateGroupsAndChats;
       _appLockEnabled = appLock;
+      _biometricEnabled = biometricEnabled;
+      _biometricAvailable = biometricAvailable;
+      _idleTimeoutMinutes = idleTimeoutMinutes;
       _username = (data['username'] as String?) ?? '';
       _email = _authService.currentUser?.email ?? '';
       _lastSeenVisible = (privateData['lastSeenVisible'] as bool?) ?? true;
@@ -100,8 +115,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       if (confirmed != true) return;
       await AppLockService.disable();
-      if (mounted) setState(() => _appLockEnabled = false);
+      if (mounted) setState(() {
+        _appLockEnabled = false;
+        // AppLockService.disable() already clears the stored biometric
+        // flag along with the PIN — mirror that here too so the toggle
+        // doesn't sit on screen showing "on" for a setting that no
+        // longer means anything without a PIN behind it.
+        _biometricEnabled = false;
+        // Same reasoning — idle auto-lock is meaningless without a PIN
+        // behind it, so clear the local UI state to match what
+        // AppLockService.disable() already wiped in storage.
+        _idleTimeoutMinutes = null;
+      });
     }
+  }
+
+  Future<void> _toggleBiometric(bool value) async {
+    await AppLockService.setBiometricEnabled(value);
+    if (mounted) setState(() => _biometricEnabled = value);
+  }
+
+  Future<void> _pickIdleTimeout() async {
+    // Sentinel: 0 means "Off" inside this dialog only, so a genuine
+    // cancel (tapping outside / back button, which SimpleDialog reports
+    // as a plain null) can be told apart from someone deliberately
+    // picking "Off" (which would otherwise ALSO come back as null, since
+    // "off" is stored as null in AppLockService — that collision would
+    // have meant tapping outside the dialog silently turned auto-lock
+    // off even if it was already set to e.g. 5 minutes).
+    const offSentinel = 0;
+    final options = <int, String>{
+      offSentinel: 'Off',
+      1: '1 minute',
+      2: '2 minutes',
+      5: '5 minutes',
+      15: '15 minutes',
+    };
+    final current = _idleTimeoutMinutes ?? offSentinel;
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Auto-lock after inactivity'),
+        children: options.entries.map((e) {
+          return SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, e.key),
+            child: Row(
+              children: [
+                Icon(current == e.key ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
+                const SizedBox(width: 12),
+                Text(e.value),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+    if (picked == null) return; // genuine cancel — leave the setting untouched
+    final minutes = picked == offSentinel ? null : picked;
+    await AppLockService.setIdleTimeoutMinutes(minutes);
+    if (mounted) setState(() => _idleTimeoutMinutes = minutes);
   }
 
   void _openTtlPicker() {
@@ -284,6 +356,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: _appLockEnabled,
                   onChanged: _toggleAppLock,
                 ),
+                if (_appLockEnabled && _biometricAvailable)
+                  SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.fingerprint),
+                    title: const Text('Unlock with biometrics'),
+                    subtitle: const Text('Face/fingerprint as a shortcut for your PIN — the PIN itself still always works too'),
+                    value: _biometricEnabled,
+                    onChanged: _toggleBiometric,
+                  ),
+                if (_appLockEnabled)
+                  ListTile(
+                    leading: const Icon(Icons.timer_outlined),
+                    title: const Text('Auto-lock after inactivity'),
+                    subtitle: Text(
+                      _idleTimeoutMinutes == null
+                          ? 'Off — only re-locks when you leave the app'
+                          : 'Locks after ${_idleTimeoutMinutes} minute${_idleTimeoutMinutes == 1 ? '' : 's'} of no activity, even if the app stays open',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _pickIdleTimeout,
+                  ),
+                if (_appLockEnabled)
+                  ListTile(
+                    leading: const Icon(Icons.privacy_tip_outlined),
+                    title: const Text('Panic PIN'),
+                    subtitle: const Text('A second PIN that opens a decoy screen instead of your real chats'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const DuressPinSetupScreen()),
+                    ),
+                  ),
                 ListTile(
                   leading: const Icon(Icons.visibility_off_outlined),
                   title: const Text('Chat hiding'),
@@ -319,6 +422,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: (v) async {
                     setState(() => _stayLoggedIn = v);
                     await SettingsService.setStayLoggedIn(v);
+                  },
+                ),
+                SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.call_split_outlined),
+                  title: const Text('Separate chats and groups'),
+                  subtitle: const Text('Show direct chats and groups as separate sections on the home screen instead of one merged list'),
+                  value: _separateGroupsAndChats,
+                  onChanged: (v) async {
+                    setState(() => _separateGroupsAndChats = v);
+                    await SettingsService.setSeparateGroupsAndChats(v);
                   },
                 ),
                 _SectionLabel('Support'),
