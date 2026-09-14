@@ -6,11 +6,11 @@ import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
-import '../../services/screenshot_settings_service.dart';
 import '../report_user_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import '../settings/chat_lock_setup_screen.dart';
+import 'chat_media_browser_screen.dart';
 
 const _chatTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never for THIS chat specifically, hours after that
 
@@ -395,6 +395,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           final muted = _conversationService.isMutedByMe(data);
           final archived = _conversationService.isArchivedByMe(data);
           final chatTtl = (data['chatTtlHours'] as num?)?.toInt();
+          final ephemeralViewEnabled = data['ephemeralViewEnabled'] == true;
 
           return ListView(
             children: [
@@ -488,30 +489,67 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                   );
                 },
               ),
-              FutureBuilder<bool?>(
-                future: ScreenshotSettingsService.getOverride(widget.conversationId),
-                builder: (context, overrideSnap) {
-                  return FutureBuilder<bool>(
-                    future: ScreenshotSettingsService.isGlobalEnabled(),
-                    builder: (context, globalSnap) {
-                      final override = overrideSnap.data;
-                      final global = globalSnap.data ?? true;
-                      final effective = override ?? global;
-                      return SwitchListTile.adaptive(
-                        secondary: const Icon(Icons.screenshot_outlined),
-                        title: const Text('Block screenshots'),
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: _moderationService.myProfileStream(),
+                builder: (context, profileSnapshot) {
+                  final data = profileSnapshot.data?.data();
+                  final globalContent = (data?['notificationPrivacyHideContentGlobal'] as bool?) ?? false;
+                  final contentPeers = List<String>.from(data?['notificationPrivacyHideContentPeers'] ?? []);
+                  final hideContentForThisChat = globalContent || contentPeers.contains(widget.peerUid);
+                  return SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.notifications_paused_outlined),
+                    title: const Text('Hide message preview'),
+                    subtitle: Text(
+                      globalContent
+                          ? 'On for every chat (set in Settings > Account security) — can\'t turn off just for this one'
+                          : hideContentForThisChat
+                              ? 'On for this chat — no "sent you a photo" text, just a generic alert'
+                              : 'Off for this chat',
+                    ),
+                    value: hideContentForThisChat,
+                    onChanged: globalContent ? null : (v) => _moderationService.setNotificationContentPrivacyForPeer(widget.peerUid, v),
+                  );
+                },
+              ),
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: _moderationService.myProfileStream(),
+                builder: (context, profileSnapshot) {
+                  final data = profileSnapshot.data?.data();
+                  final lastSeenGlobalOff = (data?['lastSeenVisible'] as bool?) == false;
+                  final readReceiptsGlobalOff = (data?['readReceiptsEnabled'] as bool?) == false;
+                  final lastSeenPeers = List<String>.from(data?['lastSeenHiddenPeers'] ?? []);
+                  final readReceiptPeers = List<String>.from(data?['readReceiptsDisabledPeers'] ?? []);
+                  final lastSeenHidden = lastSeenGlobalOff || lastSeenPeers.contains(widget.peerUid);
+                  final readReceiptsOff = readReceiptsGlobalOff || readReceiptPeers.contains(widget.peerUid);
+                  return Column(
+                    children: [
+                      SwitchListTile.adaptive(
+                        secondary: const Icon(Icons.visibility_off_outlined),
+                        title: const Text('Hide my last seen from them'),
                         subtitle: Text(
-                          override != null
-                              ? (override ? 'On for this chat (overrides your app default)' : 'Off for this chat (overrides your app default)')
-                              : (global ? 'On, following your app default' : 'Off, following your app default'),
+                          lastSeenGlobalOff
+                              ? "Already off for everyone (Settings > Account security) — can't turn off just for this one"
+                              : lastSeenHidden
+                                  ? "On — ${widget.peerUsername} can't see when you were last online or whether you're online now"
+                                  : 'Off for this chat',
                         ),
-                        value: effective,
-                        onChanged: (v) async {
-                          await ScreenshotSettingsService.setOverride(widget.conversationId, v == global ? null : v);
-                          if (mounted) setState(() {});
-                        },
-                      );
-                    },
+                        value: lastSeenHidden,
+                        onChanged: lastSeenGlobalOff ? null : (v) => _moderationService.setLastSeenHiddenForPeer(widget.peerUid, v),
+                      ),
+                      SwitchListTile.adaptive(
+                        secondary: const Icon(Icons.done_all),
+                        title: const Text('Hide read receipts from them'),
+                        subtitle: Text(
+                          readReceiptsGlobalOff
+                              ? "Already off for everyone (Settings > Account security) — can't turn off just for this one"
+                              : readReceiptsOff
+                                  ? "On — ${widget.peerUsername} won't see blue ticks when you've read their messages. What you see of theirs is up to their own setting, not this one"
+                                  : 'Off for this chat',
+                        ),
+                        value: readReceiptsOff,
+                        onChanged: readReceiptsGlobalOff ? null : (v) => _moderationService.setReadReceiptsDisabledForPeer(widget.peerUid, v),
+                      ),
+                    ],
                   );
                 },
               ),
@@ -523,12 +561,32 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ),
                 onTap: _pauseChat,
               ),
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.timer_off_outlined),
+                title: const Text('Clear on exit'),
+                subtitle: Text(
+                  ephemeralViewEnabled
+                      ? "On — closing this chat wipes everything in it from THIS device only. It comes back empty next time you open it, even if new messages arrived while you were out"
+                      : 'When on, leaving this chat clears it from your device — nothing is sent to ${widget.peerUsername} or deleted for them',
+                ),
+                value: ephemeralViewEnabled,
+                onChanged: (v) => _conversationService.setEphemeralViewEnabled(widget.conversationId, v),
+              ),
               ListTile(
                 leading: const Icon(Icons.timer_outlined),
                 title: const Text('Auto-delete messages'),
                 subtitle: Text(_ttlLabel(chatTtl)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _openTtlPicker(chatTtl),
+              ),
+              ListTile(
+                leading: const Icon(Icons.perm_media_outlined),
+                title: const Text('Media, links and voice messages'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => ChatMediaBrowserScreen(conversationId: widget.conversationId, title: widget.peerUsername)),
+                ),
               ),
               ListTile(
                 leading: Icon(Icons.delete_sweep_outlined, color: scheme.error),
