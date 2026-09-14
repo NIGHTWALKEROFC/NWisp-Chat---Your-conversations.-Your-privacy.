@@ -28,6 +28,30 @@ class LocalMessage {
   /// placeholder when this is true.
   final bool hasPendingMedia;
 
+  /// Feature: view-once media. True for a photo/video sent as
+  /// "view once" — the RECEIVER can open it exactly one time; after the
+  /// viewer is closed, [LocalMessageStore.consumeViewOnce] deletes the
+  /// file from disk and sets mediaPath back to null, and this flag stays
+  /// true forever as a record that the message WAS view-once (see
+  /// [viewOnceConsumed] for whether it's already been opened). The
+  /// SENDER's own copy is never auto-deleted this way — only the
+  /// recipient's — matching Signal/WhatsApp's own view-once behavior.
+  final bool isViewOnce;
+
+  /// Only meaningful when [isViewOnce] is true. False until the
+  /// recipient has opened it once; true afterward, at which point
+  /// mediaPath is null and the bubble shows a permanent "Opened"
+  /// placeholder instead of ever being viewable again.
+  final bool viewOnceConsumed;
+
+  /// Feature: starred/saved messages. Private to THIS device only — never
+  /// synced to the relay or visible to anyone else, unlike pinning (which
+  /// is a shared, visible-to-both conversation setting). A personal
+  /// bookmark list, same idea as starring in Gmail/WhatsApp. Toggled from
+  /// a message's long-press menu; browsed all together in
+  /// StarredMessagesScreen.
+  final bool starred;
+
   const LocalMessage({
     required this.id,
     required this.conversationId,
@@ -44,6 +68,9 @@ class LocalMessage {
     this.expiresAt,
     this.editedAt,
     this.hasPendingMedia = false,
+    this.isViewOnce = false,
+    this.viewOnceConsumed = false,
+    this.starred = false,
   });
 }
 
