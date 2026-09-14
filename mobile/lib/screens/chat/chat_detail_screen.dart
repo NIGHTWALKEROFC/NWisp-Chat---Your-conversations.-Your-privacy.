@@ -21,10 +21,13 @@ import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
 import '../../widgets/media_viewer_screen.dart';
+import '../../widgets/message_link_text.dart';
+import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import 'chat_search_screen.dart';
 import '../security/pin_screen.dart';
+import '../security/safety_number_screen.dart';
 import 'chat_settings_screen.dart';
 
 // Expanded quick-reaction set (was 6, now 12) — tapping the same emoji you
@@ -67,6 +70,18 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   bool _peerBlockedByMe = false;
   bool _sendingMedia = false;
 
+  // Feature: "clear on exit" ephemeral view mode (ConversationService.
+  // setEphemeralViewEnabled). Kept in sync with the conversation doc via
+  // _convoSub, same as _chatTtlOverride right below it. See dispose()
+  // for the actual clear — this field only tracks whether it's currently
+  // turned on.
+  bool _ephemeralViewEnabled = false;
+  // Feature: anti-tampering / MITM re-verification prompts. Checked once,
+  // proactively, when this chat is opened — see initState — independent
+  // of the existing reactive IdentityChangedException path that only
+  // fires when a SEND happens to need a brand-new session.
+  bool _identityChanged = false;
+
   // Feature: more 1:1 chat security settings — "Lock this chat" (see
   // ChatSettingsScreen). [_isChatLocked] just records whether THIS chat
   // is configured to require a PIN; [_chatUnlockedThisSession] is what
@@ -92,6 +107,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   final Map<String, GlobalKey> _bubbleKeys = {};
   List<LocalMessage> _messages = [];
 
+  // Feature: "jump to unread" button. Captured once, in initState, before
+  // this screen has a chance to mark anything read — see
+  // LocalMessageStore.getFirstUnreadId's own doc comment. Cleared once
+  // tapped (a one-shot indicator, not a live "still unread" tracker).
+  String? _firstUnreadId;
+
   int? _profileTtlHours;
   int? _chatTtlOverride;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
@@ -102,24 +123,43 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   @override
   void initState() {
     super.initState();
+    // Feature: "jump to unread" button. Fired first, before anything
+    // else in initState — best-effort race against markConversationRead
+    // (called from the message StreamBuilder in build(), not from here),
+    // to capture what was unread at the moment this screen opened.
+    LocalMessageStore.getFirstUnreadId(widget.conversationId).then((id) {
+      if (mounted) setState(() => _firstUnreadId = id);
+    });
     // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
     // see ScreenshotGuardService. Released in dispose() below.
-    ScreenshotGuardService.acquire(conversationId: widget.conversationId);
+    ScreenshotGuardService.acquire();
     _checkChatLock();
     _conversationService.ensureConversation(otherUid: widget.peerUid);
+    SignalSessionService.instance.hasUnverifiedIdentityChange(widget.peerUid).then((changed) {
+      if (mounted && changed) setState(() => _identityChanged = true);
+    });
     // BUGFIX: messageTtlHours/readReceiptsEnabled moved to the owner-only
     // users/{uid}/private/profile doc (see firestore.rules) — read from
     // there now instead of the public users/{uid} doc.
     AuthService().currentUserPrivateProfile().then((doc) {
       if (!mounted) return;
+      final data = doc.data();
+      final peerDisabled = List<String>.from(data?['readReceiptsDisabledPeers'] ?? []).contains(widget.peerUid);
       setState(() {
-        _profileTtlHours = (doc.data()?['messageTtlHours'] as num?)?.toInt();
-        _readReceiptsEnabled = (doc.data()?['readReceiptsEnabled'] as bool?) ?? true;
+        _profileTtlHours = (data?['messageTtlHours'] as num?)?.toInt();
+        // Feature: granular 1:1 read-receipt privacy — off if EITHER the
+        // global switch (Settings > Account security) is off, OR this
+        // specific peer is in readReceiptsDisabledPeers (set from this
+        // chat's own Chat Settings screen).
+        _readReceiptsEnabled = ((data?['readReceiptsEnabled'] as bool?) ?? true) && !peerDisabled;
       });
     });
     _convoSub = _conversationService.conversationStream(widget.conversationId).listen((doc) {
       if (!mounted) return;
-      setState(() => _chatTtlOverride = (doc.data()?['chatTtlHours'] as num?)?.toInt());
+      setState(() {
+        _chatTtlOverride = (doc.data()?['chatTtlHours'] as num?)?.toInt();
+        _ephemeralViewEnabled = doc.data()?['ephemeralViewEnabled'] == true;
+      });
     });
     _blockSub = _moderationService.myProfileStream().listen((doc) {
       if (!mounted) return;
@@ -133,8 +173,20 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   void dispose() {
-    ScreenshotGuardService.release(conversationId: widget.conversationId);
+    ScreenshotGuardService.release();
     _conversationService.setTyping(widget.conversationId, false);
+    // Feature: "clear on exit" ephemeral view mode. Fires exactly once,
+    // right as this exact conversationId's screen is actually leaving the
+    // widget tree (back gesture, back button, or any other pop) —
+    // NEVER on the app merely being backgrounded, since that pauses this
+    // screen without disposing it. Scoped to widget.conversationId only —
+    // this can never wipe any OTHER conversation, so re-entering any
+    // other chat afterward is completely unaffected. This is purely
+    // local: nothing is sent to the relay and the other person's device
+    // is never touched by this.
+    if (_ephemeralViewEnabled) {
+      LocalMessageStore.clearConversation(widget.conversationId);
+    }
     _convoSub?.cancel();
     _blockSub?.cancel();
     _textController.dispose();
@@ -399,10 +451,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       onGalleryPhoto: () => _pickAndSendImage(ImageSource.gallery),
       onCameraVideo: () => _pickAndSendVideo(ImageSource.camera),
       onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
+      onCameraPhotoViewOnce: () => _pickAndSendImage(ImageSource.camera, viewOnce: true),
+      onGalleryPhotoViewOnce: () => _pickAndSendImage(ImageSource.gallery, viewOnce: true),
+      onCameraVideoViewOnce: () => _pickAndSendVideo(ImageSource.camera, viewOnce: true),
+      onGalleryVideoViewOnce: () => _pickAndSendVideo(ImageSource.gallery, viewOnce: true),
     );
   }
 
-  Future<void> _pickAndSendImage(ImageSource source) async {
+  Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
     final picked = await ImagePicker().pickImage(source: source, imageQuality: 100);
     if (picked == null) return;
     await _sendMedia(
@@ -410,10 +466,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       messageType: 'image',
       mime: 'image/jpeg',
       compress: (file) => MediaCompressionService.compressImage(file),
+      viewOnce: viewOnce,
     );
   }
 
-  Future<void> _pickAndSendVideo(ImageSource source) async {
+  Future<void> _pickAndSendVideo(ImageSource source, {bool viewOnce = false}) async {
     // Cap recording/selection length at 2 minutes — a longer clip is very
     // unlikely to compress under the 5MB cap at any watchable quality, so
     // it's better to stop the user before they wait through a compression
@@ -425,6 +482,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       messageType: 'video',
       mime: 'video/mp4',
       compress: (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync(),
+      viewOnce: viewOnce,
     );
   }
 
@@ -433,6 +491,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     required String messageType,
     required String mime,
     required Future<List<int>> Function(File) compress,
+    bool viewOnce = false,
   }) async {
     if (_myUid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -451,6 +510,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             extension: messageType == 'image' ? 'jpg' : 'mp4',
             mime: mime,
             ttlHours: _effectiveTtlHours,
+            isViewOnce: viewOnce,
           );
       try {
         await attemptSend();
@@ -713,6 +773,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
   }
 
+  /// Feature: starred/saved messages, bulk version — works for any
+  /// number selected, unlike Reply/React/Edit/Pin above which only make
+  /// sense for exactly one message at a time. If the selection is a mix
+  /// of already-starred and not-yet-starred messages, this stars all of
+  /// them rather than trying to guess a toggle direction from a mixed
+  /// state.
+  Future<void> _starSelected() async {
+    final ids = _selectedIds.toList();
+    final allAlreadyStarred = _messages.where((m) => ids.contains(m.id)).every((m) => m.starred);
+    await LocalMessageStore.setStarredBulk(ids, !allAlreadyStarred);
+    if (mounted) setState(() => _selectedIds.clear());
+  }
+
   void _copySelected() {
     final ordered = _messages.where((m) => _selectedIds.contains(m.id)).toList()
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
@@ -781,6 +854,16 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: _selectedIds.isEmpty ? _buildNormalAppBar(scheme) : _buildSelectionAppBar(scheme),
+      floatingActionButton: _firstUnreadId == null
+          ? null
+          : FloatingActionButton.small(
+              tooltip: 'Jump to unread',
+              onPressed: () {
+                _jumpToMessage(_firstUnreadId!);
+                setState(() => _firstUnreadId = null);
+              },
+              child: const Icon(Icons.arrow_downward),
+            ),
       body: Stack(
         children: [
           Positioned.fill(
@@ -789,6 +872,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           Column(
             children: [
               if (_pinnedIds.isNotEmpty) _buildPinnedBanner(scheme),
+              if (_identityChanged) _buildIdentityChangedBanner(scheme),
               if (_effectiveTtlHours > 0)
                 Container(
                   width: double.infinity,
@@ -876,12 +960,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             pinned: _pinnedIds.contains(msg.id),
                             selected: _selectedIds.contains(msg.id),
                             edited: msg.editedAt != null,
+                            isViewOnce: msg.isViewOnce,
+                            viewOnceConsumed: msg.viewOnceConsumed,
                             mediaGallery: messages
-                                .where((m) => m.mediaPath != null && (m.messageType == 'image' || m.messageType == 'video'))
+                                .where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video'))
                                 .map((m) => MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video'))
                                 .toList(),
                             mediaGalleryIndex: messages
-                                .where((m) => m.mediaPath != null && (m.messageType == 'image' || m.messageType == 'video'))
+                                .where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video'))
                                 .toList()
                                 .indexWhere((m) => m.id == msg.id),
                             onLongPress: () => _toggleSelect(msg.id),
@@ -1071,6 +1157,68 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     );
   }
 
+  /// Feature: anti-tampering / MITM re-verification prompts. Deliberately
+  /// no silent "dismiss" — the two actions either resolve the mismatch
+  /// (Trust) or take the person somewhere that helps them resolve it out
+  /// of band (Verify safety number), matching how Signal treats this:
+  /// a real identity-key change is exactly the class of thing that
+  /// shouldn't be easy to wave away without looking at it.
+  Widget _buildIdentityChangedBanner(ColorScheme scheme) {
+    return Material(
+      color: scheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Icon(Icons.gpp_maybe_outlined, size: 18, color: scheme.onErrorContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                "${widget.peerUsername}'s security code changed",
+                style: TextStyle(fontSize: 12.5, color: scheme.onErrorContainer),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => SafetyNumberScreen(peerUid: widget.peerUid, peerUsername: widget.peerUsername)),
+              ),
+              child: const Text('Verify'),
+            ),
+            TextButton(onPressed: _trustNewIdentityFromBanner, child: const Text('Trust')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _trustNewIdentityFromBanner() async {
+    final trust = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Trust new security code?'),
+        content: Text(
+          "This usually just means ${widget.peerUsername} reinstalled the app or got a new device. "
+          "If you're not sure, verify the new safety number with them directly first instead.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Trust')),
+        ],
+      ),
+    );
+    if (trust != true) return;
+    try {
+      await SignalSessionService.instance.acceptChangedIdentityAndRetry(widget.peerUid);
+      if (mounted) setState(() => _identityChanged = false);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't confirm the new key — please try again.")),
+      );
+    }
+  }
+
   Widget _buildPinnedBanner(ColorScheme scheme) {
     final index = _pinnedBannerIndex.clamp(0, _pinnedIds.length - 1);
     // Most-recently-pinned first, like WhatsApp/Telegram's pinned banner.
@@ -1258,6 +1406,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             onPressed: _pinSelected,
           ),
         IconButton(icon: const Icon(Icons.copy_outlined), tooltip: 'Copy', onPressed: _copySelected),
+        IconButton(
+          icon: Icon(single && _messages.any((m) => m.id == _selectedIds.first && m.starred) ? Icons.star : Icons.star_border),
+          tooltip: 'Star',
+          onPressed: _starSelected,
+        ),
         IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: _deleteSelectedFlow),
       ],
     );
@@ -1317,6 +1470,8 @@ class _MessageBubble extends StatelessWidget {
   final bool pinned;
   final bool selected;
   final bool edited;
+  final bool isViewOnce;
+  final bool viewOnceConsumed;
   final String id;
   final List<MediaViewerItem> mediaGallery;
   final int mediaGalleryIndex;
@@ -1340,6 +1495,8 @@ class _MessageBubble extends StatelessWidget {
     required this.pinned,
     required this.selected,
     this.edited = false,
+    this.isViewOnce = false,
+    this.viewOnceConsumed = false,
     this.mediaGallery = const [],
     this.mediaGalleryIndex = -1,
     required this.onLongPress,
@@ -1451,7 +1608,17 @@ class _MessageBubble extends StatelessWidget {
                               ),
                             ),
                           ),
-                        if (messageType == 'image' && mediaPath != null)
+                        if (messageType == 'image' && isViewOnce)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _ViewOnceBubbleContent(id: id, path: mediaPath, isVideo: false, isMine: isMine, consumed: viewOnceConsumed),
+                          )
+                        else if (messageType == 'video' && isViewOnce)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _ViewOnceBubbleContent(id: id, path: mediaPath, isVideo: true, isMine: isMine, consumed: viewOnceConsumed),
+                          )
+                        else if (messageType == 'image' && mediaPath != null)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 6),
                             child: _ImageBubbleContent(path: mediaPath!, gallery: mediaGallery, galleryIndex: mediaGalleryIndex),
@@ -1471,7 +1638,17 @@ class _MessageBubble extends StatelessWidget {
                             text: TextSpan(
                               style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
                               children: [
-                                TextSpan(text: text),
+                                // Feature: in-app scam/phishing link warning — any
+                                // URL inside this message becomes a tappable span
+                                // that shows the real domain (and a heuristic
+                                // warning if it looks off) before ever opening it.
+                                // See widgets/message_link_text.dart.
+                                ...linkifySpan(
+                                  context,
+                                  text,
+                                  TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
+                                  linkColor: isMine ? Colors.white : scheme.primary,
+                                ),
                                 if (edited)
                                   TextSpan(
                                     text: '  (edited)',
@@ -1668,6 +1845,116 @@ class _StatusIndicator extends StatelessWidget {
       status == 'read' || status == 'delivered' ? Icons.done_all : Icons.done,
       size: 14,
       color: status == 'read' ? Colors.lightBlueAccent : fg.withValues(alpha: 0.75),
+    );
+  }
+}
+
+/// Feature: view-once media bubble. Three distinct states:
+///   - Sent by ME, not yet opened by them: shows the actual thumbnail
+///     (I can always see my own send) with a small "1" badge so it's
+///     visually distinct from a normal photo/video I sent.
+///   - Received, not yet opened: a tappable placeholder — no thumbnail
+///     preview at all, matching Signal/WhatsApp (showing a preview would
+///     defeat the "view once" privacy promise). Tapping opens
+///     ViewOnceMediaScreen, which deletes the file the moment it's closed.
+///   - Received AND already opened ([consumed]): a permanent, non-
+///     interactive "Opened" placeholder — [path] is null at this point
+///     (LocalMessageStore.consumeViewOnce already deleted the file), so
+///     there is nothing left to show or tap into.
+class _ViewOnceBubbleContent extends StatelessWidget {
+  final String id;
+  final String? path;
+  final bool isVideo;
+  final bool isMine;
+  final bool consumed;
+  const _ViewOnceBubbleContent({
+    required this.id,
+    required this.path,
+    required this.isVideo,
+    required this.isMine,
+    required this.consumed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (isMine && path != null) {
+      // My own copy is never consumed — show it like a normal bubble,
+      // just with a badge marking it as view-once for the other person.
+      return Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: isVideo
+                ? Container(width: 220, height: 160, color: Colors.black87, alignment: Alignment.center, child: const Icon(Icons.play_circle_fill, color: Colors.white, size: 52))
+                : ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 240, minWidth: 160),
+                    child: Image.file(File(path!), fit: BoxFit.cover),
+                  ),
+          ),
+          Positioned(
+            top: 6,
+            left: 6,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.filter_1, color: Colors.white, size: 12),
+                  SizedBox(width: 2),
+                  Text('View once', style: TextStyle(color: Colors.white, fontSize: 10)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    if (consumed || path == null) {
+      return Container(
+        width: 200,
+        height: 60,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.black12,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.visibility_off_outlined, size: 18, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            const SizedBox(width: 10),
+            Text(isVideo ? 'Video · Opened' : 'Photo · Opened', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+          ],
+        ),
+      );
+    }
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => ViewOnceMediaScreen(messageId: id, path: path!, isVideo: isVideo)),
+        );
+      },
+      child: Container(
+        width: 200,
+        height: 90,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.primaryContainer,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.remove_red_eye_outlined, color: Theme.of(context).colorScheme.onPrimaryContainer),
+            const SizedBox(height: 4),
+            Text(
+              isVideo ? 'Tap to view video once' : 'Tap to view photo once',
+              style: TextStyle(color: Theme.of(context).colorScheme.onPrimaryContainer, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
