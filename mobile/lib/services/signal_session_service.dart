@@ -312,6 +312,36 @@ class SignalSessionService {
     return b64ToBytes(data['identityKey'] as String);
   }
 
+  /// Feature: anti-tampering / MITM re-verification prompts. A pure,
+  /// read-only comparison — pins nothing, trusts nothing, sends nothing.
+  /// Returns true only when BOTH are true: (a) this device has already
+  /// pinned a session for [uid] at some point (if there's no session
+  /// yet, there's nothing to have "changed" from), and (b) the key
+  /// currently published live for them no longer matches what's pinned.
+  /// Safe to call proactively and often — opening a chat, opening the
+  /// chat list, the app coming to the foreground — since it never
+  /// touches the actual Double Ratchet session state the way encrypting/
+  /// decrypting a real message does. The existing reactive path
+  /// (IdentityChangedException, thrown from _ensureSession only when an
+  /// actual SEND needs a brand-new session) still exists unchanged
+  /// alongside this — this is what lets the warning show up BEFORE that
+  /// point, e.g. the moment a chat is opened, rather than only after a
+  /// send happens to fail.
+  Future<bool> hasUnverifiedIdentityChange(String uid) async {
+    final pinned = await _store.getIdentity(_addressFor(uid));
+    if (pinned == null) return false;
+    final bundleDoc = await _bundleRef(uid).get();
+    final data = bundleDoc.data();
+    if (data == null) return false;
+    final liveKeyBytes = b64ToBytes(data['identityKey'] as String);
+    final pinnedBytes = pinned.serialize();
+    if (pinnedBytes.length != liveKeyBytes.length) return true;
+    for (var i = 0; i < pinnedBytes.length; i++) {
+      if (pinnedBytes[i] != liveKeyBytes[i]) return true;
+    }
+    return false;
+  }
+
   String _myUidOrThrow() {
     final uid = _currentUid;
     if (uid == null) throw StateError('Not signed in.');
