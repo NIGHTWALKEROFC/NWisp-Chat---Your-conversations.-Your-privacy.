@@ -4,11 +4,14 @@ import '../main.dart';
 import '../services/account_lifecycle_service.dart';
 import '../services/app_lock_service.dart';
 import '../services/auth_service.dart';
+import '../services/biometric_unlock_service.dart';
 import '../services/device_session_service.dart';
+import '../services/duress_pin_service.dart';
 import '../services/presence_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/contact_developer_sheet.dart';
 import 'chat_list_screen.dart';
+import 'decoy_home_screen.dart';
 import 'login_screen.dart';
 import 'onboarding_screen.dart';
 import 'reactivate_account_screen.dart';
@@ -200,6 +203,43 @@ class _LockGate extends StatefulWidget {
 class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   late Future<bool> _needsUnlock = AppLockService.isEnabled();
   bool _unlocked = false;
+  // Feature: duress/panic PIN — a THIRD state alongside locked/unlocked.
+  // When true, the decoy screen renders instead of widget.child, even
+  // though _unlocked is also true (entering the panic PIN still "passes"
+  // the lock screen — it just leads somewhere fake).
+  bool _duress = false;
+
+  // Feature: auto-lock on idle. Separate from the backgrounding re-lock
+  // above — this fires even while the app stays in the FOREGROUND, after
+  // AppLockService.getIdleTimeoutMinutes() of no touch input. Off by
+  // default (that getter returns null), so nothing changes for anyone
+  // who hasn't turned this on in Settings.
+  Timer? _idleTimer;
+
+  Future<void> _scheduleIdleTimer() async {
+    _idleTimer?.cancel();
+    if (!_unlocked) return;
+    final minutes = await AppLockService.getIdleTimeoutMinutes();
+    if (minutes == null || !mounted || !_unlocked) return;
+    _idleTimer = Timer(Duration(minutes: minutes), _onIdleTimeout);
+  }
+
+  void _onIdleTimeout() {
+    if (!mounted) return;
+    setState(() {
+      _unlocked = false;
+      _duress = false;
+      _needsUnlock = AppLockService.isEnabled();
+    });
+  }
+
+  /// Bound to every touch anywhere in the unlocked app (see the
+  /// Listener wrapping widget.child/DecoyHomeScreen in build() below) —
+  /// any tap, scroll, or drag pushes the idle clock back out, the same
+  /// way a phone's own screen-timeout resets on touch.
+  void _onUserActivity() {
+    if (_unlocked) _scheduleIdleTimer();
+  }
 
   @override
   void initState() {
@@ -210,6 +250,7 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _idleTimer?.cancel();
     super.dispose();
   }
 
@@ -224,8 +265,10 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
     // security-focused app: anyone who picked up an already-open,
     // backgrounded phone would see every chat with no prompt at all.
     if (state == AppLifecycleState.paused && _unlocked) {
+      _idleTimer?.cancel();
       setState(() {
         _unlocked = false;
+        _duress = false;
         // Re-check in case app lock was just turned off in Settings —
         // don't force a PIN prompt for someone who deliberately disabled it.
         _needsUnlock = AppLockService.isEnabled();
@@ -242,8 +285,26 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         final locked = snapshot.data! && !_unlocked;
-        if (!locked) return widget.child;
-        return _PinGateScreen(onUnlocked: () => setState(() => _unlocked = true));
+        if (locked) {
+          return _PinGateScreen(
+            onUnlocked: () {
+              setState(() => _unlocked = true);
+              _scheduleIdleTimer();
+            },
+            onDuressUnlocked: () {
+              setState(() {
+                _unlocked = true;
+                _duress = true;
+              });
+              _scheduleIdleTimer();
+            },
+          );
+        }
+        return Listener(
+          onPointerDown: (_) => _onUserActivity(),
+          behavior: HitTestBehavior.translucent,
+          child: _duress ? const DecoyHomeScreen() : widget.child,
+        );
       },
     );
   }
@@ -251,7 +312,8 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
 
 class _PinGateScreen extends StatefulWidget {
   final VoidCallback onUnlocked;
-  const _PinGateScreen({required this.onUnlocked});
+  final VoidCallback onDuressUnlocked;
+  const _PinGateScreen({required this.onUnlocked, required this.onDuressUnlocked});
 
   @override
   State<_PinGateScreen> createState() => _PinGateScreenState();
@@ -262,6 +324,12 @@ class _PinGateScreenState extends State<_PinGateScreen> {
   final _pinController = TextEditingController();
   String? _error;
   String? _hint;
+  // Feature: biometric unlock for the app-wide PIN. _biometricReady only
+  // controls whether the fingerprint button/auto-prompt shows at all —
+  // the PIN field above it is NEVER removed or hidden, so a failed/
+  // cancelled/unavailable biometric check always still has the normal
+  // PIN entry sitting right there as the fallback.
+  bool _biometricReady = false;
 
   @override
   void initState() {
@@ -269,16 +337,51 @@ class _PinGateScreenState extends State<_PinGateScreen> {
     AppLockService.getHint().then((h) {
       if (mounted) setState(() => _hint = h);
     });
+    _maybeOfferBiometric();
+  }
+
+  Future<void> _maybeOfferBiometric() async {
+    final enabled = await AppLockService.isBiometricEnabled();
+    if (!enabled) return;
+    final available = await BiometricUnlockService.isAvailable();
+    if (!mounted || !available) return;
+    setState(() => _biometricReady = true);
+    // Auto-prompt once as soon as this screen appears — the person
+    // almost always wants biometric first, not to have to tap a button
+    // for it every single time they reopen the app.
+    _tryBiometric();
+  }
+
+  Future<void> _tryBiometric() async {
+    final ok = await BiometricUnlockService.authenticate();
+    if (!mounted) return;
+    if (ok) {
+      widget.onUnlocked();
+    }
+    // On failure/cancel: deliberately do nothing but leave the PIN field
+    // exactly as it was — no error text, since "I chose not to use
+    // fingerprint right now" isn't actually an error.
   }
 
   Future<void> _submit() async {
-    final ok = await AppLockService.verify(_pinController.text.trim());
+    final entered = _pinController.text.trim();
+    final ok = await AppLockService.verify(entered);
     if (ok) {
       widget.onUnlocked();
-    } else {
-      setState(() => _error = 'Incorrect PIN');
-      _pinController.clear();
+      return;
     }
+    // Feature: duress/panic PIN. Checked only after the REAL PIN fails
+    // to match — so a correct real PIN always wins even if someone had
+    // also, at some point, set an identical-looking panic PIN (which
+    // DuressPinService.setPin already refuses to allow in the first
+    // place, but this ordering is a second, free layer of the same
+    // protection).
+    if (await DuressPinService.verify(entered)) {
+      widget.onDuressUnlocked();
+      return;
+    }
+    setState(() => _error = 'Incorrect PIN');
+    _pinController.clear();
   }
 
   Future<void> _forgotPin() async {
@@ -388,6 +491,15 @@ class _PinGateScreenState extends State<_PinGateScreen> {
                   ),
                 const SizedBox(height: 20),
                 ElevatedButton(onPressed: _submit, child: const Text('Unlock')),
+                if (_biometricReady)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: OutlinedButton.icon(
+                      onPressed: _tryBiometric,
+                      icon: const Icon(Icons.fingerprint),
+                      label: const Text('Use biometrics'),
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 TextButton(onPressed: _forgotPin, child: const Text('Forgot PIN?')),
                 TextButton.icon(
