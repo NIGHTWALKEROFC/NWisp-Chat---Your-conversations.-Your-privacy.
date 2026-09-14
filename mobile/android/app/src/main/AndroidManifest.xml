@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- Feature: biometric unlock for the app-wide PIN (Face ID/fingerprint
+         on Android, via the local_auth plugin). USE_BIOMETRIC is the
+         modern replacement for the old USE_FINGERPRINT permission and
+         covers face/iris unlock too on devices that support it. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
 
     <application
         android:label="Secure Chat"
