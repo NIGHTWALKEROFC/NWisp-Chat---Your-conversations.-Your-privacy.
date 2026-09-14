@@ -74,14 +74,19 @@ service cloud.firestore {
       // Presence (online / lastSeen) is the one piece of "private" data
       // that legitimately needs to be visible to OTHER people some of the
       // time - that's the whole point of a last-seen feature. This rule
-      // enforces, server-side, exactly the same two conditions the old
+      // enforces, server-side, exactly the same conditions the old
       // client-only check tried to enforce: the owner has last-seen
-      // sharing turned on, AND the reader isn't someone the owner blocked.
+      // sharing turned on globally, the reader isn't someone the owner
+      // blocked, AND (feature: granular 1:1 presence/read-receipt
+      // privacy) the reader isn't someone the owner specifically hid
+      // their last-seen from via lastSeenHiddenPeers, even with the
+      // global switch left on for everyone else.
       match /private/presence {
         allow read: if isOwner(uid) || (
           isSignedIn() &&
           get(/databases/$(database)/documents/users/$(uid)/private/profile).data.lastSeenVisible == true &&
-          !(request.auth.uid in get(/databases/$(database)/documents/users/$(uid)/private/profile).data.blockedUsers)
+          !(request.auth.uid in get(/databases/$(database)/documents/users/$(uid)/private/profile).data.blockedUsers) &&
+          !(request.auth.uid in get(/databases/$(database)/documents/users/$(uid)/private/profile).data.get('lastSeenHiddenPeers', []))
         );
         allow write: if isOwner(uid);
       }
