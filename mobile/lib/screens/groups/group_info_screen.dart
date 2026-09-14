@@ -7,8 +7,8 @@ import '../../models/group.dart';
 import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
 import '../../services/media_service.dart';
-import '../../services/screenshot_settings_service.dart';
 import '../chat_list_screen.dart';
+import '../chat/chat_media_browser_screen.dart';
 import 'report_group_screen.dart';
 import '../security/safety_number_screen.dart';
 
@@ -426,39 +426,33 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 value: group.hideMemberListFromNonAdmins,
                 onChanged: amAdmin ? (v) => GroupService.instance.setHideMemberListFromNonAdmins(widget.groupId, v) : null,
               ),
-              // Screenshot restriction, made optional 2026-09-11 — default
-              // follows the app-wide setting (Settings > Account security)
-              // unless overridden here for just this group. Any member can
-              // set this for themselves — it's a per-DEVICE protection
-              // setting, not something that needs to be the same for
-              // everyone in the group, so it's not admin-gated like the
-              // settings above.
-              FutureBuilder<bool?>(
-                future: ScreenshotSettingsService.getOverride(widget.groupId),
-                builder: (context, overrideSnap) {
-                  return FutureBuilder<bool>(
-                    future: ScreenshotSettingsService.isGlobalEnabled(),
-                    builder: (context, globalSnap) {
-                      final override = overrideSnap.data;
-                      final global = globalSnap.data ?? true;
-                      final effective = override ?? global;
-                      return SwitchListTile.adaptive(
-                        secondary: const Icon(Icons.screenshot_outlined),
-                        title: const Text('Block screenshots'),
-                        subtitle: Text(
-                          override != null
-                              ? (override ? 'On for this group (overrides your app default)' : 'Off for this group (overrides your app default)')
-                              : (global ? 'On, following your app default' : 'Off, following your app default'),
-                        ),
-                        value: effective,
-                        onChanged: (v) async {
-                          await ScreenshotSettingsService.setOverride(widget.groupId, v == global ? null : v);
-                          if (mounted) setState(() {});
-                        },
-                      );
-                    },
-                  );
-                },
+              // Feature: "clear on exit" ephemeral view mode, group
+              // version. Admin-only (isGroupAdmin() already covers every
+              // field on this document — no rules change needed). Turning
+              // it on doesn't clear anything by itself; each member's
+              // device only wipes its own local copy the next time THEIR
+              // OWN GroupChatScreen closes — see GroupChatScreen.dispose().
+              SwitchListTile.adaptive(
+                secondary: const Icon(Icons.timer_off_outlined),
+                title: const Text('Clear on exit'),
+                subtitle: Text(
+                  group.ephemeralViewEnabled
+                      ? "On — leaving this group wipes it from that member's own device only, even right after messages come in"
+                      : amAdmin
+                          ? 'Each member\'s device clears its own local copy of this group every time they leave it'
+                          : 'Off — only a group admin can turn this on',
+                ),
+                value: group.ephemeralViewEnabled,
+                onChanged: amAdmin ? (v) => GroupService.instance.setEphemeralViewEnabled(widget.groupId, v) : null,
+              ),
+              ListTile(
+                leading: const Icon(Icons.perm_media_outlined),
+                title: const Text('Media, links and voice messages'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => ChatMediaBrowserScreen(conversationId: widget.groupId, title: group.name)),
+                ),
               ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
