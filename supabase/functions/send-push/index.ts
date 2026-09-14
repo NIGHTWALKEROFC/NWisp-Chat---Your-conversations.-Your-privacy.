@@ -166,6 +166,20 @@ Deno.serve(async (req) => {
       record.message_type === "video" ? "Sent you a video" :
       "Sent you a voice message";
 
+    // Feature: full notification content suppression. A STRICTER, separate
+    // pair of flags from the name-hiding ones above
+    // (notificationPrivacyHideContentGlobal / ...HideContentPeers, same
+    // global-or-per-sender shape) — when on, even bodyText's fairly
+    // generic "Sent you a photo" is replaced with something that reveals
+    // nothing at all about what arrived, not even its type. The title
+    // becomes the app's own name rather than "New message", so a locked
+    // screen shows a notification indistinguishable from any other app's.
+    const notificationPrivacyHideContentGlobal = (recipientProfile?.notificationPrivacyHideContentGlobal as boolean | undefined) ?? false;
+    const notificationPrivacyHideContentPeers = (recipientProfile?.notificationPrivacyHideContentPeers as string[] | undefined) ?? [];
+    const hideContent = notificationPrivacyHideContentGlobal || notificationPrivacyHideContentPeers.includes(String(record.sender_uid ?? ""));
+    const finalTitle = hideContent ? "NWisp" : displayName;
+    const finalBody = hideContent ? "New notification" : bodyText;
+
     const results = await Promise.all(
       tokens.map(async (token) => {
         const res = await fetch(`https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`, {
@@ -174,7 +188,7 @@ Deno.serve(async (req) => {
           body: JSON.stringify({
             message: {
               token,
-              notification: { title: displayName, body: bodyText },
+              notification: { title: finalTitle, body: finalBody },
               data: {
                 type: "new_message",
                 conversationId: String(record.conversation_id ?? ""),
@@ -182,7 +196,7 @@ Deno.serve(async (req) => {
                 // Only ever the real username when privacy is off for
                 // this sender — a tapped notification's data payload
                 // shouldn't leak what the visible title just hid.
-                senderUsername: displayName,
+                senderUsername: hideContent ? "New notification" : displayName,
               },
               android: { priority: "high" },
               apns: { headers: { "apns-priority": "10" } },
