@@ -31,6 +31,20 @@ class AppLockService {
   static const _pinSaltKey = 'app_lock_pin_salt';
   static const _enabledKey = 'app_lock_enabled';
   static const _hintKey = 'app_lock_pin_hint';
+  // Feature: biometric unlock for the app-wide PIN — see
+  // BiometricUnlockService for the actual local_auth calls. This flag
+  // just records whether the person has opted in; the PIN itself stays
+  // the source of truth and the only thing ever stored/verified here —
+  // biometric unlock is purely an alternate, faster way to pass the SAME
+  // gate, never a replacement credential of its own.
+  static const _biometricEnabledKey = 'app_lock_biometric_enabled';
+  // Feature: auto-lock on idle. Minutes of no touch input before the app
+  // re-locks itself even while it's still in the FOREGROUND — separate
+  // from the existing re-lock-on-background behavior in auth_gate.dart,
+  // which only fires when the app is actually paused/backgrounded. Null
+  // (nothing stored) means "off" — the app stays unlocked indefinitely
+  // while in the foreground, same as before this feature existed.
+  static const _idleTimeoutKey = 'app_lock_idle_timeout_minutes';
   static final _sha256 = Sha256();
 
   static Future<bool> isEnabled() async {
@@ -62,11 +76,43 @@ class AppLockService {
 
   static Future<String?> getHint() => _storage.read(key: _hintKey);
 
+  static Future<bool> isBiometricEnabled() async {
+    return (await _storage.read(key: _biometricEnabledKey)) == 'true';
+  }
+
+  /// Only meaningful while a PIN is set — the PIN screen/settings UI is
+  /// responsible for only exposing this toggle when [isEnabled] is
+  /// already true, and for turning it back off itself if the PIN is ever
+  /// disabled (see [disable] below, which also clears this).
+  static Future<void> setBiometricEnabled(bool value) async {
+    await _storage.write(key: _biometricEnabledKey, value: value ? 'true' : 'false');
+  }
+
   static Future<void> disable() async {
     await _storage.delete(key: _pinHashKey);
     await _storage.delete(key: _pinSaltKey);
     await _storage.delete(key: _hintKey);
+    await _storage.delete(key: _biometricEnabledKey);
+    await _storage.delete(key: _idleTimeoutKey);
     await _storage.write(key: _enabledKey, value: 'false');
+  }
+
+  /// Null = off (default — matches the app's behavior before this
+  /// feature existed: stays unlocked indefinitely in the foreground).
+  /// Otherwise the number of minutes of no touch input before AuthGate's
+  /// _LockGate re-locks — see that file for the actual idle timer.
+  static Future<int?> getIdleTimeoutMinutes() async {
+    final raw = await _storage.read(key: _idleTimeoutKey);
+    if (raw == null) return null;
+    return int.tryParse(raw);
+  }
+
+  static Future<void> setIdleTimeoutMinutes(int? minutes) async {
+    if (minutes == null) {
+      await _storage.delete(key: _idleTimeoutKey);
+    } else {
+      await _storage.write(key: _idleTimeoutKey, value: minutes.toString());
+    }
   }
 
   static Future<bool> verify(String pin) async {
