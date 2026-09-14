@@ -13,12 +13,16 @@ import '../../services/media_compression_service.dart';
 import '../../services/media_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/screenshot_guard_service.dart';
+import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
 import '../../widgets/media_viewer_screen.dart';
+import '../../widgets/message_link_text.dart';
+import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import '../chat/chat_search_screen.dart';
+import '../security/safety_number_screen.dart';
 import 'group_info_screen.dart';
 
 const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉', '😍', '👏', '💯', '😡'];
@@ -63,6 +67,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _amAdmin = false;
   String? _groupAvatarUrl;
   int _ttlHours = 0;
+  // Feature: "clear on exit" ephemeral view mode, group version — kept in
+  // sync with the group doc, same as _onlyAdminsCanSend right above.
+  bool _ephemeralViewEnabled = false;
   LocalMessage? _replyingTo;
 
   /// Non-null while composing an edit to a previously-sent text message —
@@ -94,10 +101,56 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   /// them.
   final Map<String, DateTime> _lastNotUpgradedWarnedAt = {};
 
+  // Feature: anti-tampering / MITM re-verification prompts, group version.
+  // Checked per-member (excluding myself) whenever the member list
+  // changes, throttled the same way chat_list_screen.dart's entry-level
+  // check is.
+  final Set<String> _membersWithChangedIdentity = {};
+  // Feature: multi-select + bulk actions. Same shape as
+  // chat_detail_screen.dart's own _selectedIds — long-press a message to
+  // start selecting, tap others to add/remove, a bulk action bar (Copy/
+  // Star/Delete) replaces the normal app bar while anything's selected.
+  final Set<String> _selectedIds = {};
+  final Map<String, GlobalKey> _bubbleKeys = {};
+  GlobalKey _bubbleKeyFor(String id) => _bubbleKeys.putIfAbsent(id, () => GlobalKey());
+  void _jumpToMessage(String id) {
+    final ctx = _bubbleKeys[id]?.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 300), alignment: 0.5);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Scroll to find this message — it's outside the loaded view")),
+      );
+    }
+  }
+
+  // Feature: "jump to unread" button — same one-shot design as
+  // chat_detail_screen.dart's own _firstUnreadId.
+  String? _firstUnreadId;
+  DateTime? _lastIdentityCheck;
+
+  Future<void> _checkMemberIdentityChanges() async {
+    final now = DateTime.now();
+    if (_lastIdentityCheck != null && now.difference(_lastIdentityCheck!) < const Duration(seconds: 60)) return;
+    _lastIdentityCheck = now;
+    final changed = <String>{};
+    for (final uid in _memberUids) {
+      if (uid == _myUid) continue;
+      if (await SignalSessionService.instance.hasUnverifiedIdentityChange(uid)) changed.add(uid);
+    }
+    if (mounted) setState(() => _membersWithChangedIdentity..clear()..addAll(changed));
+  }
+
   @override
   void initState() {
     super.initState();
-    ScreenshotGuardService.acquire(conversationId: widget.groupId);
+    ScreenshotGuardService.acquire();
+    // Feature: "jump to unread" button. Fired first — best-effort race
+    // against markConversationRead below, same reasoning as
+    // chat_detail_screen.dart's own version of this.
+    LocalMessageStore.getFirstUnreadId(widget.groupId).then((id) {
+      if (mounted) setState(() => _firstUnreadId = id);
+    });
     // Silently flush any messages that were queued because a member
     // hadn't updated the app yet (see ContactNotUpgradedException /
     // retryPendingResends) — opening the group is a natural, frequent
@@ -124,8 +177,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         // admins can send messages" toggle and Group.onlyAdminsCanSend.
         _onlyAdminsCanSend = (data['onlyAdminsCanSend'] as bool?) ?? false;
         _amAdmin = List<String>.from(data['admins'] ?? []).contains(_myUid);
+        _ephemeralViewEnabled = (data['ephemeralViewEnabled'] as bool?) ?? false;
       });
       _resolveUsernames(_memberUids);
+      _checkMemberIdentityChanges();
     });
     _typingSub = GroupService.instance.typingStream(widget.groupId).listen((snap) {
       if (!mounted) return;
@@ -145,8 +200,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
-    ScreenshotGuardService.release(conversationId: widget.groupId);
+    ScreenshotGuardService.release();
     GroupService.instance.setTyping(widget.groupId, false);
+    // Feature: "clear on exit" ephemeral view mode, group version. Fires
+    // exactly once, only when THIS member's OWN GroupChatScreen instance
+    // for THIS EXACT groupId is actually leaving the widget tree — never
+    // on backgrounding the app (which pauses, not disposes, this screen),
+    // and never affecting any other group or any other member's device.
+    // This is the fix for the failure mode explicitly flagged when this
+    // was requested: entering and leaving ONE group must never clear
+    // anyone else's chats, and must never clear this group for anyone
+    // else — it only ever touches widget.groupId, and only on this one
+    // device.
+    if (_ephemeralViewEnabled) {
+      LocalMessageStore.clearConversation(widget.groupId);
+    }
     _msgSub.cancel();
     _groupSub.cancel();
     _typingSub.cancel();
@@ -169,6 +237,92 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   String _nameFor(String uid) => uid == _myUid ? 'You' : (_usernames[uid] ?? '…');
+
+  /// Feature: anti-tampering / MITM re-verification prompts, group
+  /// version. Same no-silent-dismiss shape as the 1:1 banner — each
+  /// affected member gets a row with Verify (safety number screen) and
+  /// Trust (re-pin) actions, since a group's whole membership can't be
+  /// resolved with one tap the way a single 1:1 banner can.
+  Widget _buildIdentityChangeBanner(ColorScheme scheme) {
+    final count = _membersWithChangedIdentity.length;
+    return Material(
+      color: scheme.errorContainer,
+      child: InkWell(
+        onTap: () => _showIdentityChangeDialog(scheme),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.gpp_maybe_outlined, size: 18, color: scheme.onErrorContainer),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  count == 1
+                      ? "${_nameFor(_membersWithChangedIdentity.first)}'s security code changed"
+                      : "$count members' security codes changed",
+                  style: TextStyle(fontSize: 12.5, color: scheme.onErrorContainer),
+                ),
+              ),
+              Icon(Icons.chevron_right, size: 18, color: scheme.onErrorContainer),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showIdentityChangeDialog(ColorScheme scheme) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Security codes changed'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: _membersWithChangedIdentity.map((uid) {
+              return ListTile(
+                title: Text(_nameFor(uid)),
+                subtitle: const Text('Verify or trust the new code'),
+                trailing: Wrap(
+                  spacing: 4,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(dialogContext);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => SafetyNumberScreen(peerUid: uid, peerUsername: _nameFor(uid))),
+                        );
+                      },
+                      child: const Text('Verify'),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        try {
+                          await SignalSessionService.instance.acceptChangedIdentityAndRetry(uid);
+                          if (mounted) setState(() => _membersWithChangedIdentity.remove(uid));
+                          if (dialogContext.mounted) Navigator.pop(dialogContext);
+                        } catch (_) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text("Couldn't confirm the new key — please try again.")),
+                            );
+                          }
+                        }
+                      },
+                      child: const Text('Trust'),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
+      ),
+    );
+  }
 
   void _scrollToBottom() {
     if (!_scrollController.hasClients) return;
@@ -421,16 +575,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final targetId = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (_) => ChatSearchScreen(conversationId: widget.groupId, peerUsername: _groupName)),
     );
-    if (targetId == null) return;
-    // Group messages render in a plain ListView.builder (no per-bubble
-    // GlobalKey the way chat_detail_screen keeps one for jump-to-reply) —
-    // scrolling exactly to the matched message isn't wired up here, so
-    // this at least confirms the match and lets the person scroll
-    // manually rather than silently doing nothing.
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Found it — scroll up to find the highlighted result in the chat.')),
-    );
+    if (targetId == null || !mounted) return;
+    _jumpToMessage(targetId);
   }
 
   void _showAttachSheet() {
@@ -440,10 +586,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       onGalleryPhoto: () => _pickAndSendImage(ImageSource.gallery),
       onCameraVideo: () => _pickAndSendVideo(ImageSource.camera),
       onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
+      onCameraPhotoViewOnce: () => _pickAndSendImage(ImageSource.camera, viewOnce: true),
+      onGalleryPhotoViewOnce: () => _pickAndSendImage(ImageSource.gallery, viewOnce: true),
+      onCameraVideoViewOnce: () => _pickAndSendVideo(ImageSource.camera, viewOnce: true),
+      onGalleryVideoViewOnce: () => _pickAndSendVideo(ImageSource.gallery, viewOnce: true),
     );
   }
 
-  Future<void> _pickAndSendImage(ImageSource source) async {
+  Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
     final picked = await ImagePicker().pickImage(source: source, imageQuality: 100);
     if (picked == null) return;
     await _sendMedia(
@@ -452,10 +602,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       mime: 'image/jpeg',
       extension: 'jpg',
       compress: (file) => MediaCompressionService.compressImage(file),
+      viewOnce: viewOnce,
     );
   }
 
-  Future<void> _pickAndSendVideo(ImageSource source) async {
+  Future<void> _pickAndSendVideo(ImageSource source, {bool viewOnce = false}) async {
     final picked = await ImagePicker().pickVideo(source: source, maxDuration: const Duration(minutes: 2));
     if (picked == null) return;
     await _sendMedia(
@@ -464,6 +615,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       mime: 'video/mp4',
       extension: 'mp4',
       compress: (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync(),
+      viewOnce: viewOnce,
     );
   }
 
@@ -474,6 +626,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     required String extension,
     required Future<List<int>> Function(File) compress,
     int? durationMs,
+    bool viewOnce = false,
   }) async {
     if (_myUid == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("You're not signed in. Please sign in again.")));
@@ -491,6 +644,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         mime: mime,
         durationMs: durationMs,
         ttlHours: _ttlHours,
+        isViewOnce: viewOnce,
       );
     } on GroupSendPartialFailure catch (e) {
       await _warnAboutPartialFailure(e);
@@ -601,6 +755,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               onTap: () {
                 Navigator.pop(sheetContext);
                 setState(() => _replyingTo = message);
+              },
+            ),
+            ListTile(
+              leading: Icon(message.starred ? Icons.star : Icons.star_border),
+              title: Text(message.starred ? 'Unstar' : 'Star'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                LocalMessageStore.toggleStar(message.id);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.check_circle_outline),
+              title: const Text('Select'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                setState(() => _selectedIds.add(message.id));
               },
             ),
             if (message.messageType == 'text')
@@ -814,13 +984,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
     // Feature: in-app media viewer — every photo/video in this group chat,
     // in order, so tapping one opens a swipeable gallery instead of a
-    // single image/video page.
-    final galleryMessages = _messages.where((m) => m.mediaPath != null && (m.messageType == 'image' || m.messageType == 'video')).toList();
+    // single image/video page. View-once media is deliberately excluded
+    // (see the isViewOnce check below) — it isn't part of the browsable
+    // shared gallery, the same reasoning as chat_detail_screen.dart.
+    final galleryMessages = _messages.where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video')).toList();
     final gallery = galleryMessages.map((m) => MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video')).toList();
     final galleryIndex = galleryMessages.indexWhere((m) => m.id == message.id);
 
     Widget? mediaWidget;
-    if (message.messageType == 'image') {
+    if (message.messageType == 'image' && message.isViewOnce) {
+      mediaWidget = _ViewOnceBubble(id: message.id, path: message.mediaPath, isVideo: false, isMine: mine, consumed: message.viewOnceConsumed);
+    } else if (message.messageType == 'video' && message.isViewOnce) {
+      mediaWidget = _ViewOnceBubble(id: message.id, path: message.mediaPath, isVideo: true, isMine: mine, consumed: message.viewOnceConsumed);
+    } else if (message.messageType == 'image') {
       mediaWidget = message.hasPendingMedia
           ? _pendingMediaTile(scheme, message.id, isVideo: false)
           : message.mediaPath == null
@@ -854,7 +1030,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
 
     return GestureDetector(
-      onLongPress: () => _showMessageActions(message),
+      onLongPress: () {
+        if (_selectedIds.isEmpty) {
+          setState(() => _selectedIds.add(message.id));
+        } else {
+          _toggleSelect(message.id);
+        }
+      },
+      onTap: _selectedIds.isNotEmpty ? () => _toggleSelect(message.id) : null,
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
         child: Container(
@@ -865,6 +1048,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             gradient: bubbleGradient,
             borderRadius: radius,
             boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 10, offset: const Offset(0, 3))],
+            border: _selectedIds.contains(message.id) ? Border.all(color: scheme.primary, width: 2) : null,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -939,20 +1123,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final baseColor = mine ? scheme.onPrimary : scheme.onSurface;
     final baseStyle = TextStyle(color: baseColor, fontSize: 15, height: 1.3);
     final knownNames = _usernames.values.toSet();
-    final spans = <TextSpan>[];
+    final spans = <InlineSpan>[];
     final pattern = RegExp(r'@([\w]+)');
     var lastEnd = 0;
     for (final match in pattern.allMatches(message.text)) {
       final name = match.group(1)!;
       if (!knownNames.any((n) => n.toLowerCase() == name.toLowerCase())) continue;
-      if (match.start > lastEnd) spans.add(TextSpan(text: message.text.substring(lastEnd, match.start)));
+      if (match.start > lastEnd) {
+        spans.addAll(linkifySpan(context, message.text.substring(lastEnd, match.start), baseStyle, linkColor: mine ? scheme.onPrimary : scheme.primary));
+      }
       spans.add(TextSpan(
         text: match.group(0),
         style: TextStyle(fontWeight: FontWeight.w700, color: mine ? scheme.onPrimary : scheme.primary),
       ));
       lastEnd = match.end;
     }
-    if (lastEnd < message.text.length) spans.add(TextSpan(text: message.text.substring(lastEnd)));
+    if (lastEnd < message.text.length) {
+      spans.addAll(linkifySpan(context, message.text.substring(lastEnd), baseStyle, linkColor: mine ? scheme.onPrimary : scheme.primary));
+    }
     if (message.editedAt != null) {
       spans.add(TextSpan(
         text: '  (edited)',
@@ -1023,11 +1211,66 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  void _toggleSelect(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  /// Feature: multi-select + bulk actions, group version. Copy/Star work
+  /// for any number selected; Delete only offers "delete for me" in bulk
+  /// (matching the per-message menu's own split between "for me" and
+  /// "for everyone" — bulk "for everyone" isn't offered here to avoid a
+  /// single tap wiping a large batch of messages for the whole group at
+  /// once without individually confirming each one).
+  AppBar _buildSelectionAppBar(ColorScheme scheme) {
+    final selected = _messages.where((m) => _selectedIds.contains(m.id)).toList();
+    return AppBar(
+      leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(_selectedIds.clear)),
+      title: Text('${_selectedIds.length} selected'),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.copy_outlined),
+          tooltip: 'Copy',
+          onPressed: () {
+            final ordered = List<LocalMessage>.from(selected)..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+            Clipboard.setData(ClipboardData(text: ordered.map((m) => m.text).join('\n')));
+            setState(_selectedIds.clear);
+          },
+        ),
+        IconButton(
+          icon: Icon(selected.every((m) => m.starred) ? Icons.star : Icons.star_border),
+          tooltip: 'Star',
+          onPressed: () async {
+            await LocalMessageStore.setStarredBulk(_selectedIds.toList(), !selected.every((m) => m.starred));
+            if (mounted) setState(_selectedIds.clear);
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.delete_outline),
+          tooltip: 'Delete for me',
+          onPressed: () async {
+            for (final id in _selectedIds.toList()) {
+              await GroupMessageRelayService.deleteForMe(id);
+            }
+            if (mounted) setState(_selectedIds.clear);
+          },
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(
+      appBar: _selectedIds.isNotEmpty
+          ? _buildSelectionAppBar(scheme)
+          : AppBar(
         titleSpacing: 0,
         title: InkWell(
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: widget.groupId))),
@@ -1059,8 +1302,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           IconButton(icon: const Icon(Icons.search), tooltip: 'Search in chat', onPressed: _openSearch),
         ],
       ),
+      floatingActionButton: _firstUnreadId == null
+          ? null
+          : FloatingActionButton.small(
+              tooltip: 'Jump to unread',
+              onPressed: () {
+                _jumpToMessage(_firstUnreadId!);
+                setState(() => _firstUnreadId = null);
+              },
+              child: const Icon(Icons.arrow_downward),
+            ),
       body: Column(
         children: [
+          if (_membersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme),
           Expanded(
             child: _messages.isEmpty
                 ? Center(
@@ -1080,7 +1334,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     itemCount: _messages.length,
-                    itemBuilder: (context, i) => _bubbleFor(_messages[i]),
+                    itemBuilder: (context, i) => KeyedSubtree(key: _bubbleKeyFor(_messages[i].id), child: _bubbleFor(_messages[i])),
                   ),
           ),
           if (_editingMessage != null)
@@ -1273,6 +1527,84 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 // Container (see _bubbleFor) — they deliberately have NO rounding or
 // padding of their own, so there's only ever one border radius per bubble
 // instead of a visible "ring" between an inner and outer radius.
+
+class _ViewOnceBubble extends StatelessWidget {
+  final String id;
+  final String? path;
+  final bool isVideo;
+  final bool isMine;
+  final bool consumed;
+  const _ViewOnceBubble({required this.id, required this.path, required this.isVideo, required this.isMine, required this.consumed});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (isMine && path != null) {
+      return Stack(
+        children: [
+          SizedBox(
+            width: double.infinity,
+            height: isVideo ? 200 : 220,
+            child: isVideo
+                ? Container(color: Colors.black87, alignment: Alignment.center, child: const Icon(Icons.play_circle_fill, color: Colors.white, size: 52))
+                : Image.file(File(path!), fit: BoxFit.cover),
+          ),
+          Positioned(
+            top: 8,
+            left: 8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.filter_1, color: Colors.white, size: 12),
+                  SizedBox(width: 2),
+                  Text('View once', style: TextStyle(color: Colors.white, fontSize: 10)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    if (consumed || path == null) {
+      return Container(
+        height: 60,
+        width: double.infinity,
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        color: scheme.surfaceContainerHighest,
+        child: Row(
+          children: [
+            Icon(Icons.visibility_off_outlined, size: 18, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 10),
+            Text(isVideo ? 'Video · Opened' : 'Photo · Opened', style: TextStyle(color: scheme.onSurfaceVariant)),
+          ],
+        ),
+      );
+    }
+    return InkWell(
+      onTap: () {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => ViewOnceMediaScreen(messageId: id, path: path!, isVideo: isVideo)));
+      },
+      child: Container(
+        height: 90,
+        width: double.infinity,
+        alignment: Alignment.center,
+        color: scheme.primaryContainer,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.remove_red_eye_outlined, color: scheme.onPrimaryContainer),
+            const SizedBox(height: 4),
+            Text(isVideo ? 'Tap to view video once' : 'Tap to view photo once', style: TextStyle(color: scheme.onPrimaryContainer, fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _ImageBubble extends StatelessWidget {
   final String path;
