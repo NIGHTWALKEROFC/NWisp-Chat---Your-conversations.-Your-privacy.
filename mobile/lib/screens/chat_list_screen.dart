@@ -6,12 +6,17 @@ import '../models/local_message.dart';
 import '../services/auth_service.dart';
 import '../services/chat_freeze_service.dart';
 import '../services/chat_lock_service.dart';
+import '../services/chat_folder_service.dart';
 import '../services/conversation_service.dart';
 import '../services/group_service.dart';
 import '../services/local_message_store.dart';
+import '../services/settings_service.dart';
+import '../services/signal_session_service.dart';
 import 'chat/chat_detail_screen.dart';
+import 'chat_folders_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
+import 'global_search_screen.dart';
 import 'groups/create_group_screen.dart';
 import 'groups/group_chat_screen.dart';
 import 'groups/group_invites_screen.dart';
@@ -19,6 +24,7 @@ import 'security/chat_pin_guard.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
 import 'settings/settings_screen.dart';
+import 'starred_messages_screen.dart';
 
 /// A row shown on the home screen — either a real ConversationSummary (has
 /// at least one local message) or a placeholder for a conversation/group
@@ -118,11 +124,50 @@ class _ChatListScreenState extends State<ChatListScreen> {
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
   late final StreamSubscription _groupsSub;
+  // Feature: chat folders/categories.
+  List<ChatFolder> _folders = [];
+  String? _selectedFolderId;
+  late final StreamSubscription<List<ChatFolder>> _foldersSub;
+  // Feature: separate groups and chats on the home screen. Off by
+  // default — see SettingsService.getSeparateGroupsAndChats.
+  bool _separateGroupsAndChats = false;
+  static const _archivedHeaderMarker = '__archived_header_marker__';
+
+  // Feature: anti-tampering / MITM re-verification prompts, shown "on
+  // entering the app" (i.e. here, on the chat list) rather than only
+  // inside a specific chat. Recomputed each time the conversation list
+  // changes, throttled so a burst of Firestore snapshots can't trigger a
+  // flood of per-peer checks.
+  final Set<String> _peersWithChangedIdentity = {};
+  DateTime? _lastIdentityCheck;
+
+  Future<void> _checkIdentityChanges(String myUid) async {
+    final now = DateTime.now();
+    if (_lastIdentityCheck != null && now.difference(_lastIdentityCheck!) < const Duration(seconds: 60)) return;
+    _lastIdentityCheck = now;
+    final peerUids = <String>{};
+    for (final doc in _convoDocs) {
+      final participants = List<String>.from(doc.data()['participants'] ?? []);
+      final peer = participants.firstWhere((p) => p != myUid, orElse: () => '');
+      if (peer.isNotEmpty) peerUids.add(peer);
+    }
+    final changed = <String>{};
+    for (final uid in peerUids) {
+      if (await SignalSessionService.instance.hasUnverifiedIdentityChange(uid)) changed.add(uid);
+    }
+    if (mounted) setState(() => _peersWithChangedIdentity..clear()..addAll(changed));
+  }
 
   @override
   void initState() {
     super.initState();
     _loadHiddenIds();
+    _foldersSub = ChatFolderService.watchFolders().listen((f) {
+      if (mounted) setState(() => _folders = f);
+    });
+    SettingsService.getSeparateGroupsAndChats().then((v) {
+      if (mounted) setState(() => _separateGroupsAndChats = v);
+    });
     _freezeSub = ChatFreezeService.instance.watchMyActiveFreezes().listen((freezes) {
       _activeFreezes = freezes;
       _recomputeFrozenPeers();
@@ -153,6 +198,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         _convoDocs = snap.docs;
         _convoLoaded = true;
       });
+      if (myUid != null) _checkIdentityChanges(myUid);
     });
 
     _groupsSub = GroupService.instance.myGroupsStream().listen((snap) {
@@ -182,9 +228,87 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _localSub.cancel();
     _convoSub.cancel();
     _groupsSub.cancel();
+    _foldersSub.cancel();
     _freezeSub?.cancel();
     _freezeSweepTimer?.cancel();
     super.dispose();
+  }
+
+  /// Feature: anti-tampering / MITM re-verification prompts, entry-level
+  /// version. Doesn't try to name every affected contact in the limited
+  /// space here — just flags that it happened and points at where to
+  /// actually deal with it, since the real per-contact banner (and the
+  /// Verify/Trust actions) already live inside ChatDetailScreen itself.
+  /// Feature: chat folders/categories. A horizontal chip row — "All"
+  /// plus one chip per folder — that filters the chat list below.
+  /// Managed (create/rename/delete/assign chats) from the "Chat
+  /// folders" entry in the overflow menu; this row only ever shows once
+  /// at least one folder exists, so nobody who's never used folders
+  /// sees any change to the home screen at all.
+  Widget _buildFolderChipsRow(ColorScheme scheme) {
+    return SizedBox(
+      height: 44,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: ChoiceChip(
+              label: const Text('All'),
+              selected: _selectedFolderId == null,
+              onSelected: (_) => setState(() => _selectedFolderId = null),
+            ),
+          ),
+          for (final f in _folders)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: ChoiceChip(
+                label: Text(f.name),
+                selected: _selectedFolderId == f.id,
+                onSelected: (_) => setState(() => _selectedFolderId = _selectedFolderId == f.id ? null : f.id),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIdentityChangeBanner(ColorScheme scheme, String? myUid) {
+    final count = _peersWithChangedIdentity.length;
+    return Material(
+      color: scheme.errorContainer,
+      child: InkWell(
+        onTap: () async {
+          final uid = _peersWithChangedIdentity.first;
+          final username = await _usernameFor(uid);
+          if (!mounted) return;
+          final conversationId = myUid == null ? uid : _conversationService.conversationIdFor(myUid, uid);
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => ChatDetailScreen(conversationId: conversationId, peerUid: uid, peerUsername: username)),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.gpp_maybe_outlined, size: 18, color: scheme.onErrorContainer),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  count == 1
+                      ? "A contact's security code changed — open their chat to review"
+                      : "$count contacts' security codes changed — open each chat to review",
+                  style: TextStyle(fontSize: 12.5, color: scheme.onErrorContainer),
+                ),
+              ),
+              Icon(Icons.chevron_right, size: 18, color: scheme.onErrorContainer),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<String> _usernameFor(String uid) async {
@@ -323,6 +447,15 @@ class _ChatListScreenState extends State<ChatListScreen> {
       case 'settings':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
         break;
+      case 'global_search':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const GlobalSearchScreen()));
+        break;
+      case 'starred':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const StarredMessagesScreen()));
+        break;
+      case 'folders':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatFoldersScreen()));
+        break;
     }
   }
 
@@ -404,6 +537,19 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ),
               PopupMenuDivider(),
               PopupMenuItem(
+                value: 'global_search',
+                child: ListTile(leading: Icon(Icons.manage_search_outlined), title: Text('Search all chats'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'starred',
+                child: ListTile(leading: Icon(Icons.star_border), title: Text('Starred messages'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'folders',
+                child: ListTile(leading: Icon(Icons.folder_outlined), title: Text('Chat folders'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem(
                 value: 'profile',
                 child: ListTile(leading: Icon(Icons.person_outline), title: Text('Profile'), contentPadding: EdgeInsets.zero),
               ),
@@ -419,8 +565,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ),
         ],
       ),
-      body: Builder(
-        builder: (context) {
+      body: Column(
+        children: [
+          if (_peersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme, myUid),
+          if (_folders.isNotEmpty && !_showHiddenOnly && !_showArchived) _buildFolderChipsRow(scheme),
+          Expanded(
+            child: Builder(
+              builder: (context) {
           if (myUid == null || !_localLoaded || !_convoLoaded || !_groupsLoaded) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -432,11 +583,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
           // never match this regardless of peerUid contents.
           final notFrozen = allRows.where((r) => r.isGroup || !_frozenPeerUids.contains(r.peerUid)).toList();
           final archivedCount = notFrozen.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
-          final rows = _showHiddenOnly
+          final unfiltered = _showHiddenOnly
               ? notFrozen
                   .where((r) => _hiddenViewChatId != null ? r.conversationId == _hiddenViewChatId : _hiddenIds.contains(r.conversationId))
                   .toList()
               : notFrozen.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
+          // Feature: chat folders/categories. Applied only in the normal
+          // (not hidden, not archived) view — a folder is a filter over
+          // the everyday chat list, not something that also needs to
+          // apply while browsing hidden or archived chats.
+          final selectedFolder = _selectedFolderId == null
+              ? null
+              : _folders.cast<ChatFolder?>().firstWhere((f) => f!.id == _selectedFolderId, orElse: () => null);
+          final rows = (selectedFolder != null && !_showHiddenOnly && !_showArchived)
+              ? unfiltered.where((r) => selectedFolder.conversationIds.contains(r.conversationId)).toList()
+              : unfiltered;
           if (rows.isEmpty && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
             return Center(
               child: Padding(
@@ -453,10 +614,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      _showHiddenOnly ? 'No hidden chats' : (_showArchived ? 'No archived chats' : 'No conversations yet'),
+                      _showHiddenOnly ? 'No hidden chats' : (_showArchived ? 'No archived chats' : (selectedFolder != null ? 'No chats in "${selectedFolder.name}" yet' : 'No conversations yet')),
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
-                    if (!_showArchived && !_showHiddenOnly) ...[
+                    if (!_showArchived && !_showHiddenOnly && selectedFolder == null) ...[
                       const SizedBox(height: 8),
                       Text(
                         'Tap the button below to message a contact, or use the menu above for a new chat or group.',
@@ -469,27 +630,56 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ),
             );
           }
+          // Feature: separate groups and chats on the home screen.
+          // Builds a flat list of items — either a _ChatRow, or a plain
+          // String used as a section-header marker — so the existing
+          // "archived chats" summary tile above can slot in at the top
+          // exactly like before, whether or not sectioning is on.
+          final showArchivedHeader = !_showArchived && !_showHiddenOnly && archivedCount > 0;
+          final List<Object> items = [];
+          if (showArchivedHeader) items.add(_archivedHeaderMarker);
+          if (_separateGroupsAndChats && !_showHiddenOnly && !_showArchived) {
+            final direct = rows.where((r) => !r.isGroup).toList();
+            final groups = rows.where((r) => r.isGroup).toList();
+            if (direct.isNotEmpty) {
+              items.add('Direct messages');
+              items.addAll(direct);
+            }
+            if (groups.isNotEmpty) {
+              items.add('Groups');
+              items.addAll(groups);
+            }
+          } else {
+            items.addAll(rows);
+          }
           return ListView.builder(
-            itemCount: rows.length + (!_showArchived && !_showHiddenOnly && archivedCount > 0 ? 1 : 0),
+            itemCount: items.length,
             itemBuilder: (context, i) {
-              if (!_showArchived && !_showHiddenOnly && archivedCount > 0) {
-                if (i == 0) {
-                  return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: scheme.surfaceContainerHighest,
-                      child: Icon(Icons.archive_outlined, color: scheme.onSurfaceVariant),
-                    ),
-                    title: const Text('Archived chats'),
-                    trailing: Text('$archivedCount', style: TextStyle(color: scheme.onSurfaceVariant)),
-                    onTap: () => setState(() => _showArchived = true),
-                  );
-                }
-                return _chatRowTile(context, scheme, rows[i - 1]);
+              final item = items[i];
+              if (item == _archivedHeaderMarker) {
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: scheme.surfaceContainerHighest,
+                    child: Icon(Icons.archive_outlined, color: scheme.onSurfaceVariant),
+                  ),
+                  title: const Text('Archived chats'),
+                  trailing: Text('$archivedCount', style: TextStyle(color: scheme.onSurfaceVariant)),
+                  onTap: () => setState(() => _showArchived = true),
+                );
               }
-              return _chatRowTile(context, scheme, rows[i]);
+              if (item is String) {
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Text(item, style: TextStyle(fontWeight: FontWeight.w600, color: scheme.primary)),
+                );
+              }
+              return _chatRowTile(context, scheme, item as _ChatRow);
             },
           );
         },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen())),
