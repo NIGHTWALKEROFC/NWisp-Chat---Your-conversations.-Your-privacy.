@@ -344,6 +344,7 @@ class MessageRelayService {
         createdAt: createdAt,
         expiresAt: _expiryFor(createdAt, ttlHours),
         pendingMediaMeta: {...meta, 'remotePath': remotePath},
+        isViewOnce: meta['viewOnce'] == true,
       );
       return;
     }
@@ -370,6 +371,7 @@ class MessageRelayService {
       status: 'delivered',
       createdAt: createdAt,
       expiresAt: _expiryFor(createdAt, ttlHours),
+      isViewOnce: meta['viewOnce'] == true,
     );
 
     // Forward-only for 1:1 chats: now that our own local copy is safely
@@ -516,6 +518,7 @@ class MessageRelayService {
     String? caption,
     int? durationMs,
     required int ttlHours,
+    bool isViewOnce = false,
   }) async {
     if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
     await _checkNotBlocked(recipientUid);
@@ -543,6 +546,7 @@ class MessageRelayService {
       status: 'sending',
       createdAt: createdAt,
       expiresAt: _expiryFor(createdAt, ttlHours),
+      isViewOnce: isViewOnce,
     );
     await LocalMessageStore.savePendingMediaSend(
       clientId: clientId,
@@ -573,6 +577,7 @@ class MessageRelayService {
         'extension': extension,
         if (caption != null && caption.isNotEmpty) 'caption': caption,
         if (durationMs != null) 'durationMs': durationMs,
+        if (isViewOnce) 'viewOnce': true,
       });
       final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
 
@@ -642,6 +647,7 @@ class MessageRelayService {
         'extension': pending.extension,
         if (message.text.isNotEmpty) 'caption': message.text,
         if (pending.durationMs != null) 'durationMs': pending.durationMs,
+        if (message.isViewOnce) 'viewOnce': true,
       });
       final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, metaPayload);
 
