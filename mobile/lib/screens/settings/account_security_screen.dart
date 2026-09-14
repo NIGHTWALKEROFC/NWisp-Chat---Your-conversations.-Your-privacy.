@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/device_session_service.dart';
 import '../../services/moderation_service.dart';
-import '../../services/screenshot_settings_service.dart';
 import 'forgot_password_screen.dart';
 
 class AccountSecurityScreen extends StatelessWidget {
@@ -104,25 +103,35 @@ class AccountSecurityScreen extends StatelessWidget {
               );
             },
           ),
-          FutureBuilder<bool>(
-            future: ScreenshotSettingsService.isGlobalEnabled(),
-            builder: (context, snap) {
-              final enabled = snap.data ?? true;
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: ModerationService().myProfileStream(),
+            builder: (context, profileSnapshot) {
+              final hideContent = (profileSnapshot.data?.data()?['notificationPrivacyHideContentGlobal'] as bool?) ?? false;
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: SwitchListTile.adaptive(
-                  secondary: const Icon(Icons.screenshot_outlined),
-                  title: const Text('Block screenshots'),
+                  secondary: const Icon(Icons.notifications_off_outlined),
+                  title: const Text('Hide message preview'),
                   subtitle: Text(
-                    enabled
-                        ? 'On by default for every chat and group — screenshots and screen recording are blocked'
-                        : 'Off by default — you can still turn this on for one specific chat or group from its own settings',
+                    hideContent
+                        ? 'On for every chat — notifications never say "Sent you a photo" or similar, just a generic alert'
+                        : 'Off — notifications say what kind of message it is (photo, voice message, etc.), just not the name or content',
                   ),
-                  value: enabled,
-                  onChanged: (v) => ScreenshotSettingsService.setGlobalEnabled(v),
+                  value: hideContent,
+                  onChanged: (v) => ModerationService().setNotificationContentPrivacyGlobal(v),
                 ),
               );
             },
+          ),
+          const Card(
+            margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: ListTile(
+              leading: Icon(Icons.screenshot_outlined),
+              title: Text('Block screenshots'),
+              subtitle: Text(
+                'Always on for every chat and group — screenshots and screen recording are blocked. This can\'t be turned off, so the other person\'s privacy is never left up to a setting.',
+              ),
+            ),
           ),
           StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
             stream: DeviceSessionService.instance.sessionStream(uid),
