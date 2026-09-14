@@ -107,6 +107,39 @@ class ModerationService {
     return peers.contains(peerUid);
   }
 
+  /// Feature: full notification content suppression. A STRICTER, separate
+  /// pair of switches from notificationPrivacyGlobal/Peers above — those
+  /// only hide the SENDER'S NAME (title becomes "New message"); these hide
+  /// the body text too ("Sent you a photo" / "Sent you a voice message"
+  /// etc. becomes a fully generic "New notification"), so a locked
+  /// screen reveals nothing distinguishing this app's notifications from
+  /// any other app's. Read by the send-push Edge Function alongside the
+  /// name-hiding fields — see that function for exactly how the title/body
+  /// get built.
+  Future<void> setNotificationContentPrivacyGlobal(bool enabled) =>
+      _profileRef.set({'notificationPrivacyHideContentGlobal': enabled}, SetOptions(merge: true));
+
+  Future<void> setNotificationContentPrivacyForPeer(String peerUid, bool hide) => _profileRef.set({
+        'notificationPrivacyHideContentPeers': hide ? FieldValue.arrayUnion([peerUid]) : FieldValue.arrayRemove([peerUid]),
+      }, SetOptions(merge: true));
+
+  /// Feature: granular 1:1 presence/read-receipt privacy. The GLOBAL
+  /// defaults are the existing lastSeenVisible/readReceiptsEnabled fields
+  /// on this same doc (unchanged, still set at account creation, still
+  /// default true) — these two new per-peer override lists let someone
+  /// hide their last-seen or read receipts from ONE specific contact
+  /// without turning it off for every contact. Reciprocal, same as
+  /// WhatsApp's global version of this: ChatDetailScreen checks BOTH
+  /// people's settings for each other before ever showing a last-seen
+  /// time or a "Read" tick in that specific chat.
+  Future<void> setLastSeenHiddenForPeer(String peerUid, bool hidden) => _profileRef.set({
+        'lastSeenHiddenPeers': hidden ? FieldValue.arrayUnion([peerUid]) : FieldValue.arrayRemove([peerUid]),
+      }, SetOptions(merge: true));
+
+  Future<void> setReadReceiptsDisabledForPeer(String peerUid, bool disabled) => _profileRef.set({
+        'readReceiptsDisabledPeers': disabled ? FieldValue.arrayUnion([peerUid]) : FieldValue.arrayRemove([peerUid]),
+      }, SetOptions(merge: true));
+
   /// Feature: reporting + admin review + suspension + appeals.
   ///
   /// [ruleViolated] should be one of [reportableRules] (enforced by the
