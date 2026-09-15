@@ -277,6 +277,28 @@ class GroupService {
     await LocalMessageStore.removeGroupMeta(groupId);
   }
 
+  /// Feature: ownership transfer. Deliberately choosing a new owner
+  /// WHILE the current owner is still in the group — separate from the
+  /// automatic reassignment in [leaveGroup] above (which only ever
+  /// triggers when the owner is leaving/losing access, and picks
+  /// whoever happens to be the first admin rather than someone the
+  /// owner actually chose). Owner-only (enforced by firestore.rules'
+  /// new isOwnerTransferringOwnership() — needs republishing). The new
+  /// owner is added to admins as part of the same write if they aren't
+  /// one already, since an owner who isn't also an admin wouldn't make
+  /// sense.
+  Future<void> transferOwnership(String groupId, String newOwnerUid) async {
+    final ref = _ref(groupId);
+    await _db.runTransaction((tx) async {
+      final snap = await tx.get(ref);
+      final data = snap.data();
+      if (data == null) return;
+      final admins = List<String>.from(data['admins'] ?? []);
+      if (!admins.contains(newOwnerUid)) admins.add(newOwnerUid);
+      tx.update(ref, {'ownerId': newOwnerUid, 'admins': admins});
+    });
+  }
+
   // ---- lightweight typing indicator, same shape as ConversationService --
 
   Future<void> setTyping(String groupId, bool isTyping) async {
