@@ -12,6 +12,8 @@ import 'services/branding_service.dart';
 import 'services/auth_service.dart';
 import 'services/device_session_service.dart';
 import 'services/group_service.dart';
+import 'services/inactivity_wipe_service.dart';
+import 'services/keyword_mute_service.dart';
 import 'services/local_message_store.dart';
 import 'services/message_relay_service.dart';
 import 'services/session_service.dart';
@@ -53,6 +55,7 @@ void main() async {
   if (existingUser != null) {
     await SessionService.prepareForUser(existingUser.uid);
     await LocalMessageStore.purgeExpired();
+    await InactivityWipeService.sweep();
   }
 
   final themeService = ThemeService();
@@ -323,7 +326,7 @@ void _setUpPushNotifications() {
 
   // Foreground: FCM does NOT show a system notification automatically while
   // the app is open, so build one ourselves via flutter_local_notifications.
-  FirebaseMessaging.onMessage.listen((message) {
+  FirebaseMessaging.onMessage.listen((message) async {
     final data = message.data;
     // The OLD device's live Firestore listener (see
     // _watchForIncomingLoginApprovals below) already pops the
@@ -333,6 +336,21 @@ void _setUpPushNotifications() {
     if (data['type'] == 'login_approval') return;
     final notification = message.notification;
     if (notification == null) return;
+    // Feature: mute by keyword. Best-effort — see KeywordMuteService's
+    // doc comment for exactly why this only works while the app is
+    // alive, and why it's a race against the realtime decrypt-and-store
+    // path rather than a guarantee. If nothing's been stored yet for
+    // this conversation (race lost, or this is a media/system message
+    // with nothing text-based to check), the notification just shows
+    // normally — muting only ever SUPPRESSES on a confirmed keyword
+    // match, never on uncertainty.
+    final conversationId = data['conversationId'] as String?;
+    if (conversationId != null) {
+      final latest = await LocalMessageStore.getLatestMessage(conversationId);
+      if (latest != null && latest.messageType == 'text' && await KeywordMuteService.isMuted(conversationId, latest.text)) {
+        return;
+      }
+    }
     final payload = [
       data['conversationId'] ?? '',
       data['senderUid'] ?? '',
