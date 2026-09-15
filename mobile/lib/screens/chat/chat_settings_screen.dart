@@ -4,13 +4,16 @@ import '../../services/app_lock_service.dart';
 import '../../services/conversation_service.dart';
 import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
+import '../../services/inactivity_wipe_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
 import '../report_user_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import '../settings/chat_lock_setup_screen.dart';
+import '../settings/keyword_mute_screen.dart';
 import 'chat_media_browser_screen.dart';
+import 'chat_wallpaper_screen.dart';
 
 const _chatTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never for THIS chat specifically, hours after that
 
@@ -38,12 +41,73 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   bool _hiddenViaCommon = false;
   bool _hiddenViaCustom = false;
   bool _locked = false;
+  // Feature: inactivity auto-wipe, per-chat override. null = no
+  // override (follows the global Settings default).
+  bool? _inactivityOverrideEnabled;
+  int _inactivityOverrideMonths = 3;
 
   @override
   void initState() {
     super.initState();
     _loadHideState();
     _loadLockState();
+    _loadInactivityOverride();
+  }
+
+  Future<void> _loadInactivityOverride() async {
+    final override = await InactivityWipeService.getChatOverride(widget.conversationId);
+    if (!mounted) return;
+    setState(() {
+      _inactivityOverrideEnabled = override?.enabled;
+      _inactivityOverrideMonths = override?.months ?? 3;
+    });
+  }
+
+  String _inactivityOverrideLabel() {
+    if (_inactivityOverrideEnabled == null) return "Follows your Settings > Auto-wipe inactive chats default";
+    if (_inactivityOverrideEnabled == true) return "On for this chat — clears after $_inactivityOverrideMonths month${_inactivityOverrideMonths == 1 ? '' : 's'} of not opening it, no matter the app default";
+    return "Off for this chat, even if the app default is on";
+  }
+
+  Future<void> _pickInactivityOverride() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Auto-wipe if inactive'),
+        children: [
+          SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, 'default'), child: const Text('Follow app default')),
+          SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, 'off'), child: const Text('Off for this chat')),
+          SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, 'on'), child: const Text('On for this chat')),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    if (choice == 'default') {
+      await InactivityWipeService.clearChatOverride(widget.conversationId);
+      if (mounted) setState(() => _inactivityOverrideEnabled = null);
+      return;
+    }
+    if (choice == 'off') {
+      await InactivityWipeService.setChatOverride(widget.conversationId, false, _inactivityOverrideMonths);
+      if (mounted) setState(() => _inactivityOverrideEnabled = false);
+      return;
+    }
+    // 'on' — also ask how long, same options as the global picker.
+    final months = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('After how long'),
+        children: [1, 2, 3, 6, 12].map((m) {
+          return SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, m), child: Text('$m month${m == 1 ? '' : 's'}'));
+        }).toList(),
+      ),
+    );
+    if (months == null) return;
+    await InactivityWipeService.setChatOverride(widget.conversationId, true, months);
+    if (mounted) setState(() {
+      _inactivityOverrideEnabled = true;
+      _inactivityOverrideMonths = months;
+    });
   }
 
   Future<void> _loadLockState() async {
@@ -587,6 +651,31 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                   context,
                   MaterialPageRoute(builder: (_) => ChatMediaBrowserScreen(conversationId: widget.conversationId, title: widget.peerUsername)),
                 ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.wallpaper_outlined),
+                title: const Text('Chat wallpaper'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => ChatWallpaperScreen(conversationId: widget.conversationId)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.notifications_off_outlined),
+                title: const Text('Muted keywords for this chat'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => KeywordMuteScreen(conversationId: widget.conversationId)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.auto_delete_outlined),
+                title: const Text('Auto-wipe if inactive'),
+                subtitle: Text(_inactivityOverrideLabel()),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _pickInactivityOverride,
               ),
               ListTile(
                 leading: Icon(Icons.delete_sweep_outlined, color: scheme.error),
