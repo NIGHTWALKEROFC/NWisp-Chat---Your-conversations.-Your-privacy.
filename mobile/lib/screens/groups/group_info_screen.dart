@@ -6,9 +6,12 @@ import 'package:image_picker/image_picker.dart';
 import '../../models/group.dart';
 import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
+import '../../services/inactivity_wipe_service.dart';
 import '../../services/media_service.dart';
 import '../chat_list_screen.dart';
 import '../chat/chat_media_browser_screen.dart';
+import '../chat/chat_wallpaper_screen.dart';
+import '../settings/keyword_mute_screen.dart';
 import 'report_group_screen.dart';
 import '../security/safety_number_screen.dart';
 
@@ -26,6 +29,68 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   final _contactService = ContactService();
   final Map<String, String> _usernames = {};
   bool _busy = false;
+  // Feature: inactivity auto-wipe, per-chat override — same shape as
+  // chat_settings_screen.dart's own version of this.
+  bool? _inactivityOverrideEnabled;
+  int _inactivityOverrideMonths = 3;
+
+  @override
+  void initState() {
+    super.initState();
+    InactivityWipeService.getChatOverride(widget.groupId).then((override) {
+      if (!mounted) return;
+      setState(() {
+        _inactivityOverrideEnabled = override?.enabled;
+        _inactivityOverrideMonths = override?.months ?? 3;
+      });
+    });
+  }
+
+  String _inactivityOverrideLabel() {
+    if (_inactivityOverrideEnabled == null) return "Follows your Settings > Auto-wipe inactive chats default";
+    if (_inactivityOverrideEnabled == true) return "On for this group — clears after $_inactivityOverrideMonths month${_inactivityOverrideMonths == 1 ? '' : 's'} of not opening it, no matter the app default";
+    return "Off for this group, even if the app default is on";
+  }
+
+  Future<void> _pickInactivityOverride() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Auto-wipe if inactive'),
+        children: [
+          SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, 'default'), child: const Text('Follow app default')),
+          SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, 'off'), child: const Text('Off for this group')),
+          SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, 'on'), child: const Text('On for this group')),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    if (choice == 'default') {
+      await InactivityWipeService.clearChatOverride(widget.groupId);
+      if (mounted) setState(() => _inactivityOverrideEnabled = null);
+      return;
+    }
+    if (choice == 'off') {
+      await InactivityWipeService.setChatOverride(widget.groupId, false, _inactivityOverrideMonths);
+      if (mounted) setState(() => _inactivityOverrideEnabled = false);
+      return;
+    }
+    final months = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('After how long'),
+        children: [1, 2, 3, 6, 12].map((m) {
+          return SimpleDialogOption(onPressed: () => Navigator.pop(dialogContext, m), child: Text('$m month${m == 1 ? '' : 's'}'));
+        }).toList(),
+      ),
+    );
+    if (months == null) return;
+    await InactivityWipeService.setChatOverride(widget.groupId, true, months);
+    if (mounted) setState(() {
+      _inactivityOverrideEnabled = true;
+      _inactivityOverrideMonths = months;
+    });
+  }
 
   String get _myUid => FirebaseAuth.instance.currentUser!.uid;
 
@@ -253,6 +318,31 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     await GroupService.instance.removeMember(widget.groupId, uid);
   }
 
+  /// Feature: ownership transfer. A deliberate handoff — separate from
+  /// leaveGroup's automatic reassignment (which only kicks in when the
+  /// owner actually leaves and just picks whichever admin comes first,
+  /// not someone chosen). This closes the "sole owner loses their
+  /// device" gap by letting an owner hand off BEFORE that happens, to
+  /// whoever they actually want.
+  Future<void> _confirmTransferOwnership(String uid, String username) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Make group owner?'),
+        content: Text(
+          '$username becomes the group owner instead of you. They\'ll be made an admin if they aren\'t one already. '
+          'You stay a member and admin — this only changes who owns the group.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Transfer')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await GroupService.instance.transferOwnership(widget.groupId, uid);
+  }
+
   Future<void> _leave(Group group) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -454,6 +544,31 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   MaterialPageRoute(builder: (_) => ChatMediaBrowserScreen(conversationId: widget.groupId, title: group.name)),
                 ),
               ),
+              ListTile(
+                leading: const Icon(Icons.wallpaper_outlined),
+                title: const Text('Chat wallpaper'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => ChatWallpaperScreen(conversationId: widget.groupId)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.notifications_off_outlined),
+                title: const Text('Muted keywords for this group'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => KeywordMuteScreen(conversationId: widget.groupId)),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.auto_delete_outlined),
+                title: const Text('Auto-wipe if inactive'),
+                subtitle: Text(_inactivityOverrideLabel()),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _pickInactivityOverride,
+              ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
                 title: const Text('Mute notifications'),
@@ -541,6 +656,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                   case 'remove':
                                     _removeMember(uid, username);
                                     break;
+                                  case 'transfer_owner':
+                                    _confirmTransferOwnership(uid, username);
+                                    break;
                                 }
                               },
                               itemBuilder: (context) => [
@@ -548,6 +666,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                 if (amAdmin && !isAdminRow) const PopupMenuItem(value: 'promote', child: Text('Make admin')),
                                 if (amAdmin && isAdminRow && !isOwnerRow) const PopupMenuItem(value: 'demote', child: Text('Remove as admin')),
                                 if (amAdmin && !isOwnerRow) const PopupMenuItem(value: 'remove', child: Text('Remove from group')),
+                                if (group.isOwner(_myUid) && !isOwnerRow) const PopupMenuItem(value: 'transfer_owner', child: Text('Make group owner')),
                               ],
                             ),
                     );
