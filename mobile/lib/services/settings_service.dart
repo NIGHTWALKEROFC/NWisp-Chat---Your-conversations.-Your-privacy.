@@ -49,4 +49,30 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_separateGroupsAndChatsKey, value);
   }
+
+  /// Feature: inactivity auto-wipe. Off by default — see
+  /// InactivityWipeService's own doc comment for the full global+per-chat
+  /// override design. This is just the GLOBAL default half of it.
+  static const _inactivityWipeEnabledKey = 'inactivity_wipe_global_enabled';
+  static const _inactivityWipeMonthsKey = 'inactivity_wipe_global_months';
+
+  static Future<bool> getInactivityWipeGlobalEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_inactivityWipeEnabledKey) ?? false;
+  }
+
+  static Future<void> setInactivityWipeGlobalEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_inactivityWipeEnabledKey, value);
+  }
+
+  static Future<int> getInactivityWipeGlobalMonths() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_inactivityWipeMonthsKey) ?? 3;
+  }
+
+  static Future<void> setInactivityWipeGlobalMonths(int months) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_inactivityWipeMonthsKey, months);
+  }
 }
