@@ -695,6 +695,29 @@ class LocalMessageStore {
     return rows.first['id'] as String;
   }
 
+  /// Feature: mute by keyword. Used ONLY from main.dart's foreground FCM
+  /// handler, to check the most-recently-received message's REAL,
+  /// already-decrypted text against the muted-keyword list before
+  /// showing a local notification for it. See KeywordMuteService's own
+  /// doc comment for why this is foreground-only and best-effort — the
+  /// push payload itself never contains real text (this app's relay
+  /// never has any plaintext to put there), so this is racing against
+  /// whichever arrives/finishes first, the realtime decrypt-and-store or
+  /// the FCM message. Returns null if nothing's been stored for this
+  /// conversation yet (i.e. the race was lost) — the caller treats that
+  /// as "can't tell, so don't suppress the notification".
+  static Future<LocalMessage?> getLatestMessage(String conversationId) async {
+    final rows = await _db!.query(
+      'messages',
+      where: 'conversation_id = ?',
+      whereArgs: [conversationId],
+      orderBy: 'created_at DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return _rowToMessage(rows.first);
+  }
+
   /// Feature: multi-select + bulk actions. Deletes several messages in
   /// one pass — just [deleteMessage] called per id, kept as its own
   /// method so callers (the bulk-delete confirmation dialog) only need
