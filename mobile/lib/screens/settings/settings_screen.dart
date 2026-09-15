@@ -8,6 +8,7 @@ import '../login_screen.dart';
 import '../security/duress_pin_setup_screen.dart';
 import '../security/pin_screen.dart';
 import 'chat_lock_setup_screen.dart';
+import 'keyword_mute_screen.dart';
 import 'paused_chats_screen.dart';
 import 'edit_profile_screen.dart';
 import 'account_screen.dart';
@@ -38,6 +39,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _biometricAvailable = false;
   // Feature: auto-lock on idle. null = off (default).
   int? _idleTimeoutMinutes;
+  // Feature: inactivity auto-wipe. Off by default.
+  bool _inactivityWipeEnabled = false;
+  int _inactivityWipeMonths = 3;
   int _ttlHours = 0; // 0 = never auto-delete — the default; disappearing messages are opt-in
   String _username = '';
   String _email = '';
@@ -56,6 +60,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final biometricEnabled = await AppLockService.isBiometricEnabled();
     final biometricAvailable = await BiometricUnlockService.isAvailable();
     final idleTimeoutMinutes = await AppLockService.getIdleTimeoutMinutes();
+    final inactivityWipeEnabled = await SettingsService.getInactivityWipeGlobalEnabled();
+    final inactivityWipeMonths = await SettingsService.getInactivityWipeGlobalMonths();
     final doc = await _authService.currentUserProfile();
     final data = doc.data() ?? {};
     // BUGFIX: lastSeenVisible/readReceiptsEnabled/messageTtlHours moved to
@@ -71,6 +77,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _biometricEnabled = biometricEnabled;
       _biometricAvailable = biometricAvailable;
       _idleTimeoutMinutes = idleTimeoutMinutes;
+      _inactivityWipeEnabled = inactivityWipeEnabled;
+      _inactivityWipeMonths = inactivityWipeMonths;
       _username = (data['username'] as String?) ?? '';
       _email = _authService.currentUser?.email ?? '';
       _lastSeenVisible = (privateData['lastSeenVisible'] as bool?) ?? true;
@@ -174,6 +182,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final minutes = picked == offSentinel ? null : picked;
     await AppLockService.setIdleTimeoutMinutes(minutes);
     if (mounted) setState(() => _idleTimeoutMinutes = minutes);
+  }
+
+  Future<void> _pickInactivityWipeMonths() async {
+    final options = [1, 2, 3, 6, 12];
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Auto-wipe after how long'),
+        children: options.map((m) {
+          return SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, m),
+            child: Row(
+              children: [
+                Icon(_inactivityWipeMonths == m ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
+                const SizedBox(width: 12),
+                Text('$m month${m == 1 ? '' : 's'}'),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+    if (picked == null) return;
+    await SettingsService.setInactivityWipeGlobalMonths(picked);
+    if (mounted) setState(() => _inactivityWipeMonths = picked);
   }
 
   void _openTtlPicker() {
@@ -397,6 +430,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     MaterialPageRoute(builder: (_) => const ChatLockSetupScreen()),
                   ),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.notifications_off_outlined),
+                  title: const Text('Muted keywords'),
+                  subtitle: const Text('Messages containing these words never notify you, in any chat'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KeywordMuteScreen())),
+                ),
+                SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.auto_delete_outlined),
+                  title: const Text('Auto-wipe inactive chats'),
+                  subtitle: Text(
+                    _inactivityWipeEnabled
+                        ? "On — any chat not opened in $_inactivityWipeMonths month${_inactivityWipeMonths == 1 ? '' : 's'} clears itself from this device (a chat can still opt out from its own settings)"
+                        : "Off by default — a chat not opened for a long time stays exactly as it is, unless you turn this on here or for one specific chat from that chat's own settings",
+                  ),
+                  value: _inactivityWipeEnabled,
+                  onChanged: (v) async {
+                    setState(() => _inactivityWipeEnabled = v);
+                    await SettingsService.setInactivityWipeGlobalEnabled(v);
+                  },
+                ),
+                if (_inactivityWipeEnabled)
+                  ListTile(
+                    contentPadding: const EdgeInsets.only(left: 72, right: 16),
+                    title: const Text('After how long'),
+                    subtitle: Text('$_inactivityWipeMonths month${_inactivityWipeMonths == 1 ? '' : 's'} of not opening a chat'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _pickInactivityWipeMonths,
+                  ),
                 ListTile(
                   leading: const Icon(Icons.pause_circle_outline),
                   title: const Text('Paused chats'),
