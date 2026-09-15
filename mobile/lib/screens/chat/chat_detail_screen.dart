@@ -8,6 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
 import '../../services/chat_lock_service.dart';
+import '../../services/chat_wallpaper_service.dart';
+import '../../services/inactivity_wipe_service.dart';
 import '../../services/conversation_service.dart';
 import '../../services/local_message_store.dart';
 import '../../services/media_compression_service.dart';
@@ -113,6 +115,16 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   // tapped (a one-shot indicator, not a live "still unread" tracker).
   String? _firstUnreadId;
 
+  // Feature: chat wallpapers/themes per conversation. Local-only, see
+  // ChatWallpaperService. Defaults to kChatWallpapers.first ("Default"
+  // — empty colors list, meaning "use the existing dot-grid look").
+  ChatWallpaper _wallpaper = kChatWallpapers.first;
+
+  Future<void> _loadWallpaper() async {
+    final w = await ChatWallpaperService.getWallpaper(widget.conversationId);
+    if (mounted) setState(() => _wallpaper = w);
+  }
+
   int? _profileTtlHours;
   int? _chatTtlOverride;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
@@ -130,6 +142,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     LocalMessageStore.getFirstUnreadId(widget.conversationId).then((id) {
       if (mounted) setState(() => _firstUnreadId = id);
     });
+    _loadWallpaper();
+    InactivityWipeService.recordOpened(widget.conversationId);
     // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
     // see ScreenshotGuardService. Released in dispose() below.
     ScreenshotGuardService.acquire();
@@ -867,7 +881,12 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       body: Stack(
         children: [
           Positioned.fill(
-            child: CustomPaint(painter: _DotGridPainter(color: scheme.onSurface.withValues(alpha: 0.05))),
+            child: _wallpaper.colors.isEmpty
+                ? CustomPaint(painter: _DotGridPainter(color: scheme.onSurface.withValues(alpha: 0.05)))
+                : Container(decoration: BoxDecoration(
+                    color: _wallpaper.colors.length == 1 ? _wallpaper.colors.first : null,
+                    gradient: _wallpaper.colors.length > 1 ? LinearGradient(colors: _wallpaper.colors, begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
+                  )),
           ),
           Column(
             children: [
@@ -1359,7 +1378,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 peerUsername: widget.peerUsername,
               ),
             ),
-          ),
+          ).then((_) => _loadWallpaper()),
         ),
       ],
     );
