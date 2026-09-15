@@ -12,6 +12,8 @@ import '../../services/local_message_store.dart';
 import '../../services/media_compression_service.dart';
 import '../../services/media_service.dart';
 import '../../services/message_relay_service.dart';
+import '../../services/chat_wallpaper_service.dart';
+import '../../services/inactivity_wipe_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
@@ -127,6 +129,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   // Feature: "jump to unread" button — same one-shot design as
   // chat_detail_screen.dart's own _firstUnreadId.
   String? _firstUnreadId;
+  // Feature: chat wallpapers/themes per conversation.
+  ChatWallpaper _wallpaper = kChatWallpapers.first;
+  Future<void> _loadWallpaper() async {
+    final w = await ChatWallpaperService.getWallpaper(widget.groupId);
+    if (mounted) setState(() => _wallpaper = w);
+  }
   DateTime? _lastIdentityCheck;
 
   Future<void> _checkMemberIdentityChanges() async {
@@ -151,6 +159,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     LocalMessageStore.getFirstUnreadId(widget.groupId).then((id) {
       if (mounted) setState(() => _firstUnreadId = id);
     });
+    _loadWallpaper();
+    InactivityWipeService.recordOpened(widget.groupId);
     // Silently flush any messages that were queued because a member
     // hadn't updated the app yet (see ContactNotUpgradedException /
     // retryPendingResends) — opening the group is a natural, frequent
@@ -1273,7 +1283,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           : AppBar(
         titleSpacing: 0,
         title: InkWell(
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: widget.groupId))),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: widget.groupId))).then((_) => _loadWallpaper()),
           child: Row(
             children: [
               CircleAvatar(
@@ -1312,7 +1322,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               },
               child: const Icon(Icons.arrow_downward),
             ),
-      body: Column(
+      body: Container(
+        decoration: BoxDecoration(
+          color: _wallpaper.colors.length == 1 ? _wallpaper.colors.first : null,
+          gradient: _wallpaper.colors.length > 1 ? LinearGradient(colors: _wallpaper.colors, begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
+        ),
+        child: Column(
         children: [
           if (_membersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme),
           Expanded(
@@ -1516,6 +1531,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   ),
                 ),
         ],
+      ),
       ),
     );
   }
