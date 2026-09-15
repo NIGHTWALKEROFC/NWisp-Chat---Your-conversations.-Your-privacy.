@@ -276,9 +276,24 @@ service cloud.firestore {
           get(/databases/$(database)/documents/groupInviteRequests/$(groupId + '_' + request.auth.uid)).data.status == 'accepted';
       }
 
+      // Feature: ownership transfer. Only the CURRENT owner can trigger
+      // this (not just any admin) — the new owner must already be (or
+      // become, in this same write) an admin, and the write can only
+      // touch ownerId/admins, nothing else about the group. Separate
+      // from isSelfLeaving() above, which only reassigns ownership as a
+      // side effect of the owner actually leaving; this is a deliberate
+      // "hand it to this specific person while I stay in the group" action.
+      function isOwnerTransferringOwnership() {
+        return isSignedIn() &&
+          resource.data.ownerId == request.auth.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerId', 'admins']) &&
+          request.resource.data.ownerId in resource.data.members &&
+          request.resource.data.ownerId in request.resource.data.admins;
+      }
+
       allow read: if isGroupMember();
       allow create: if isGroupMemberOnCreate();
-      allow update: if isGroupAdmin() || isSelfLeaving() || isSelfMutingOrArchiving() || isSelfJoiningViaAcceptedInvite();
+      allow update: if isGroupAdmin() || isSelfLeaving() || isSelfMutingOrArchiving() || isSelfJoiningViaAcceptedInvite() || isOwnerTransferringOwnership();
       allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
 
       match /typing/{uid} {
