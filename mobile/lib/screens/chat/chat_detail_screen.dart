@@ -268,6 +268,23 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   GlobalKey _bubbleKeyFor(String id) => _bubbleKeys.putIfAbsent(id, () => GlobalKey());
 
+  /// Feature: date separators. A plain calendar-day comparison — local
+  /// device time, not UTC, so "Today" matches what the person actually
+  /// sees on their own clock.
+  bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+  String _formatDateSeparator(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(dt.year, dt.month, dt.day);
+    final diff = today.difference(that).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final sameYear = dt.year == now.year;
+    return sameYear ? '${dt.day} ${months[dt.month - 1]}' : '${dt.day} ${months[dt.month - 1]} ${dt.year}';
+  }
+
   void _jumpToMessage(String id) {
     final ctx = _bubbleKeys[id]?.currentContext;
     if (ctx != null) {
@@ -963,7 +980,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                           }
                         }
                         final uid = _myUid;
-                        return KeyedSubtree(
+                        // Feature: date separators, WhatsApp-style — a
+                        // "Today"/"Yesterday"/date header appears above
+                        // the first message of each calendar day. Checked
+                        // against the PREVIOUS message in the (ascending)
+                        // list, so this is purely a rendering concern —
+                        // nothing here is stored or sent anywhere.
+                        final showDateHeader = i == 0 || !_isSameDay(messages[i - 1].createdAt, msg.createdAt);
+                        final bubble = KeyedSubtree(
                           key: _bubbleKeyFor(msg.id),
                           child: _MessageBubble(
                             id: msg.id,
@@ -979,6 +1003,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             pinned: _pinnedIds.contains(msg.id),
                             selected: _selectedIds.contains(msg.id),
                             edited: msg.editedAt != null,
+                            starred: msg.starred,
                             isViewOnce: msg.isViewOnce,
                             viewOnceConsumed: msg.viewOnceConsumed,
                             mediaGallery: messages
@@ -1000,6 +1025,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                               setState(() => _replyingTo = msg);
                             },
                           ),
+                        );
+                        if (!showDateHeader) return bubble;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _DateSeparator(label: _formatDateSeparator(msg.createdAt)),
+                            bubble,
+                          ],
                         );
                       },
                     );
@@ -1489,6 +1522,7 @@ class _MessageBubble extends StatelessWidget {
   final bool pinned;
   final bool selected;
   final bool edited;
+  final bool starred;
   final bool isViewOnce;
   final bool viewOnceConsumed;
   final String id;
@@ -1514,6 +1548,7 @@ class _MessageBubble extends StatelessWidget {
     required this.pinned,
     required this.selected,
     this.edited = false,
+    this.starred = false,
     this.isViewOnce = false,
     this.viewOnceConsumed = false,
     this.mediaGallery = const [],
@@ -1686,6 +1721,15 @@ class _MessageBubble extends StatelessWidget {
                             mainAxisSize: MainAxisSize.min,
                             mainAxisAlignment: MainAxisAlignment.end,
                             children: [
+                              // Feature: starred/saved messages — a small
+                              // persistent indicator right in the bubble,
+                              // not just correct Star/Unstar wording in the
+                              // menu, so a starred message is recognizable
+                              // at a glance while scrolling.
+                              if (starred) ...[
+                                Icon(Icons.star, size: 11, color: isMine ? scheme.onPrimary.withValues(alpha: 0.8) : Colors.amber),
+                                const SizedBox(width: 3),
+                              ],
                               Text(
                                 _formatTimestamp(createdAt),
                                 style: TextStyle(
@@ -1972,6 +2016,26 @@ class _ViewOnceBubbleContent extends StatelessWidget {
               style: TextStyle(color: Theme.of(context).colorScheme.onPrimaryContainer, fontSize: 12),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DateSeparator extends StatelessWidget {
+  final String label;
+  const _DateSeparator({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+          child: Text(label, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant, fontWeight: FontWeight.w500)),
         ),
       ),
     );
