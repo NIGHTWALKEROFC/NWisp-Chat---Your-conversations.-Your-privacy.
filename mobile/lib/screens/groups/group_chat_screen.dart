@@ -126,6 +126,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
+  /// Feature: date separators — same logic as chat_detail_screen.dart's
+  /// own version of this.
+  bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+  String _formatDateSeparator(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(dt.year, dt.month, dt.day);
+    final diff = today.difference(that).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final sameYear = dt.year == now.year;
+    return sameYear ? '${dt.day} ${months[dt.month - 1]}' : '${dt.day} ${months[dt.month - 1]} ${dt.year}';
+  }
+
   // Feature: "jump to unread" button — same one-shot design as
   // chat_detail_screen.dart's own _firstUnreadId.
   String? _firstUnreadId;
@@ -1107,9 +1123,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
                 child: Align(
                   alignment: Alignment.centerRight,
-                  child: Text(
-                    _formatTimestamp(message.createdAt),
-                    style: TextStyle(fontSize: 10, color: (mine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.6)),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Feature: starred/saved messages — same persistent
+                      // bubble indicator as chat_detail_screen.dart's 1:1
+                      // version, so it's recognizable at a glance here too.
+                      if (message.starred) ...[
+                        Icon(Icons.star, size: 11, color: mine ? scheme.onPrimary.withValues(alpha: 0.8) : Colors.amber),
+                        const SizedBox(width: 3),
+                      ],
+                      Text(
+                        _formatTimestamp(message.createdAt),
+                        style: TextStyle(fontSize: 10, color: (mine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.6)),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -1349,7 +1377,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     itemCount: _messages.length,
-                    itemBuilder: (context, i) => KeyedSubtree(key: _bubbleKeyFor(_messages[i].id), child: _bubbleFor(_messages[i])),
+                    itemBuilder: (context, i) {
+                      final bubble = KeyedSubtree(key: _bubbleKeyFor(_messages[i].id), child: _bubbleFor(_messages[i]));
+                      final showDateHeader = i == 0 || !_isSameDay(_messages[i - 1].createdAt, _messages[i].createdAt);
+                      if (!showDateHeader) return bubble;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [_DateSeparator(label: _formatDateSeparator(_messages[i].createdAt)), bubble],
+                      );
+                    },
                   ),
           ),
           if (_editingMessage != null)
@@ -1543,6 +1579,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 // Container (see _bubbleFor) — they deliberately have NO rounding or
 // padding of their own, so there's only ever one border radius per bubble
 // instead of a visible "ring" between an inner and outer radius.
+
+class _DateSeparator extends StatelessWidget {
+  final String label;
+  const _DateSeparator({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+          child: Text(label, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant, fontWeight: FontWeight.w500)),
+        ),
+      ),
+    );
+  }
+}
 
 class _ViewOnceBubble extends StatelessWidget {
   final String id;
