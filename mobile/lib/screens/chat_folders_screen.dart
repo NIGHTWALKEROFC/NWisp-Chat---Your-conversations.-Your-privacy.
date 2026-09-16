@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
 import '../services/chat_folder_service.dart';
@@ -146,9 +147,41 @@ class _FolderChatPickerScreenState extends State<_FolderChatPickerScreen> {
   @override
   void initState() {
     super.initState();
-    LocalMessageStore.watchSummaries().first.then((s) {
-      if (mounted) setState(() => _summaries = s);
-    });
+    _load();
+  }
+
+  /// BUGFIX (folder audit): this used to source its list ONLY from
+  /// LocalMessageStore.watchSummaries(), which is derived from the local
+  /// `messages` table — so a brand-new chat or group with ZERO messages
+  /// sent or received yet never showed up here at all, and couldn't be
+  /// added to a folder. Now also pulls every group and 1:1 conversation
+  /// the person is actually part of, straight from Firestore, and merges
+  /// the two lists (by conversationId) so an empty chat/group appears
+  /// too — with an empty preview, but fully assignable.
+  Future<void> _load() async {
+    final fromMessages = await LocalMessageStore.watchSummaries().first;
+    final byId = {for (final s in fromMessages) s.conversationId: s};
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid != null) {
+      final groupsSnap = await FirebaseFirestore.instance.collection('groups').where('members', arrayContains: myUid).get();
+      for (final doc in groupsSnap.docs) {
+        byId.putIfAbsent(
+          doc.id,
+          () => ConversationSummary(conversationId: doc.id, peerUid: '', lastText: '', lastAt: DateTime.now(), unreadCount: 0, isGroup: true, groupName: (doc.data()['name'] as String?) ?? 'Group'),
+        );
+      }
+      final convosSnap = await FirebaseFirestore.instance.collection('conversations').where('participants', arrayContains: myUid).get();
+      for (final doc in convosSnap.docs) {
+        final participants = List<String>.from(doc.data()['participants'] ?? []);
+        final peer = participants.firstWhere((p) => p != myUid, orElse: () => '');
+        if (peer.isEmpty) continue;
+        byId.putIfAbsent(
+          doc.id,
+          () => ConversationSummary(conversationId: doc.id, peerUid: peer, lastText: '', lastAt: DateTime.now(), unreadCount: 0, isGroup: false),
+        );
+      }
+    }
+    if (mounted) setState(() => _summaries = byId.values.toList());
   }
 
   Future<String> _labelFor(ConversationSummary s) async {
