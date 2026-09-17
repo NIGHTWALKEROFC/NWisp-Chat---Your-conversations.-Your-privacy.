@@ -1474,6 +1474,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     : _buildComposeBar(scheme),
           ),
         ],
+        ),
       ),
     );
   }
