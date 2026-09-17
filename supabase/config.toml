@@ -21,3 +21,22 @@ verify_jwt = false
 
 [functions.send-login-approval-push]
 verify_jwt = false
+
+# --- Feature: custom-branded, non-spam signup/reset email flow ----------
+# See EMAIL_SETUP.md. send-signup-otp, verify-signup-otp and
+# send-password-reset are all public/unauthenticated by design (there's no
+# signed-in user yet at signup or "forgot password") — verify_jwt = false
+# here just stops Supabase's platform gate rejecting them outright.
+# confirm-verified-email DOES check a Firebase ID token itself (same
+# reason as get-signed-url above), so it needs verify_jwt = false too.
+[functions.send-signup-otp]
+verify_jwt = false
+
+[functions.verify-signup-otp]
+verify_jwt = false
+
+[functions.confirm-verified-email]
+verify_jwt = false
+
+[functions.send-password-reset]
+verify_jwt = false
