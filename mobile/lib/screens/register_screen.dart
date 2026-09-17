@@ -25,15 +25,28 @@ enum _UsernameCheck { idle, checking, available, taken, invalid }
 
 enum _EmailCheck { idle, checking, looksNew, looksTaken, invalid }
 
+// Feature: Instagram-style signup — steps are now username -> email ->
+// verify (6-digit code emailed to that address) -> password -> review.
+// The old flow sent a "click to confirm" link only AFTER the account and
+// password already existed; this confirms the email FIRST, the way
+// Instagram/most modern apps do, and there's no separate link-click step
+// at all anymore — entering the code IS the confirmation.
+const _stepUsername = 0;
+const _stepEmail = 1;
+const _stepVerify = 2;
+const _stepPassword = 3;
+const _stepReview = 4;
+
 class _RegisterScreenState extends State<RegisterScreen> {
   final _authService = AuthService();
   final _usernameController = TextEditingController();
   final _emailController = TextEditingController();
+  final _otpController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
 
-  int _step = 0;
-  static const _totalSteps = 4;
+  int _step = _stepUsername;
+  static const _totalSteps = 5;
 
   _UsernameCheck _usernameCheck = _UsernameCheck.idle;
   Timer? _usernameDebounce;
@@ -42,6 +55,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
   _EmailCheck _emailCheck = _EmailCheck.idle;
   Timer? _emailDebounce;
   int _emailRequestId = 0;
+
+  // ---- email verification (OTP) state ----
+  bool _emailVerified = false;
+  bool _sendingOtp = false;
+  bool _verifyingOtp = false;
+  String? _otpError;
+  int _resendCooldown = 0;
+  Timer? _resendTimer;
 
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
@@ -54,14 +75,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
   void dispose() {
     _usernameDebounce?.cancel();
     _emailDebounce?.cancel();
+    _resendTimer?.cancel();
     _usernameController.dispose();
     _emailController.dispose();
+    _otpController.dispose();
     _passwordController.dispose();
     _confirmController.dispose();
     super.dispose();
   }
 
-  // ---------- Step 1: username ----------
+  // ---------- Step: username ----------
 
   void _onUsernameChanged(String value) {
     _usernameDebounce?.cancel();
@@ -117,10 +140,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   bool get _canProceedFromUsername => _usernameCheck == _UsernameCheck.available;
 
-  // ---------- Step 2: email ----------
+  // ---------- Step: email ----------
 
   void _onEmailChanged(String value) {
     _emailDebounce?.cancel();
+    // Changing the email after it was verified invalidates that
+    // verification — they'd otherwise be able to "verify" one address
+    // and submit a different one.
+    if (_emailVerified) setState(() => _emailVerified = false);
     final trimmed = value.trim();
     final validFormat = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(trimmed);
     if (!validFormat) {
@@ -165,7 +192,96 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   bool get _canProceedFromEmail => _emailCheck == _EmailCheck.looksNew || _emailCheck == _EmailCheck.checking;
 
-  // ---------- Step 3: password ----------
+  // ---------- Step: verify email (OTP) ----------
+
+  void _startResendCooldown() {
+    _resendTimer?.cancel();
+    setState(() => _resendCooldown = 60);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _resendCooldown--;
+        if (_resendCooldown <= 0) timer.cancel();
+      });
+    });
+  }
+
+  Future<void> _sendOtpAndAdvance() async {
+    setState(() {
+      _sendingOtp = true;
+      _error = null;
+      _otpError = null;
+    });
+    try {
+      await _authService.sendSignupOtp(_emailController.text.trim());
+      if (!mounted) return;
+      _otpController.clear();
+      setState(() {
+        _sendingOtp = false;
+        _step = _stepVerify;
+      });
+      _startResendCooldown();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sendingOtp = false;
+        _error = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Future<void> _resendOtp() async {
+    if (_resendCooldown > 0) return;
+    setState(() {
+      _sendingOtp = true;
+      _otpError = null;
+    });
+    try {
+      await _authService.sendSignupOtp(_emailController.text.trim());
+      if (!mounted) return;
+      setState(() => _sendingOtp = false);
+      _startResendCooldown();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sendingOtp = false;
+        _otpError = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Future<void> _verifyOtpAndAdvance() async {
+    final code = _otpController.text.trim();
+    if (code.length != 6) {
+      setState(() => _otpError = 'Enter the 6-digit code from your email.');
+      return;
+    }
+    setState(() {
+      _verifyingOtp = true;
+      _otpError = null;
+    });
+    try {
+      await _authService.verifySignupOtp(_emailController.text.trim(), code);
+      if (!mounted) return;
+      _resendTimer?.cancel();
+      setState(() {
+        _verifyingOtp = false;
+        _emailVerified = true;
+        _step = _stepPassword;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _verifyingOtp = false;
+        _otpError = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  // ---------- Step: password ----------
 
   bool get _canProceedFromPassword {
     final pw = _passwordController.text;
@@ -176,15 +292,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   void _next() {
     setState(() => _error = null);
-    if (_step == 0 && !_canProceedFromUsername) {
+    if (_step == _stepUsername && !_canProceedFromUsername) {
       setState(() => _error = 'Pick an available username to continue.');
       return;
     }
-    if (_step == 1 && !_canProceedFromEmail) {
-      setState(() => _error = 'Enter an email that looks available.');
+    if (_step == _stepEmail) {
+      if (!_canProceedFromEmail) {
+        setState(() => _error = 'Enter an email that looks available.');
+        return;
+      }
+      _sendOtpAndAdvance();
       return;
     }
-    if (_step == 2 && !_canProceedFromPassword) {
+    if (_step == _stepVerify) {
+      // Already confirmed (e.g. they went back to peek at this step and
+      // are just moving forward again) — no need to re-spend the
+      // already-consumed one-time code against the server.
+      if (_emailVerified) {
+        setState(() => _step = _stepPassword);
+        return;
+      }
+      _verifyOtpAndAdvance();
+      return;
+    }
+    if (_step == _stepPassword && !_canProceedFromPassword) {
       setState(() => _error = _passwordController.text.length < 6
           ? 'Password must be at least 6 characters.'
           : "Passwords don't match.");
@@ -195,6 +326,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   void _back() {
     setState(() => _error = null);
+    if (_step == _stepVerify) _resendTimer?.cancel();
     if (_step > 0) setState(() => _step--);
   }
 
@@ -231,6 +363,26 @@ class _RegisterScreenState extends State<RegisterScreen> {
     return 'Sign-up failed. Please try again.';
   }
 
+  bool get _loadingAnyStep => _loading || _sendingOtp || _verifyingOtp;
+
+  String get _primaryLabel {
+    switch (_step) {
+      case _stepEmail:
+        return 'Send code';
+      case _stepVerify:
+        return 'Verify';
+      case _stepReview:
+        return 'Create account';
+      default:
+        return 'Continue';
+    }
+  }
+
+  VoidCallback? get _primaryAction {
+    if (_loadingAnyStep) return null;
+    return _step == _stepReview ? _createAccount : _next;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -238,7 +390,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       appBar: AppBar(
         title: const Text('Create account'),
         leading: _step > 0
-            ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: _loading ? null : _back)
+            ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: _loadingAnyStep ? null : _back)
             : null,
       ),
       body: SafeArea(
@@ -259,14 +411,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         child: Text(_error!, style: TextStyle(color: scheme.error)),
                       ),
                     ElevatedButton(
-                      onPressed: _loading ? null : (_step == _totalSteps - 1 ? _createAccount : _next),
-                      child: _loading
+                      onPressed: _primaryAction,
+                      child: _loadingAnyStep
                           ? const SizedBox(
                               height: 22,
                               width: 22,
                               child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
                             )
-                          : Text(_step == _totalSteps - 1 ? 'Create account' : 'Continue'),
+                          : Text(_primaryLabel),
                     ),
                   ],
                 ),
@@ -280,7 +432,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Widget _buildStep(ColorScheme scheme) {
     switch (_step) {
-      case 0:
+      case _stepUsername:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -299,14 +451,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
             if (_usernameStatusWidget(scheme) != null) _usernameStatusWidget(scheme)!,
           ],
         );
-      case 1:
+      case _stepEmail:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text('Add your email', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 4),
             Text(
-              "We'll send a verification link here once your account is created.",
+              "We'll send a 6-digit code here to confirm it's yours.",
               style: TextStyle(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 20),
@@ -321,7 +473,46 @@ class _RegisterScreenState extends State<RegisterScreen> {
             if (_emailStatusWidget(scheme) != null) _emailStatusWidget(scheme)!,
           ],
         );
-      case 2:
+      case _stepVerify:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Check your email', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              'Enter the 6-digit code we sent to ${_emailController.text.trim()}.',
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _otpController,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 28, letterSpacing: 10, fontWeight: FontWeight.bold),
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(counterText: '', border: OutlineInputBorder()),
+              onChanged: (_) {
+                if (_otpError != null) setState(() => _otpError = null);
+              },
+            ),
+            if (_otpError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_otpError!, style: TextStyle(color: scheme.error, fontSize: 12.5)),
+              ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: (_resendCooldown > 0 || _sendingOtp) ? null : _resendOtp,
+                child: Text(_resendCooldown > 0 ? 'Resend code in ${_resendCooldown}s' : 'Resend code'),
+              ),
+            ),
+          ],
+        );
+      case _stepPassword:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -364,7 +555,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
           ],
         );
-      case 3:
+      case _stepReview:
       default:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -373,6 +564,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
             const SizedBox(height: 16),
             _ReviewRow(label: 'Username', value: _usernameController.text.trim()),
             _ReviewRow(label: 'Email', value: _emailController.text.trim()),
+            Row(
+              children: [
+                Icon(Icons.verified, size: 15, color: Colors.green.shade600),
+                const SizedBox(width: 6),
+                Text('Email verified', style: TextStyle(color: Colors.green.shade600, fontSize: 12.5)),
+              ],
+            ),
             const SizedBox(height: 8),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
