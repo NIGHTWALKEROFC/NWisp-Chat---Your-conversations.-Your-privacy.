@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reset your NWisp password</title>
+<!--
+  This page is what makes the emailed "Reset your password" button in
+  send-password-reset actually work, and is meant to be hosted for free
+  on GitHub Pages (Settings > Pages > Deploy from branch > main / /docs) —
+  no domain purchase needed, you get a URL like:
+    https://<your-github-username>.github.io/<repo-name>/reset-password/
+
+  It is a plain static page — no build step, no server, nothing to
+  deploy beyond copying this file. It talks directly to Google's public
+  Identity Toolkit REST API using the `apiKey` Firebase already put in
+  the link's query string, the exact same way Firebase's own default
+  reset-password page does. See EMAIL_SETUP.md step 5 for the one-time
+  Firebase Console setting that points reset emails at this page instead
+  of Firebase's default one, and step 6 for adding this page's domain to
+  Firebase's "Authorized domains" list (Firebase requires that before it
+  will even let you save the custom action URL).
+-->
+<style>
+  :root {
+    --brand: #00C896;
+    --bg: #0D1117;
+    --card: #161B22;
+    --border: #30363D;
+    --text: #E6EDF3;
+    --muted: #8B949E;
+    --error: #F85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 28px;
+  }
+  .brand { font-size: 20px; font-weight: 700; margin: 0 0 2px 0; }
+  .tagline { color: var(--muted); font-size: 12px; margin: 0 0 24px 0; }
+  h1 { font-size: 18px; margin: 0 0 8px 0; }
+  p.desc { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 20px 0; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #0D1117;
+    color: var(--text);
+    font-size: 15px;
+    margin-bottom: 14px;
+  }
+  input:focus { outline: none; border-color: var(--brand); }
+  button {
+    width: 100%;
+    padding: 13px;
+    border-radius: 10px;
+    border: none;
+    background: var(--brand);
+    color: #04120C;
+    font-weight: 700;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .error { color: var(--error); font-size: 13.5px; margin: -6px 0 14px 0; min-height: 1em; }
+  .success-icon { font-size: 40px; text-align: center; margin-bottom: 12px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <p class="brand">NWisp</p>
+    <p class="tagline">Your conversations. Your privacy.</p>
+
+    <div id="loadingState">
+      <p class="desc">Checking your reset link…</p>
+    </div>
+
+    <div id="formState" class="hidden">
+      <h1>Choose a new password</h1>
+      <p class="desc" id="forEmail"></p>
+      <label for="newPassword">New password</label>
+      <input id="newPassword" type="password" autocomplete="new-password" placeholder="At least 6 characters" />
+      <label for="confirmPassword">Confirm new password</label>
+      <input id="confirmPassword" type="password" autocomplete="new-password" placeholder="Re-enter password" />
+      <div class="error" id="formError"></div>
+      <button id="submitBtn">Reset password</button>
+    </div>
+
+    <div id="doneState" class="hidden">
+      <div class="success-icon">✅</div>
+      <h1 style="text-align:center;">Password updated</h1>
+      <p class="desc" style="text-align:center;">You can go back to the NWisp app and sign in with your new password.</p>
+    </div>
+
+    <div id="invalidState" class="hidden">
+      <h1>This link isn't valid</h1>
+      <p class="desc" id="invalidReason">It may have already been used, or it's expired. Go back to the app and request a new reset link.</p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get('mode');
+  const oobCode = params.get('oobCode');
+  const apiKey = params.get('apiKey');
+
+  const loadingState = document.getElementById('loadingState');
+  const formState = document.getElementById('formState');
+  const doneState = document.getElementById('doneState');
+  const invalidState = document.getElementById('invalidState');
+  const invalidReason = document.getElementById('invalidReason');
+  const forEmail = document.getElementById('forEmail');
+  const formError = document.getElementById('formError');
+  const submitBtn = document.getElementById('submitBtn');
+  const newPasswordInput = document.getElementById('newPassword');
+  const confirmPasswordInput = document.getElementById('confirmPassword');
+
+  function show(el) {
+    [loadingState, formState, doneState, invalidState].forEach((e) => e.classList.add('hidden'));
+    el.classList.remove('hidden');
+  }
+
+  if (mode !== 'resetPassword' || !oobCode || !apiKey) {
+    invalidReason.textContent = 'This link is missing information it needs. Go back to the app and request a new reset link.';
+    show(invalidState);
+    return;
+  }
+
+  const IDENTITY_TOOLKIT_URL = 'https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=' + encodeURIComponent(apiKey);
+
+  // Step 1: verify the code is still valid and find out which email it's
+  // for, WITHOUT changing the password yet (omit newPassword to just
+  // check the code — this is the same call Firebase's own default page
+  // makes first).
+  fetch(IDENTITY_TOOLKIT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ oobCode: oobCode }),
+  })
+    .then((res) => res.json().then((body) => ({ ok: res.ok, body: body })))
+    .then(({ ok, body }) => {
+      if (!ok) {
+        invalidReason.textContent = 'This link has already been used or has expired. Go back to the app and request a new one.';
+        show(invalidState);
+        return;
+      }
+      forEmail.textContent = body.email ? ('For ' + body.email) : '';
+      show(formState);
+    })
+    .catch(() => {
+      invalidReason.textContent = 'Could not reach the server. Check your connection and reload this page.';
+      show(invalidState);
+    });
+
+  submitBtn.addEventListener('click', function () {
+    const pw = newPasswordInput.value;
+    const confirm = confirmPasswordInput.value;
+    formError.textContent = '';
+
+    if (pw.length < 6) {
+      formError.textContent = 'Password must be at least 6 characters.';
+      return;
+    }
+    if (pw !== confirm) {
+      formError.textContent = "Passwords don't match.";
+      return;
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Resetting…';
+
+    fetch(IDENTITY_TOOLKIT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oobCode: oobCode, newPassword: pw }),
+    })
+      .then((res) => res.json().then((body) => ({ ok: res.ok, body: body })))
+      .then(({ ok, body }) => {
+        if (!ok) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Reset password';
+          formError.textContent = (body && body.error && body.error.message)
+            ? 'Could not reset password (' + body.error.message + '). The link may have expired — request a new one.'
+            : 'Could not reset password. The link may have expired — request a new one.';
+          return;
+        }
+        show(doneState);
+      })
+      .catch(() => {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Reset password';
+        formError.textContent = 'Could not reach the server. Check your connection and try again.';
+      });
+  });
+})();
+</script>
+</body>
+</html>
