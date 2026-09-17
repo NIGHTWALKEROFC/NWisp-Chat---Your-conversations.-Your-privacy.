@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
@@ -33,7 +32,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   // disabled after we can confirm the password was genuinely changed — by
   // having the user enter the new password here and verifying it against
   // Firebase directly (same reauthenticate check the primary "Forgot PIN"
-  // path already uses).
+  // path already uses). Unchanged by the branded-email rework below: the
+  // person still ends up actually changing their Firebase Auth password
+  // (now via the button in the emailed page instead of a bare Firebase
+  // link), so this verification step works exactly the same as before.
   final _newPasswordController = TextEditingController();
   bool _confirming = false;
   String? _confirmError;
@@ -54,17 +56,17 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       _emailError = null;
     });
     try {
-      await _authService.sendPasswordResetEmail(email);
+      // Feature: Instagram-style reset — this now emails a branded
+      // "Reset your password" button (via our own Gmail-sent email,
+      // see EMAIL_SETUP.md) instead of Firebase's default plain link.
+      // The server always returns the same message whether or not the
+      // email is registered, so this screen can't be used to check
+      // which emails have accounts.
+      await _authService.requestPasswordReset(email);
       if (!mounted) return;
       setState(() {
         _sendingEmail = false;
         _emailSent = true;
-      });
-    } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _sendingEmail = false;
-        _emailError = e.message ?? 'Could not send reset email';
       });
     } catch (e) {
       if (!mounted) return;
@@ -84,7 +86,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     });
     try {
       // Only succeeds if `newPassword` really is the account's current
-      // password right now — i.e. the reset link was actually used.
+      // password right now — i.e. the reset button/page was actually
+      // used to change it.
       await _authService.reauthenticate(newPassword);
       await AppLockService.resetAfterAccountVerification();
       final uid = _authService.currentUserId;
@@ -94,17 +97,11 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         _confirming = false;
         _appLockCleared = true;
       });
-    } on FirebaseAuthException catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _confirming = false;
-        _confirmError = "That doesn't match your current password yet — make sure you've finished the reset link first.";
-      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _confirming = false;
-        _confirmError = 'Could not verify — please try again.';
+        _confirmError = "That doesn't match your current password yet — make sure you've finished resetting it first.";
       });
     }
   }
@@ -119,7 +116,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text("We'll email you a secure link to set a new password."),
+            const Text("We'll email you a button to reset your password directly."),
             const SizedBox(height: 16),
             TextField(
               controller: _emailController,
@@ -146,7 +143,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Check your inbox for a reset link. It may take a minute to arrive.',
+                        "Check your inbox for a 'Reset your password' email — tap the button in it to set a new password. It may take a minute to arrive.",
                         style: TextStyle(color: scheme.onPrimaryContainer),
                       ),
                     ),
@@ -158,7 +155,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 onPressed: _sendingEmail ? null : _sendResetEmail,
                 child: _sendingEmail
                     ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text('Send reset link'),
+                    : const Text('Send reset email'),
               ),
             if (_emailSent && widget.alsoResetAppLock) ...[
               const SizedBox(height: 24),
@@ -186,7 +183,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 )
               else ...[
                 Text(
-                  "Once you've finished the reset link, enter your new password below to also turn off App Lock.",
+                  "Once you've finished resetting it in the email, enter your new password below to also turn off App Lock.",
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 12),
