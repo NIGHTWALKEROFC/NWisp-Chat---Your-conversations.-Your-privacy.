@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 import 'device_session_service.dart';
 import 'session_service.dart';
 
@@ -29,6 +31,94 @@ class AuthService {
 
   DocumentReference<Map<String, dynamic>> _presenceRef(String uid) =>
       _db.collection('users').doc(uid).collection('private').doc('presence');
+
+  // ---------------------------------------------------------------------
+  // Feature: custom-branded, non-spam email flow (signup OTP + a branded
+  // "reset your password" button) — see EMAIL_SETUP.md for the full
+  // picture and supabase/functions/ for the four Edge Functions this
+  // calls. Same "derive from the SUPABASE_URL build-time define" pattern
+  // MediaService already uses for get-signed-url, so this automatically
+  // follows whichever Supabase project the app was built against.
+  // ---------------------------------------------------------------------
+
+  static String get _functionsBase => '${const String.fromEnvironment('SUPABASE_URL')}/functions/v1';
+
+  /// Posts to one of the email Edge Functions and returns its decoded
+  /// JSON body. Throws an [Exception] carrying the server's own `error`
+  /// message when the call fails, so screens can show it directly (same
+  /// spirit as MediaService's `_throwWithDetail`, minus the 404-specific
+  /// deploy-reminder text since that lives there already).
+  static Future<Map<String, dynamic>> _postFunction(
+    String name,
+    Map<String, dynamic> body, {
+    bool includeIdToken = false,
+  }) async {
+    final headers = {'Content-Type': 'application/json'};
+    if (includeIdToken) {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('No signed-in user');
+      final idToken = await user.getIdToken();
+      headers['Authorization'] = 'Bearer $idToken';
+    }
+    final res = await http.post(
+      Uri.parse('$_functionsBase/$name'),
+      headers: headers,
+      body: jsonEncode(body),
+    );
+    Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(res.body) as Map<String, dynamic>;
+    } catch (_) {
+      decoded = <String, dynamic>{};
+    }
+    if (res.statusCode != 200) {
+      final message = decoded['error'] as String?;
+      if (res.statusCode == 404) {
+        throw Exception(
+          "$name failed (HTTP 404): that Edge Function isn't deployed on this "
+          'Supabase project yet — see EMAIL_SETUP.md for the one-time deploy steps.',
+        );
+      }
+      throw Exception(message ?? '$name failed (HTTP ${res.statusCode}).');
+    }
+    return decoded;
+  }
+
+  /// Step 1 of the Instagram-style signup flow — sends a 6-digit code to
+  /// [email] via our own branded email (not Firebase's default one). Safe
+  /// to call again for the same email; the server enforces its own
+  /// resend cooldown and surfaces that as the thrown message.
+  Future<void> sendSignupOtp(String email) => _postFunction('send-signup-otp', {'email': email});
+
+  /// Step 2 — checks [code] against what was emailed for [email]. Throws
+  /// with a friendly message ("Incorrect code", "That code expired", …)
+  /// on failure; returns normally on success.
+  Future<void> verifySignupOtp(String email, String code) =>
+      _postFunction('verify-signup-otp', {'email': email, 'code': code});
+
+  /// Step 3 — called right after the Firebase Auth account is actually
+  /// created (from [registerWithEmail] below). Redeems the verification
+  /// from step 2 and marks the new account's email verified server-side.
+  /// Deliberately best-effort: the account still works even if this
+  /// fails (e.g. no network right at that instant), it just won't show
+  /// as verified — same tolerance the old sendEmailVerification() call
+  /// had for the same reason.
+  Future<void> _confirmVerifiedEmail() async {
+    try {
+      await _postFunction('confirm-verified-email', {}, includeIdToken: true);
+    } catch (_) {}
+  }
+
+  /// Instagram-style "forgot password": emails a branded button that
+  /// opens a page where the person types a new password directly,
+  /// instead of Firebase's default bare confirmation link. Always
+  /// resolves the same way whether or not the email is registered (the
+  /// server intentionally doesn't reveal that) — show the returned
+  /// message as-is.
+  Future<String> requestPasswordReset(String email) async {
+    final data = await _postFunction('send-password-reset', {'email': email});
+    return (data['message'] as String?) ?? "If an account exists for that email, we've sent reset instructions.";
+  }
 
   /// Real-time-ish username availability check for the signup flow.
   Future<bool> isUsernameAvailable(String username) async {
@@ -122,11 +212,16 @@ class AuthService {
       throw Exception('That username was just taken by someone else — please choose another and try again.');
     }
 
-    // Best-effort — the account still works even if this fails (e.g. no
-    // network right at that instant); it's not required for sign-in.
-    try {
-      await cred.user!.sendEmailVerification();
-    } catch (_) {}
+    // Feature: Instagram-style signup — by this point the person already
+    // typed the email, got a 6-digit code emailed to them, and confirmed
+    // it (see RegisterScreen's email + verify steps, and sendSignupOtp /
+    // verifySignupOtp above). This is the step that redeems that
+    // confirmation onto the account we JUST created, flipping
+    // emailVerified to true server-side. Replaces the old
+    // cred.user!.sendEmailVerification() call — there's no separate
+    // "click a link to confirm" email anymore, the code they already
+    // entered during signup *is* the confirmation.
+    await _confirmVerifiedEmail();
 
     pendingWelcomeMessage = 'Welcome to NWisp, $lowerUsername! 🎉';
     await DeviceSessionService.instance.claimThisDevice(cred.user!.uid);
@@ -314,6 +409,4 @@ class AuthService {
       'fcmTokens': FieldValue.arrayRemove([token]),
     }, SetOptions(merge: true));
   }
-
-  Future<void> sendPasswordResetEmail(String email) => _auth.sendPasswordResetEmail(email: email);
 }
