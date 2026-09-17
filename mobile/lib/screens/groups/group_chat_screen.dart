@@ -1568,7 +1568,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
         ],
       ),
-      ),
     );
   }
 }
