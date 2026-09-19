@@ -14,6 +14,7 @@ import '../chat/chat_wallpaper_screen.dart';
 import '../settings/keyword_mute_screen.dart';
 import 'report_group_screen.dart';
 import '../security/safety_number_screen.dart';
+import '../../widgets/mute_duration_sheet.dart';
 
 const _groupTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never, hours after that
 
@@ -44,6 +45,42 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         _inactivityOverrideMonths = override?.months ?? 3;
       });
     });
+  }
+
+  // Feature: timed mute for groups — same sheet the chat list swipe and 1:1
+  // chat settings use. Turning the switch ON asks how long; OFF unmutes.
+  String _formatMuteUntil(DateTime dt) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final suffix = dt.hour < 12 ? 'AM' : 'PM';
+    final now = DateTime.now();
+    final sameDay = dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    final time = '$hour12:$minute $suffix';
+    return sameDay ? 'today $time' : '${months[dt.month - 1]} ${dt.day}, $time';
+  }
+
+  Future<void> _onGroupMuteSwitch(bool wantMuted) async {
+    try {
+      if (!wantMuted) {
+        await GroupService.instance.setMuted(widget.groupId, false);
+        return;
+      }
+      final choice = await showMuteDurationSheet(context);
+      if (choice == null) return;
+      if (choice.isForever) {
+        await GroupService.instance.setMuted(widget.groupId, true);
+      } else {
+        await GroupService.instance.muteFor(widget.groupId, choice.duration!);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Muted ${choice.label}')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Couldn't change mute — check your connection and try again.")),
+      );
+    }
   }
 
   String _inactivityOverrideLabel() {
@@ -572,9 +609,18 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
                 title: const Text('Mute notifications'),
-                subtitle: const Text('Turn off alerts for this group only'),
+                subtitle: Builder(builder: (_) {
+                  final groupData = snapshot.data!.data() ?? {};
+                  if (!GroupService.instance.isMutedByMe(groupData)) {
+                    return const Text('Turn off alerts for this group only — for an hour, a day, a week, or your own custom time');
+                  }
+                  final until = GroupService.instance.muteExpiryFor(groupData);
+                  return Text(until != null && until.isAfter(DateTime.now())
+                      ? 'Muted until ${_formatMuteUntil(until)}'
+                      : 'Muted until you turn it back on');
+                }),
                 value: GroupService.instance.isMutedByMe(snapshot.data!.data() ?? {}),
-                onChanged: (v) => GroupService.instance.setMuted(widget.groupId, v),
+                onChanged: _onGroupMuteSwitch,
               ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.archive_outlined),
