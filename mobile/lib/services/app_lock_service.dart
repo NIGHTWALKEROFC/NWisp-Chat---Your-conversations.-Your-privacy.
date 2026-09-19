@@ -45,6 +45,11 @@ class AppLockService {
   // (nothing stored) means "off" — the app stays unlocked indefinitely
   // while in the foreground, same as before this feature existed.
   static const _idleTimeoutKey = 'app_lock_idle_timeout_minutes';
+  // Feature: lock timing when you LEAVE the app. Minutes the app may sit in
+  // the background before it asks for the PIN again on return. 0 (or
+  // nothing stored) = "Immediately", which is exactly how the app behaved
+  // before this setting existed, so nobody's security silently loosens.
+  static const _backgroundGraceKey = 'app_lock_background_grace_minutes';
   static final _sha256 = Sha256();
 
   static Future<bool> isEnabled() async {
@@ -94,6 +99,7 @@ class AppLockService {
     await _storage.delete(key: _hintKey);
     await _storage.delete(key: _biometricEnabledKey);
     await _storage.delete(key: _idleTimeoutKey);
+    await _storage.delete(key: _backgroundGraceKey);
     await _storage.write(key: _enabledKey, value: 'false');
   }
 
@@ -112,6 +118,24 @@ class AppLockService {
       await _storage.delete(key: _idleTimeoutKey);
     } else {
       await _storage.write(key: _idleTimeoutKey, value: minutes.toString());
+    }
+  }
+
+  /// Feature: lock timing when leaving the app. 0 = lock immediately (the
+  /// default and the strictest); otherwise the number of minutes the app can
+  /// stay in the background before it needs the PIN again. Enforced in
+  /// AuthGate's _LockGate when the app comes back to the foreground.
+  static Future<int> getBackgroundGraceMinutes() async {
+    final raw = await _storage.read(key: _backgroundGraceKey);
+    final parsed = raw == null ? null : int.tryParse(raw);
+    return (parsed == null || parsed < 0) ? 0 : parsed;
+  }
+
+  static Future<void> setBackgroundGraceMinutes(int minutes) async {
+    if (minutes <= 0) {
+      await _storage.delete(key: _backgroundGraceKey);
+    } else {
+      await _storage.write(key: _backgroundGraceKey, value: minutes.toString());
     }
   }
 
