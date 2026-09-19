@@ -52,6 +52,14 @@ class LocalMessage {
   /// StarredMessagesScreen.
   final bool starred;
 
+  /// Feature: permission-gated message forwarding. True when this message
+  /// arrived (or was sent by me) as a FORWARD of a message from some other
+  /// chat. Purely a label — it makes the bubble show "Forwarded" — and it
+  /// travels inside the end-to-end-encrypted payload (see
+  /// MessageRelayService._forwardMarker), so the server can't tell which
+  /// messages are forwards.
+  final bool isForwarded;
+
   const LocalMessage({
     required this.id,
     required this.conversationId,
@@ -71,6 +79,7 @@ class LocalMessage {
     this.isViewOnce = false,
     this.viewOnceConsumed = false,
     this.starred = false,
+    this.isForwarded = false,
   });
 }
 
