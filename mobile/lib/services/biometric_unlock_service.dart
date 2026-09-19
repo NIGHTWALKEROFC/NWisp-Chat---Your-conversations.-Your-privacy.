@@ -29,10 +29,13 @@ class BiometricUnlockService {
   /// successful match — any error, cancellation, or lockout (too many
   /// failed attempts) returns false, and the caller (AuthGate) falls
   /// back to asking for the PIN as normal. Never throws.
-  static Future<bool> authenticate() async {
+  /// [reason] is the sentence shown on the system biometric prompt — the
+  /// media vault passes its own so the prompt says what's actually being
+  /// unlocked.
+  static Future<bool> authenticate({String reason = 'Unlock NWisp'}) async {
     try {
       return await _auth.authenticate(
-        localizedReason: 'Unlock NWisp',
+        localizedReason: reason,
         options: const AuthenticationOptions(
           biometricOnly: true, // never falls back to the OS's own device
           // passcode/pattern here — this app's own PIN screen is the
