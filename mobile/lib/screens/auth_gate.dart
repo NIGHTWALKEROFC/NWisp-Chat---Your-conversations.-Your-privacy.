@@ -216,16 +216,35 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   // who hasn't turned this on in Settings.
   Timer? _idleTimer;
 
+  // Feature: lock timing when leaving the app. Wall-clock moment the app
+  // went to the background while unlocked (null while in the foreground).
+  // Compared against the person's "Lock timing" setting when they return —
+  // see didChangeAppLifecycleState below.
+  DateTime? _pausedAt;
+
+  // Cached copies of the two lock-timing settings, refreshed every time the
+  // idle timer is (re)scheduled — i.e. on unlock and on every touch — so
+  // they're always current by the time the app is left. They're cached
+  // because the decision to lock has to be instant: the moment the app is
+  // backgrounded, and the moment it comes back. The fail-safe default is 0 =
+  // "lock immediately" until the real value has been read.
+  int _graceMinutes = 0;
+  int? _idleMinutesCache;
+
   Future<void> _scheduleIdleTimer() async {
     _idleTimer?.cancel();
     if (!_unlocked) return;
     final minutes = await AppLockService.getIdleTimeoutMinutes();
+    final grace = await AppLockService.getBackgroundGraceMinutes();
+    _idleMinutesCache = minutes;
+    _graceMinutes = grace;
     if (minutes == null || !mounted || !_unlocked) return;
     _idleTimer = Timer(Duration(minutes: minutes), _onIdleTimeout);
   }
 
   void _onIdleTimeout() {
     if (!mounted) return;
+    _pausedAt = null;
     setState(() {
       _unlocked = false;
       _duress = false;
@@ -264,16 +283,62 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
     // PIN again. That defeats the entire point of an app lock on a
     // security-focused app: anyone who picked up an already-open,
     // backgrounded phone would see every chat with no prompt at all.
+    //
+    // Feature: lock timing. "Immediately" (the default, and what this always
+    // did) still locks right here on pause. A longer setting — 1 minute, 15
+    // minutes, custom… — instead just notes WHEN the app was left, and the
+    // decision is made when the person comes back (the resumed branch
+    // below). If Android kills the app in the meantime it starts cold, which
+    // always asks for the PIN, so a longer setting can never leave a killed
+    // app unlocked.
     if (state == AppLifecycleState.paused && _unlocked) {
       _idleTimer?.cancel();
-      setState(() {
-        _unlocked = false;
-        _duress = false;
-        // Re-check in case app lock was just turned off in Settings —
-        // don't force a PIN prompt for someone who deliberately disabled it.
-        _needsUnlock = AppLockService.isEnabled();
-      });
+      if (_graceMinutes <= 0) {
+        _lockNow();
+      } else {
+        _pausedAt = DateTime.now();
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      _resumeOrLock();
     }
+  }
+
+  /// Decided SYNCHRONOUSLY from the cached settings (see [_graceMinutes]) so
+  /// there's never a moment where the chats are visible on return before the
+  /// lock screen catches up.
+  void _resumeOrLock() {
+    final pausedAt = _pausedAt;
+    if (pausedAt == null || !_unlocked) return;
+    _pausedAt = null;
+    // Time spent away counts as inactivity too, so if the inactivity limit
+    // is SHORTER than the leave-the-app limit, the shorter one wins.
+    var limitMinutes = _graceMinutes;
+    final idle = _idleMinutesCache;
+    if (idle != null && idle > 0 && idle < limitMinutes) {
+      limitMinutes = idle;
+    }
+    final away = DateTime.now().difference(pausedAt);
+    // A negative gap means the phone's clock was moved backwards while the
+    // app was away — treat that as expired rather than trusting it.
+    if (away.isNegative || away >= Duration(minutes: limitMinutes)) {
+      _lockNow();
+    } else {
+      // Still inside the allowed window — carry on, and restart the
+      // inactivity clock from now.
+      _scheduleIdleTimer();
+    }
+  }
+
+  void _lockNow() {
+    _idleTimer?.cancel();
+    _pausedAt = null;
+    setState(() {
+      _unlocked = false;
+      _duress = false;
+      // Re-check in case app lock was just turned off in Settings —
+      // don't force a PIN prompt for someone who deliberately disabled it.
+      _needsUnlock = AppLockService.isEnabled();
+    });
   }
 
   @override
