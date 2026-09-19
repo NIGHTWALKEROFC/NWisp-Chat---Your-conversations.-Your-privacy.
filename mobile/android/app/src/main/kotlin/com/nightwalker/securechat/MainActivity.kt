@@ -1,5 +1,7 @@
 package com.nightwalker.securechat
 
+import android.app.Activity
+import android.os.Build
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -27,12 +29,28 @@ import io.flutter.plugin.common.MethodChannel
 // prompts would silently fail/crash. FlutterFragmentActivity is Flutter's
 // own drop-in FragmentActivity subclass made for exactly this, so nothing
 // else about how this Activity behaves changes.
+//
+// UPDATED (screenshot alert + recents preview):
+//  * "setRecentsHidden" — Android 13+ can blank JUST the recent-apps
+//    thumbnail (Activity.setRecentsScreenshotEnabled) without blocking
+//    screenshots elsewhere. Returns false on older Android so the Dart side
+//    can fall back to FLAG_SECURE instead.
+//  * Screenshot detection — Android 14+ has an official callback
+//    (Activity.ScreenCaptureCallback) that fires when the person presses the
+//    screenshot button combo while this Activity is visible. It needs the
+//    DETECT_SCREEN_CAPTURE permission (see AndroidManifest.xml). It is
+//    registered in onStart and removed in onStop, as Android requires. On
+//    Android 13 and older there is no such API, so nothing is sent.
 class MainActivity : FlutterFragmentActivity() {
     private val channelName = "com.nightwalker.securechat/screenshot_guard"
+    private var channel: MethodChannel? = null
+    private var screenCaptureCallback: Activity.ScreenCaptureCallback? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+        val ch = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        channel = ch
+        ch.setMethodCallHandler { call, result ->
             when (call.method) {
                 "enable" -> {
                     runOnUiThread {
@@ -49,8 +67,48 @@ class MainActivity : FlutterFragmentActivity() {
                     }
                     result.success(null)
                 }
+                "setRecentsHidden" -> {
+                    val hidden = call.argument<Boolean>("hidden") ?: false
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        runOnUiThread { setRecentsScreenshotEnabled(!hidden) }
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (Build.VERSION.SDK_INT >= 34) {
+            val callback = Activity.ScreenCaptureCallback {
+                channel?.invokeMethod("screenshotDetected", null)
+            }
+            screenCaptureCallback = callback
+            try {
+                registerScreenCaptureCallback(mainExecutor, callback)
+            } catch (e: Exception) {
+                // Permission missing or the OS refused — screenshot alerts
+                // simply won't fire; nothing else depends on this.
+                screenCaptureCallback = null
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (Build.VERSION.SDK_INT >= 34) {
+            screenCaptureCallback?.let {
+                try {
+                    unregisterScreenCaptureCallback(it)
+                } catch (e: Exception) {
+                    // Already unregistered — nothing to do.
+                }
+            }
+            screenCaptureCallback = null
         }
     }
 }
