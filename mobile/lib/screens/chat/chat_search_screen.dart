@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../models/local_message.dart';
 import '../../services/local_message_store.dart';
+import '../../services/private_keyboard_service.dart';
 
 /// In-chat search — given messages already live fully decrypted on this
 /// device (see LocalMessageStore's own class comment), this is just an
@@ -113,6 +114,10 @@ class _ChatSearchScreenState extends State<ChatSearchScreen> {
     return Scaffold(
       appBar: AppBar(
         title: TextField(
+          // Feature: private keyboard mode (off by default).
+          enableSuggestions: !PrivateKeyboardService.enabled.value,
+          autocorrect: !PrivateKeyboardService.enabled.value,
+          enableIMEPersonalizedLearning: !PrivateKeyboardService.enabled.value,
           controller: _controller,
           autofocus: true,
           onChanged: _runSearch,
