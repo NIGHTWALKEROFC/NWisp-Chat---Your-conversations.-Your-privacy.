@@ -33,6 +33,58 @@ class ScreenshotGuardService {
   static const _channel = MethodChannel('com.nightwalker.securechat/screenshot_guard');
   static int _activeCount = 0;
 
+  /// Feature: screenshot alert. Set by whichever 1:1 chat screen is open
+  /// (ChatDetailScreen); called when Android tells us the person just pressed
+  /// the screenshot button combo. Null when no chat that cares is open.
+  /// Only ever fires on Android 14 and newer — older versions have no API
+  /// for this at all (see MainActivity.kt).
+  static void Function()? onScreenshotDetected;
+
+  /// Call once at startup (main.dart) so events sent up from the native
+  /// side (MainActivity.kt) reach [onScreenshotDetected].
+  static void init() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'screenshotDetected') onScreenshotDetected?.call();
+      return null;
+    });
+  }
+
+  // Feature: hide app preview in recent apps. Only used on Android 12 and
+  // older, where hiding JUST the recents thumbnail isn't possible and the
+  // fallback is holding a permanent FLAG_SECURE reference instead.
+  static bool _recentsFallbackHeld = false;
+
+  /// Feature: hide the app preview in the recent-apps switcher.
+  ///
+  /// Android 13+ has a dedicated switch for exactly this
+  /// (Activity.setRecentsScreenshotEnabled), which blanks the recents
+  /// thumbnail WITHOUT blocking screenshots on the rest of the app. On older
+  /// Android there's no such switch, so this falls back to holding
+  /// FLAG_SECURE for as long as the setting is on — which also blocks
+  /// screenshots everywhere in the app, not only in chats.
+  static Future<void> setRecentsPreviewHidden(bool hidden) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    var handledNatively = false;
+    try {
+      handledNatively = (await _channel.invokeMethod<bool>('setRecentsHidden', {'hidden': hidden})) ?? false;
+    } catch (_) {}
+    if (handledNatively) {
+      if (_recentsFallbackHeld) {
+        _recentsFallbackHeld = false;
+        await release();
+      }
+      return;
+    }
+    if (hidden && !_recentsFallbackHeld) {
+      _recentsFallbackHeld = true;
+      await acquire();
+    } else if (!hidden && _recentsFallbackHeld) {
+      _recentsFallbackHeld = false;
+      await release();
+    }
+  }
+
   /// Call from initState() of any screen that should never be
   /// screenshotted or screen-recorded (1:1 chat, group chat, fullscreen
   /// media viewers, the safety-number verification screen). Must be
