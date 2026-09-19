@@ -1,3 +1,4 @@
+
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -119,14 +120,37 @@ class GroupService {
   /// (not just admins) — see firestore.rules' isSelfMutingOrArchiving()
   /// for the matching server-side permission, since the normal group
   /// update rule is otherwise admin-only.
+  ///
+  /// Feature: timed mute. Same two-part model as ConversationService — my uid
+  /// in `mutedBy` is a forever-mute, and `mutedUntil.<myUid>` is a timed
+  /// mute that quietly stops counting once its time has passed.
   bool isMutedByMe(Map<String, dynamic> data) {
     final muted = List<String>.from(data['mutedBy'] ?? []);
-    return muted.contains(_myUid);
+    if (muted.contains(_myUid)) return true;
+    final until = muteExpiryFor(data);
+    return until != null && until.isAfter(DateTime.now());
   }
 
+  DateTime? muteExpiryFor(Map<String, dynamic> data) {
+    final map = data['mutedUntil'];
+    if (map is! Map) return null;
+    final value = map[_myUid];
+    return value is Timestamp ? value.toDate() : null;
+  }
+
+  /// Mute forever (`muted: true`) or unmute completely (`muted: false`,
+  /// which also cancels any timed mute that was running).
   Future<void> setMuted(String groupId, bool muted) {
     return _ref(groupId).update({
       'mutedBy': muted ? FieldValue.arrayUnion([_myUid]) : FieldValue.arrayRemove([_myUid]),
+      'mutedUntil.$_myUid': FieldValue.delete(),
+    });
+  }
+
+  Future<void> muteFor(String groupId, Duration duration) {
+    return _ref(groupId).update({
+      'mutedBy': FieldValue.arrayRemove([_myUid]),
+      'mutedUntil.$_myUid': Timestamp.fromDate(DateTime.now().add(duration)),
     });
   }
 
