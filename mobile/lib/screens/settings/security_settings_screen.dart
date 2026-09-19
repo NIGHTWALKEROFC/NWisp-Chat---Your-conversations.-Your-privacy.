@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/biometric_unlock_service.dart';
 import '../../services/settings_service.dart';
+import '../../widgets/duration_picker_dialog.dart';
 import '../security/duress_pin_setup_screen.dart';
 import '../security/pin_screen.dart';
 import 'chat_lock_setup_screen.dart';
@@ -22,6 +23,8 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
   bool _biometricEnabled = false;
   bool _biometricAvailable = false;
   int? _idleTimeoutMinutes;
+  // Feature: lock timing when leaving the app. 0 = immediately (default).
+  int _graceMinutes = 0;
   bool _inactivityWipeEnabled = false;
   int _inactivityWipeMonths = 3;
   bool _loading = true;
@@ -37,6 +40,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
     final biometricEnabled = await AppLockService.isBiometricEnabled();
     final biometricAvailable = await BiometricUnlockService.isAvailable();
     final idleTimeoutMinutes = await AppLockService.getIdleTimeoutMinutes();
+    final graceMinutes = await AppLockService.getBackgroundGraceMinutes();
     final inactivityWipeEnabled = await SettingsService.getInactivityWipeGlobalEnabled();
     final inactivityWipeMonths = await SettingsService.getInactivityWipeGlobalMonths();
     if (!mounted) return;
@@ -45,6 +49,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
       _biometricEnabled = biometricEnabled;
       _biometricAvailable = biometricAvailable;
       _idleTimeoutMinutes = idleTimeoutMinutes;
+      _graceMinutes = graceMinutes;
       _inactivityWipeEnabled = inactivityWipeEnabled;
       _inactivityWipeMonths = inactivityWipeMonths;
       _loading = false;
@@ -80,6 +85,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
         _appLockEnabled = false;
         _biometricEnabled = false;
         _idleTimeoutMinutes = null;
+        _graceMinutes = 0;
       });
     }
   }
@@ -89,36 +95,106 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
     if (mounted) setState(() => _biometricEnabled = value);
   }
 
-  Future<void> _pickIdleTimeout() async {
-    const offSentinel = 0;
-    final options = <int, String>{
-      offSentinel: 'Off',
-      1: '1 minute',
-      2: '2 minutes',
-      5: '5 minutes',
-      15: '15 minutes',
-    };
-    final current = _idleTimeoutMinutes ?? offSentinel;
-    final picked = await showDialog<int>(
+  /// Shared picker for both lock-timing settings below: a list of ready-made
+  /// choices (minutes -> label) plus a "Custom…" row that opens the
+  /// number-and-unit dialog. Returns the chosen number of MINUTES, or null if
+  /// the person backed out. [current] is highlighted, and if it isn't one of
+  /// the ready-made choices the Custom row shows it as the selected value.
+  Future<int?> _pickMinutes({
+    required String title,
+    required Map<int, String> presets,
+    required int current,
+    required String customTitle,
+    String? customHelper,
+  }) async {
+    const customSentinel = -1;
+    final isCustomCurrent = !presets.containsKey(current);
+    final choice = await showDialog<int>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
-        title: const Text('Auto-lock after inactivity'),
-        children: options.entries.map((e) {
-          return SimpleDialogOption(
-            onPressed: () => Navigator.pop(dialogContext, e.key),
+        title: Text(title),
+        children: [
+          for (final e in presets.entries)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, e.key),
+              child: Row(
+                children: [
+                  Icon(current == e.key ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
+                  const SizedBox(width: 12),
+                  Text(e.value),
+                ],
+              ),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialogContext, customSentinel),
             child: Row(
               children: [
-                Icon(current == e.key ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
+                Icon(isCustomCurrent ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
                 const SizedBox(width: 12),
-                Text(e.value),
+                Text(isCustomCurrent ? 'Custom (${formatDuration(Duration(minutes: current))})' : 'Custom…'),
               ],
             ),
-          );
-        }).toList(),
+          ),
+        ],
       ),
     );
+    if (choice == null) return null;
+    if (choice != customSentinel) return choice;
+    if (!mounted) return null;
+    final d = await showCustomDurationDialog(
+      context,
+      title: customTitle,
+      helperText: customHelper,
+      units: const [DurationUnit.minutes, DurationUnit.hours],
+      initialUnit: DurationUnit.minutes,
+      initialValue: isCustomCurrent ? current : 10,
+      min: const Duration(minutes: 1),
+      max: const Duration(hours: 24),
+    );
+    return d?.inMinutes;
+  }
+
+  /// Feature: lock timing when LEAVING the app — Immediately / 1 minute /
+  /// 5 minutes / 15 minutes / 1 hour / Custom. "Immediately" is the default
+  /// and the strictest (the app's original behaviour).
+  Future<void> _pickBackgroundGrace() async {
+    final picked = await _pickMinutes(
+      title: 'Lock when I leave the app',
+      presets: const {
+        0: 'Immediately',
+        1: 'After 1 minute',
+        5: 'After 5 minutes',
+        15: 'After 15 minutes',
+        60: 'After 1 hour',
+      },
+      current: _graceMinutes,
+      customTitle: 'Lock after…',
+      customHelper: 'How long the app can sit in the background before it asks for your PIN again.',
+    );
     if (picked == null) return;
-    final minutes = picked == offSentinel ? null : picked;
+    await AppLockService.setBackgroundGraceMinutes(picked);
+    if (mounted) setState(() => _graceMinutes = picked);
+  }
+
+  /// Lock after a stretch of no touching while the app stays OPEN. 0 = off.
+  Future<void> _pickIdleTimeout() async {
+    final picked = await _pickMinutes(
+      title: 'Auto-lock after inactivity',
+      presets: const {
+        0: 'Off',
+        1: '1 minute',
+        2: '2 minutes',
+        5: '5 minutes',
+        15: '15 minutes',
+        30: '30 minutes',
+        60: '1 hour',
+      },
+      current: _idleTimeoutMinutes ?? 0,
+      customTitle: 'Lock after inactivity of…',
+      customHelper: 'The app locks itself after this long without you touching the screen.',
+    );
+    if (picked == null) return;
+    final minutes = picked == 0 ? null : picked;
     await AppLockService.setIdleTimeoutMinutes(minutes);
     if (mounted) setState(() => _idleTimeoutMinutes = minutes);
   }
@@ -173,12 +249,24 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                   ),
                 if (_appLockEnabled)
                   ListTile(
+                    leading: const Icon(Icons.lock_clock_outlined),
+                    title: const Text('Lock when I leave the app'),
+                    subtitle: Text(
+                      _graceMinutes <= 0
+                          ? 'Immediately — asks for your PIN as soon as you switch away'
+                          : 'Asks for your PIN after ${formatDuration(Duration(minutes: _graceMinutes))} away from the app',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _pickBackgroundGrace,
+                  ),
+                if (_appLockEnabled)
+                  ListTile(
                     leading: const Icon(Icons.timer_outlined),
                     title: const Text('Auto-lock after inactivity'),
                     subtitle: Text(
                       _idleTimeoutMinutes == null
-                          ? 'Off — only re-locks when you leave the app'
-                          : 'Locks after $_idleTimeoutMinutes minute${_idleTimeoutMinutes == 1 ? '' : 's'} of no activity, even if the app stays open',
+                          ? 'Off — the app stays unlocked while it is open'
+                          : 'Locks after ${formatDuration(Duration(minutes: _idleTimeoutMinutes!))} of no activity, even if the app stays open',
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _pickIdleTimeout,
