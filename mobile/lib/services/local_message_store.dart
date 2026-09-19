@@ -28,13 +28,17 @@ class LocalMessageStore {
 
   static const _groupPrefix = 'group_';
 
+  // Feature: "Mark as unread" — conversationIds the person has manually
+  // flagged as unread. Device-local only (see setManualUnread).
+  static final _manualUnreadController = StreamController<Set<String>>.broadcast();
+
   static Future<void> init() async {
     if (_db != null) return;
     final dbPath = await getDatabasesPath();
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 9,
+      version: 10,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -56,7 +60,8 @@ class LocalMessageStore {
             pending_media_meta TEXT,
             is_view_once INTEGER NOT NULL DEFAULT 0,
             view_once_consumed INTEGER NOT NULL DEFAULT 0,
-            starred INTEGER NOT NULL DEFAULT 0
+            starred INTEGER NOT NULL DEFAULT 0,
+            is_forwarded INTEGER NOT NULL DEFAULT 0
           )
         ''');
         await db.execute('CREATE INDEX idx_conv ON messages(conversation_id, created_at)');
@@ -66,6 +71,7 @@ class LocalMessageStore {
         await _createPendingResendTable(db);
         await _createReceiptsTable(db);
         await _createPendingMediaSendsTable(db);
+        await _createManualUnreadTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // v1 -> v2: adds the group_meta cache table for Phase 7 (group
@@ -146,9 +152,26 @@ class LocalMessageStore {
           await db.execute('ALTER TABLE messages ADD COLUMN starred INTEGER NOT NULL DEFAULT 0');
           await db.execute('CREATE INDEX IF NOT EXISTS idx_starred ON messages(starred)');
         }
+        // v9 -> v10: adds `is_forwarded` (feature: permission-gated message
+        // forwarding — see LocalMessage.isForwarded) and the small
+        // `manual_unread` table (feature: "Mark as unread"). Existing rows
+        // default to is_forwarded = 0, which is exactly right — nothing
+        // sent before this feature existed was a forward.
+        if (oldVersion < 10) {
+          await db.execute('ALTER TABLE messages ADD COLUMN is_forwarded INTEGER NOT NULL DEFAULT 0');
+          await _createManualUnreadTable(db);
+        }
       },
     );
     await purgeExpired();
+  }
+
+  static Future<void> _createManualUnreadTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS manual_unread (
+        conversation_id TEXT PRIMARY KEY
+      )
+    ''');
   }
 
   static Future<void> _createGroupMetaTable(Database db) async {
@@ -328,6 +351,7 @@ class LocalMessageStore {
     DateTime? expiresAt,
     Map<String, dynamic>? pendingMediaMeta,
     bool isViewOnce = false,
+    bool isForwarded = false,
   }) async {
     final (encText, nonce) = await CryptoService.encryptLocal(text);
     String? encPendingMeta;
@@ -355,6 +379,7 @@ class LocalMessageStore {
       'is_view_once': isViewOnce ? 1 : 0,
       'view_once_consumed': 0,
       'starred': 0,
+      'is_forwarded': isForwarded ? 1 : 0,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     final msg = LocalMessage(
@@ -372,6 +397,7 @@ class LocalMessageStore {
       expiresAt: expiresAt,
       hasPendingMedia: encPendingMeta != null,
       isViewOnce: isViewOnce,
+      isForwarded: isForwarded,
     );
     _notifyConversation(conversationId);
     _notifySummaries();
@@ -781,12 +807,57 @@ class LocalMessageStore {
     }
     await _db!.delete('message_receipts', where: 'conversation_id = ?', whereArgs: [conversationId]);
     await _db!.delete('pending_media_sends', where: 'conversation_id = ?', whereArgs: [conversationId]);
+    await setManualUnread(conversationId, false);
     _notifyConversation(conversationId);
     _notifyGroupReceipts(conversationId);
     _notifySummaries();
   }
 
+  // ---- "Mark as unread" (Feature) ------------------------------------
+
+  /// Feature: "Mark as unread". A purely local, cosmetic reminder — "I've
+  /// read this, but I want to come back to it". It shows a dot on the chat
+  /// row and counts as 1 toward the app-icon badge, and it clears the moment
+  /// the chat is opened again (see [markConversationRead]).
+  ///
+  /// It deliberately never touches any message's real read status and never
+  /// sends anything to the relay, so it can't send or withdraw a read
+  /// receipt — the other person has no way to tell it was ever set.
+  static Future<void> setManualUnread(String conversationId, bool value) async {
+    if (value) {
+      await _db!.insert(
+        'manual_unread',
+        {'conversation_id': conversationId},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } else {
+      final removed = await _db!.delete('manual_unread', where: 'conversation_id = ?', whereArgs: [conversationId]);
+      if (removed == 0) return; // nothing changed, so nothing to announce
+    }
+    _notifyManualUnread();
+  }
+
+  static Future<Set<String>> _loadManualUnread() async {
+    final rows = await _db!.query('manual_unread', columns: ['conversation_id']);
+    return rows.map((r) => r['conversation_id'] as String).toSet();
+  }
+
+  static void _notifyManualUnread() {
+    _loadManualUnread().then((ids) {
+      if (!_manualUnreadController.isClosed) _manualUnreadController.add(ids);
+    }).catchError((Object e) {});
+  }
+
+  /// Emits the full set of manually-unread conversation ids whenever it
+  /// changes (and once right away with the current set).
+  static Stream<Set<String>> watchManualUnread() {
+    _notifyManualUnread();
+    return _manualUnreadController.stream;
+  }
+
   static Future<void> markConversationRead(String conversationId) async {
+    // Opening a chat also clears a manual "Mark as unread" flag on it.
+    await setManualUnread(conversationId, false);
     await _db!.update(
       'messages',
       {'status': 'read'},
@@ -825,6 +896,8 @@ class LocalMessageStore {
     await _db!.delete('group_meta');
     await _db!.delete('message_receipts');
     await _db!.delete('pending_media_sends');
+    await _db!.delete('manual_unread');
+    _notifyManualUnread();
     await LocalMediaFiles.deleteAll();
     for (final controller in _convoControllers.values) {
       if (!controller.isClosed) controller.add([]);
@@ -856,6 +929,7 @@ class LocalMessageStore {
       isViewOnce: (r['is_view_once'] as int? ?? 0) == 1,
       viewOnceConsumed: (r['view_once_consumed'] as int? ?? 0) == 1,
       starred: (r['starred'] as int? ?? 0) == 1,
+      isForwarded: (r['is_forwarded'] as int? ?? 0) == 1,
     );
   }
 
