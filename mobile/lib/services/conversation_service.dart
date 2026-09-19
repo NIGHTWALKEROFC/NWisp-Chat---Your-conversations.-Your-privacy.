@@ -26,6 +26,11 @@ class ConversationService {
         'pinnedBy': <String>[],
         'chatTtlHours': null,
         'ephemeralViewEnabled': false,
+        // Feature: permission-gated forwarding — restricted by default. See
+        // the forwarding section at the bottom of this class, and the
+        // matching transition rules in firestore.rules.
+        'forwardingEnabled': false,
+        'forwardingRequestedBy': null,
       });
     }
   }
@@ -34,15 +39,45 @@ class ConversationService {
     return _db.collection('conversations').doc(conversationId).snapshots();
   }
 
+  /// Muted means EITHER the old forever-mute (my uid is in `mutedBy`) OR a
+  /// timed mute that hasn't run out yet (`mutedUntil.<myUid>` is in the
+  /// future). A timed mute simply stops counting once its time passes — no
+  /// clean-up job is needed, and the same check is done server-side by the
+  /// send-push Edge Function so push notifications stop/resume on time too.
   bool isMutedByMe(Map<String, dynamic> data) {
+    final myUid = _auth.currentUser!.uid;
     final muted = List<String>.from(data['mutedBy'] ?? []);
-    return muted.contains(_auth.currentUser!.uid);
+    if (muted.contains(myUid)) return true;
+    final until = muteExpiryFor(data);
+    return until != null && until.isAfter(DateTime.now());
   }
 
+  /// When my current TIMED mute ends, or null if I have none (a forever-mute
+  /// also returns null — see [isMutedByMe] for the combined answer).
+  DateTime? muteExpiryFor(Map<String, dynamic> data) {
+    final map = data['mutedUntil'];
+    if (map is! Map) return null;
+    final value = map[_auth.currentUser!.uid];
+    return value is Timestamp ? value.toDate() : null;
+  }
+
+  /// Mute forever (`muted: true`) or unmute completely (`muted: false`,
+  /// which also cancels any timed mute that was running).
   Future<void> setMuted(String conversationId, bool muted) {
     final myUid = _auth.currentUser!.uid;
     return _db.collection('conversations').doc(conversationId).update({
       'mutedBy': muted ? FieldValue.arrayUnion([myUid]) : FieldValue.arrayRemove([myUid]),
+      'mutedUntil.$myUid': FieldValue.delete(),
+    });
+  }
+
+  /// Feature: timed mute (24 hours, 1 week, custom…). Replaces any earlier
+  /// mute of either kind for this chat.
+  Future<void> muteFor(String conversationId, Duration duration) {
+    final myUid = _auth.currentUser!.uid;
+    return _db.collection('conversations').doc(conversationId).update({
+      'mutedBy': FieldValue.arrayRemove([myUid]),
+      'mutedUntil.$myUid': Timestamp.fromDate(DateTime.now().add(duration)),
     });
   }
 
@@ -97,6 +132,68 @@ class ConversationService {
   }
 
   bool isEphemeralViewEnabled(Map<String, dynamic> data) => data['ephemeralViewEnabled'] == true;
+
+  // ---- Feature: permission-gated message forwarding ----------------------
+  //
+  // Two fields on the conversation doc, shared by both people:
+  //   forwardingEnabled       bool   — false by default (restricted)
+  //   forwardingRequestedBy   uid?   — who asked, while a request is pending
+  //
+  // The rules of the game (enforced again server-side in firestore.rules, so
+  // a modified app can't skip them):
+  //   * Turning forwarding ON always needs the OTHER person's approval:
+  //     one person requests, the other approves.
+  //   * Once on, it applies to BOTH people in this chat.
+  //   * Either person can turn it OFF at any moment, alone, with no
+  //     permission — privacy wins over convenience.
+  //   * Turning it on again later means a fresh request.
+
+  bool isForwardingEnabled(Map<String, dynamic> data) => data['forwardingEnabled'] == true;
+
+  /// uid of whoever has a pending request open, or null if none.
+  String? forwardingRequestedBy(Map<String, dynamic> data) {
+    final v = data['forwardingRequestedBy'];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+
+  /// I asked, and I'm still waiting for the other person.
+  bool hasMyPendingForwardingRequest(Map<String, dynamic> data) =>
+      !isForwardingEnabled(data) && forwardingRequestedBy(data) == _auth.currentUser!.uid;
+
+  /// The OTHER person asked, and it's waiting on ME to allow or deny.
+  bool hasIncomingForwardingRequest(Map<String, dynamic> data) {
+    final by = forwardingRequestedBy(data);
+    return !isForwardingEnabled(data) && by != null && by != _auth.currentUser!.uid;
+  }
+
+  Future<void> requestForwarding(String conversationId) {
+    final myUid = _auth.currentUser!.uid;
+    return _db.collection('conversations').doc(conversationId).update({'forwardingRequestedBy': myUid});
+  }
+
+  /// Withdraw my own pending request, or decline one from the other person —
+  /// either way the request field just goes back to empty.
+  Future<void> clearForwardingRequest(String conversationId) {
+    return _db.collection('conversations').doc(conversationId).update({'forwardingRequestedBy': null});
+  }
+
+  /// Approve the OTHER person's pending request. Only valid while their
+  /// request is open — firestore.rules refuses this write otherwise, so
+  /// nobody can switch forwarding on for themselves.
+  Future<void> approveForwardingRequest(String conversationId) {
+    return _db.collection('conversations').doc(conversationId).update({
+      'forwardingEnabled': true,
+      'forwardingRequestedBy': null,
+    });
+  }
+
+  /// Turn forwarding off. No permission needed, ever.
+  Future<void> disableForwarding(String conversationId) {
+    return _db.collection('conversations').doc(conversationId).update({
+      'forwardingEnabled': false,
+      'forwardingRequestedBy': null,
+    });
+  }
 
   /// Short-lived typing flag — this is presence-style metadata, not message
   /// content, so it's fine to keep in Firestore.
