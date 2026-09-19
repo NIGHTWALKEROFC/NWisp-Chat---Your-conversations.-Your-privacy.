@@ -12,6 +12,7 @@ import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import '../settings/chat_lock_setup_screen.dart';
 import '../settings/keyword_mute_screen.dart';
+import '../../widgets/mute_duration_sheet.dart';
 import 'chat_media_browser_screen.dart';
 import 'chat_wallpaper_screen.dart';
 
@@ -158,6 +159,149 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
   /// Chat is already open, so no extra verification needed here (unlike
   /// the forgot-code recovery flow in Settings > Hidden chats, which
   /// requires a password) — this is just "stop hiding," content untouched.
+  // ---- Feature: timed mute ------------------------------------------------
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _formatUntil(DateTime dt) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final suffix = dt.hour < 12 ? 'AM' : 'PM';
+    final now = DateTime.now();
+    final sameDay = dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    final time = '$hour12:$minute $suffix';
+    return sameDay ? 'today $time' : '${months[dt.month - 1]} ${dt.day}, $time';
+  }
+
+  /// Turning the switch ON asks how long (1 hour / 8 hours / 24 hours /
+  /// 1 week / Custom… / Always); turning it OFF unmutes immediately.
+  Future<void> _onMuteSwitch(bool wantMuted) async {
+    try {
+      if (!wantMuted) {
+        await _conversationService.setMuted(widget.conversationId, false);
+        return;
+      }
+      final choice = await showMuteDurationSheet(context);
+      if (choice == null) return;
+      if (choice.isForever) {
+        await _conversationService.setMuted(widget.conversationId, true);
+      } else {
+        await _conversationService.muteFor(widget.conversationId, choice.duration!);
+      }
+      _snack('Muted ${choice.label}');
+    } catch (e) {
+      _snack("Couldn't change mute — check your connection and try again.");
+    }
+  }
+
+  // ---- Feature: permission-gated message forwarding -----------------------
+
+  Future<void> _runForwardingAction(Future<void> Function() action, String successMessage) async {
+    try {
+      await action();
+      _snack(successMessage);
+    } catch (e) {
+      _snack("Couldn't update forwarding — check your connection and try again.");
+    }
+  }
+
+  /// One row that shows whichever of the four states this chat is in:
+  ///  1. ON  — allowed for both people; the switch turns it OFF instantly,
+  ///     no permission needed.
+  ///  2. The other person has asked — Allow / Deny.
+  ///  3. I have asked — waiting, with a way to cancel.
+  ///  4. OFF (the default) — the switch asks the other person for
+  ///     permission rather than turning anything on by itself.
+  Widget _buildForwardingTile(ColorScheme scheme, Map<String, dynamic> data) {
+    final enabled = _conversationService.isForwardingEnabled(data);
+    final incoming = _conversationService.hasIncomingForwardingRequest(data);
+    final mine = _conversationService.hasMyPendingForwardingRequest(data);
+    final name = widget.peerUsername;
+
+    if (enabled) {
+      return SwitchListTile.adaptive(
+        secondary: const Icon(Icons.forward_outlined),
+        title: const Text('Message forwarding'),
+        subtitle: const Text(
+          'Allowed — either of you can forward messages from this chat. Switch it off any time; no permission needed.',
+        ),
+        value: true,
+        onChanged: (_) => _runForwardingAction(
+          () => _conversationService.disableForwarding(widget.conversationId),
+          'Forwarding turned off for this chat.',
+        ),
+      );
+    }
+
+    if (incoming) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Column(
+          children: [
+            ListTile(
+              leading: Icon(Icons.forward_to_inbox_outlined, color: scheme.primary),
+              title: const Text('Message forwarding'),
+              subtitle: Text('$name asked to be able to forward messages from this chat. Allow it?'),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => _runForwardingAction(
+                      () => _conversationService.clearForwardingRequest(widget.conversationId),
+                      'Request declined.',
+                    ),
+                    child: const Text('Deny'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => _runForwardingAction(
+                      () => _conversationService.approveForwardingRequest(widget.conversationId),
+                      'Forwarding turned on — either of you can switch it off any time.',
+                    ),
+                    child: const Text('Allow'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (mine) {
+      return ListTile(
+        leading: const Icon(Icons.hourglass_top_outlined),
+        title: const Text('Message forwarding'),
+        subtitle: Text('Waiting for $name to approve your request'),
+        trailing: TextButton(
+          onPressed: () => _runForwardingAction(
+            () => _conversationService.clearForwardingRequest(widget.conversationId),
+            'Request cancelled.',
+          ),
+          child: const Text('Cancel'),
+        ),
+      );
+    }
+
+    return SwitchListTile.adaptive(
+      secondary: const Icon(Icons.forward_outlined),
+      title: const Text('Message forwarding'),
+      subtitle: Text('Restricted — nobody can forward messages from this chat. Turning it on asks $name for permission first.'),
+      value: false,
+      onChanged: (_) => _runForwardingAction(
+        () => _conversationService.requestForwarding(widget.conversationId),
+        'Request sent to $name.',
+      ),
+    );
+  }
+
   Future<void> _unhide() async {
     if (_hiddenViaCommon) {
       await ChatLockService.setHiddenCommon(widget.conversationId, false);
@@ -457,6 +601,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
         builder: (context, snapshot) {
           final data = snapshot.data?.data() ?? {};
           final muted = _conversationService.isMutedByMe(data);
+          final muteUntil = _conversationService.muteExpiryFor(data);
           final archived = _conversationService.isArchivedByMe(data);
           final chatTtl = (data['chatTtlHours'] as num?)?.toInt();
           final ephemeralViewEnabled = data['ephemeralViewEnabled'] == true;
@@ -486,9 +631,15 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.notifications_off_outlined),
                 title: const Text('Mute notifications'),
-                subtitle: const Text('Turn off alerts for this chat only'),
+                subtitle: Text(
+                  !muted
+                      ? 'Turn off alerts for this chat only — for an hour, a day, a week, or your own custom time'
+                      : (muteUntil != null && muteUntil.isAfter(DateTime.now())
+                          ? 'Muted until ${_formatUntil(muteUntil)}'
+                          : 'Muted until you turn it back on'),
+                ),
                 value: muted,
-                onChanged: (v) => _conversationService.setMuted(widget.conversationId, v),
+                onChanged: _onMuteSwitch,
               ),
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.archive_outlined),
@@ -502,6 +653,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
                 child: Text('Privacy & security', style: Theme.of(context).textTheme.titleSmall),
               ),
+              _buildForwardingTile(scheme, data),
               (_hiddenViaCommon || _hiddenViaCustom)
                   ? ListTile(
                       leading: const Icon(Icons.visibility_off_outlined),
