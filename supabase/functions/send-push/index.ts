@@ -61,6 +61,10 @@ function fsValue(v: any): any {
   if ("stringValue" in v) return v.stringValue;
   if ("booleanValue" in v) return v.booleanValue;
   if ("integerValue" in v) return Number(v.integerValue);
+  // Feature: timed mute. Firestore's REST API sends a Timestamp as an ISO-8601
+  // string, e.g. "2026-09-20T10:30:00Z" - kept as that string here and turned
+  // into a Date only where it's compared (see the mutedUntil check below).
+  if ("timestampValue" in v) return v.timestampValue;
   if ("arrayValue" in v) return (v.arrayValue.values ?? []).map(fsValue);
   if ("mapValue" in v) return fsFields(v.mapValue.fields ?? {});
   return null;
@@ -135,6 +139,15 @@ Deno.serve(async (req) => {
     const mutedBy: string[] = (convoDoc?.mutedBy as string[] | undefined) ?? [];
     if (mutedBy.includes(record.recipient_uid)) {
       return new Response("Muted", { status: 200 });
+    }
+    // Feature: timed mute (24 hours, 1 week, custom...). `mutedUntil` is a map
+    // of uid -> Timestamp on the same doc. Muted only while that moment is
+    // still in the future - once it has passed the notification goes through
+    // like normal, with no clean-up job needed to "un-mute" anyone.
+    const mutedUntil = (convoDoc?.mutedUntil as Record<string, string> | undefined) ?? {};
+    const myMuteEnd = mutedUntil[String(record.recipient_uid)];
+    if (myMuteEnd && Date.parse(myMuteEnd) > Date.now()) {
+      return new Response("Muted (timed)", { status: 200 });
     }
 
     const [recipientProfile, sender] = await Promise.all([
