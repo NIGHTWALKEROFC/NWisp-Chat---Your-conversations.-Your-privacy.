@@ -15,6 +15,29 @@
          covers face/iris unlock too on devices that support it. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
 
+    <!-- Feature: unread-count badge on the app icon (app_badge_plus). Android
+         has no official badge API, so each launcher brand has its own
+         permission; these are the ones the plugin documents. Harmless on
+         phones whose launcher doesn't use them. Without the matching entry
+         the badge simply won't appear on that brand's launcher. -->
+    <!-- Samsung -->
+    <uses-permission android:name="com.sec.android.provider.badge.permission.READ"/>
+    <uses-permission android:name="com.sec.android.provider.badge.permission.WRITE"/>
+    <!-- HTC -->
+    <uses-permission android:name="com.htc.launcher.permission.READ_SETTINGS"/>
+    <uses-permission android:name="com.htc.launcher.permission.UPDATE_SHORTCUT"/>
+    <!-- Sony -->
+    <uses-permission android:name="com.sonyericsson.home.permission.BROADCAST_BADGE"/>
+    <uses-permission android:name="com.sonymobile.home.permission.PROVIDER_INSERT_BADGE"/>
+    <!-- Apex -->
+    <uses-permission android:name="com.anddoes.launcher.permission.UPDATE_COUNT"/>
+    <!-- Solid -->
+    <uses-permission android:name="com.majeur.launcher.permission.UPDATE_BADGE"/>
+    <!-- Huawei -->
+    <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE"/>
+    <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS"/>
+    <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS"/>
+
     <application
         android:label="Secure Chat"
         android:name="${applicationName}"
