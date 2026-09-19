@@ -206,9 +206,42 @@ service cloud.firestore {
         return isSignedIn() && request.auth.uid in request.resource.data.participants;
       }
 
+      // Feature: permission-gated message forwarding. The conversation doc
+      // carries two shared fields:
+      //   forwardingEnabled       bool   - false unless BOTH agreed
+      //   forwardingRequestedBy   uid?   - who asked, while a request is open
+      // Any write that touches either field must be exactly one of these four
+      // moves - so a modified app can't switch forwarding on for itself, no
+      // matter what the normal app UI does:
+      //   1. Turn OFF     - either person, any time, no permission needed.
+      //   2. Ask          - only for yourself, only while nothing is pending.
+      //   3. Withdraw or decline - clears a pending request.
+      //   4. Approve      - flips it ON, but ONLY the person who did NOT ask
+      //                     can do this, and only while a request is open.
+      // Writes that don't touch these two fields (mute, pin, archive,
+      // disappearing-message timer...) are unaffected.
+      function forwardingChangeIsAllowed() {
+        let before = resource.data;
+        let after = request.resource.data;
+        let touched = after.diff(before).affectedKeys();
+        let enabledBefore = before.get('forwardingEnabled', false);
+        let enabledAfter = after.get('forwardingEnabled', false);
+        let requesterBefore = before.get('forwardingRequestedBy', null);
+        let requesterAfter = after.get('forwardingRequestedBy', null);
+        return !touched.hasAny(['forwardingEnabled', 'forwardingRequestedBy']) || (
+          (enabledBefore == true && enabledAfter == false && requesterAfter == null) ||
+          (enabledBefore == false && enabledAfter == false && requesterBefore == null && requesterAfter == request.auth.uid) ||
+          (enabledBefore == false && enabledAfter == false && requesterBefore != null && requesterAfter == null) ||
+          (enabledBefore == false && enabledAfter == true && requesterBefore != null && requesterBefore != request.auth.uid && requesterAfter == null)
+        );
+      }
+
       allow read: if isParticipant();
-      allow create: if isParticipantOnCreate();
-      allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
+      // A brand-new conversation always starts with forwarding restricted.
+      allow create: if isParticipantOnCreate() &&
+        request.resource.data.get('forwardingEnabled', false) == false &&
+        request.resource.data.get('forwardingRequestedBy', null) == null;
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants && forwardingChangeIsAllowed();
       allow delete: if false;
 
       match /typing/{uid} {
@@ -248,7 +281,8 @@ service cloud.firestore {
           !(request.auth.uid in request.resource.data.members);
       }
       // Mute/archive/pin are per-person preferences (see GroupService.
-      // setMuted / setArchived / setPinned), not group-wide settings like
+      // setMuted / muteFor / setArchived / setPinned - mutedUntil is the
+      // timed-mute map), not group-wide settings like
       // name/avatar/description — so, unlike the rest of a group's
       // fields, ANY current member may update these three, not just
       // admins. Restricted to touching only these keys so this can't be
@@ -257,7 +291,7 @@ service cloud.firestore {
       function isSelfMutingOrArchiving() {
         return isSignedIn() &&
           request.auth.uid in resource.data.members &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mutedBy', 'archivedBy', 'pinnedBy']);
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mutedBy', 'archivedBy', 'pinnedBy', 'mutedUntil']);
       }
       // Lets someone who ACCEPTED a pending groupInviteRequests doc add
       // THEMSELVES to the group — the only way a non-contact ever ends up
