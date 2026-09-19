@@ -75,4 +75,20 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_inactivityWipeMonthsKey, months);
   }
+
+  /// Feature: unread-count badge on the app icon (see AppBadgeService). On
+  /// by default — it's the normal, expected behaviour — but it can be turned
+  /// off in Settings > Notifications for anyone who doesn't want a number
+  /// visible on their home screen.
+  static const _appBadgeEnabledKey = 'app_icon_badge_enabled';
+
+  static Future<bool> getAppBadgeEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_appBadgeEnabledKey) ?? true;
+  }
+
+  static Future<void> setAppBadgeEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_appBadgeEnabledKey, value);
+  }
 }
