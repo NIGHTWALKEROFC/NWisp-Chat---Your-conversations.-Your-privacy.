@@ -28,6 +28,7 @@ import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import 'chat_search_screen.dart';
+import 'forward_destination_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import 'chat_settings_screen.dart';
@@ -125,6 +126,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     if (mounted) setState(() => _wallpaper = w);
   }
 
+  // Feature: permission-gated message forwarding. The live conversation doc
+  // (kept current by _convoSub below) — forwarding on/off and any pending
+  // request are read from it via ConversationService's forwarding helpers.
+  Map<String, dynamic> _convoData = {};
+
   int? _profileTtlHours;
   int? _chatTtlOverride;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
@@ -143,6 +149,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       if (mounted) setState(() => _firstUnreadId = id);
     });
     _loadWallpaper();
+    // Feature: "Mark as unread" — opening the chat is what clears it. (The
+    // normal mark-read path below only runs when there are real unread
+    // messages, so a chat that was manually flagged needs this explicit
+    // clear.)
+    LocalMessageStore.setManualUnread(widget.conversationId, false);
     InactivityWipeService.recordOpened(widget.conversationId);
     // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
     // see ScreenshotGuardService. Released in dispose() below.
@@ -171,6 +182,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _convoSub = _conversationService.conversationStream(widget.conversationId).listen((doc) {
       if (!mounted) return;
       setState(() {
+        _convoData = doc.data() ?? {};
         _chatTtlOverride = (doc.data()?['chatTtlHours'] as num?)?.toInt();
         _ephemeralViewEnabled = doc.data()?['ephemeralViewEnabled'] == true;
       });
@@ -826,6 +838,171 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
   }
 
+  // ---- Feature: permission-gated message forwarding ----------------------
+
+  void _showForwardSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _runForwardingAction(Future<void> Function() action, String successMessage) async {
+    try {
+      await action();
+      _showForwardSnack(successMessage);
+    } catch (e) {
+      _showForwardSnack("Couldn't update forwarding — check your connection and try again.");
+    }
+  }
+
+  Future<void> _approveForwardRequest() => _runForwardingAction(
+        () => _conversationService.approveForwardingRequest(widget.conversationId),
+        'Forwarding turned on for this chat — either of you can switch it off any time.',
+      );
+
+  Future<void> _denyForwardRequest() => _runForwardingAction(
+        () => _conversationService.clearForwardingRequest(widget.conversationId),
+        'Request declined.',
+      );
+
+  /// The banner across the top of the chat when the OTHER person has asked
+  /// to be able to forward messages and is waiting for an answer.
+  Widget _buildForwardRequestBanner(ColorScheme scheme) {
+    return Material(
+      color: scheme.tertiaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 12, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.forward_to_inbox_outlined, size: 20, color: scheme.onTertiaryContainer),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '${widget.peerUsername} would like to be able to forward messages from this chat. '
+                    'If you allow it, either of you can forward from here — and either of you can switch it off again at any time.',
+                    style: TextStyle(fontSize: 13, color: scheme.onTertiaryContainer),
+                  ),
+                ),
+              ],
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(onPressed: _denyForwardRequest, child: const Text('Deny')),
+                  const SizedBox(width: 4),
+                  FilledButton(onPressed: _approveForwardRequest, child: const Text('Allow')),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Shown instead of the destination picker when forwarding is off for this
+  /// chat — explains why, and offers the right next step for whichever
+  /// situation this chat is in (nothing asked yet / I already asked / the
+  /// other person already asked me).
+  Future<void> _showForwardingRestrictedDialog() async {
+    final incoming = _conversationService.hasIncomingForwardingRequest(_convoData);
+    final mine = _conversationService.hasMyPendingForwardingRequest(_convoData);
+    final name = widget.peerUsername;
+    final String body;
+    final List<Widget> Function(BuildContext) actions;
+    if (incoming) {
+      body = '$name has asked to be able to forward messages from this chat. Allow it and either of you will be able to '
+          'forward from here. You can switch it off again at any time, without asking.';
+      actions = (c) => [
+            TextButton(onPressed: () => Navigator.pop(c, 'deny'), child: const Text('Deny')),
+            FilledButton(onPressed: () => Navigator.pop(c, 'approve'), child: const Text('Allow')),
+          ];
+    } else if (mine) {
+      body = "You've already asked $name. They'll see your request the next time they open this chat.";
+      actions = (c) => [
+            TextButton(onPressed: () => Navigator.pop(c, 'cancel'), child: const Text('Cancel request')),
+            FilledButton(onPressed: () => Navigator.pop(c), child: const Text('OK')),
+          ];
+    } else {
+      body = 'To protect privacy, messages in this chat can only be forwarded if $name agrees first. '
+          'If they allow it, either of you will be able to forward from here — and either of you can switch it off '
+          'again at any time.';
+      actions = (c) => [
+            TextButton(onPressed: () => Navigator.pop(c), child: const Text('Not now')),
+            FilledButton(onPressed: () => Navigator.pop(c, 'request'), child: Text('Ask $name')),
+          ];
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.shield_outlined),
+        title: const Text('Forwarding is restricted'),
+        content: Text(body),
+        actions: actions(dialogContext),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    switch (choice) {
+      case 'request':
+        await _runForwardingAction(
+          () => _conversationService.requestForwarding(widget.conversationId),
+          'Request sent to $name.',
+        );
+        break;
+      case 'approve':
+        await _approveForwardRequest();
+        break;
+      case 'deny':
+        await _denyForwardRequest();
+        break;
+      case 'cancel':
+        await _runForwardingAction(
+          () => _conversationService.clearForwardingRequest(widget.conversationId),
+          'Request cancelled.',
+        );
+        break;
+    }
+  }
+
+  /// The "Forward" button in the selection bar. Only ever offered for one
+  /// plain text message (this first version doesn't forward media). If
+  /// forwarding is off for this chat it explains and offers to ask;
+  /// otherwise it opens the destination picker.
+  Future<void> _forwardSelected() async {
+    if (_selectedIds.length != 1) return;
+    LocalMessage? message;
+    for (final m in _messages) {
+      if (m.id == _selectedIds.first) {
+        message = m;
+        break;
+      }
+    }
+    if (message == null || message.messageType != 'text') return;
+    final text = message.text;
+    setState(() => _selectedIds.clear());
+
+    if (!_conversationService.isForwardingEnabled(_convoData)) {
+      await _showForwardingRestrictedDialog();
+      return;
+    }
+    final forwardedTo = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ForwardDestinationScreen(
+          sourceConversationId: widget.conversationId,
+          sourcePeerUid: widget.peerUid,
+          text: text,
+        ),
+      ),
+    );
+    if (forwardedTo != null) _showForwardSnack('Forwarded to $forwardedTo');
+  }
+
   Future<void> _deleteSelectedFlow() async {
     final selected = _messages.where((m) => _selectedIds.contains(m.id)).toList();
     if (selected.isEmpty) return;
@@ -909,6 +1086,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             children: [
               if (_pinnedIds.isNotEmpty) _buildPinnedBanner(scheme),
               if (_identityChanged) _buildIdentityChangedBanner(scheme),
+              if (_conversationService.hasIncomingForwardingRequest(_convoData)) _buildForwardRequestBanner(scheme),
               if (_effectiveTtlHours > 0)
                 Container(
                   width: double.infinity,
@@ -1006,6 +1184,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                             starred: msg.starred,
                             isViewOnce: msg.isViewOnce,
                             viewOnceConsumed: msg.viewOnceConsumed,
+                            isForwarded: msg.isForwarded,
                             mediaGallery: messages
                                 .where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video'))
                                 .map((m) => MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video'))
@@ -1457,6 +1636,11 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             tooltip: 'Pin',
             onPressed: _pinSelected,
           ),
+        // Feature: permission-gated forwarding. Always visible for a single
+        // text message — when forwarding is off, tapping it explains why and
+        // offers to ask the other person, rather than the button vanishing.
+        if (single && singleMessage != null && singleMessage.messageType == 'text')
+          IconButton(icon: const Icon(Icons.forward_rounded), tooltip: 'Forward', onPressed: _forwardSelected),
         IconButton(icon: const Icon(Icons.copy_outlined), tooltip: 'Copy', onPressed: _copySelected),
         IconButton(
           icon: Icon(single && _messages.any((m) => m.id == _selectedIds.first && m.starred) ? Icons.star : Icons.star_border),
@@ -1525,6 +1709,7 @@ class _MessageBubble extends StatelessWidget {
   final bool starred;
   final bool isViewOnce;
   final bool viewOnceConsumed;
+  final bool isForwarded;
   final String id;
   final List<MediaViewerItem> mediaGallery;
   final int mediaGalleryIndex;
@@ -1551,6 +1736,7 @@ class _MessageBubble extends StatelessWidget {
     this.starred = false,
     this.isViewOnce = false,
     this.viewOnceConsumed = false,
+    this.isForwarded = false,
     this.mediaGallery = const [],
     this.mediaGalleryIndex = -1,
     required this.onLongPress,
@@ -1644,6 +1830,27 @@ class _MessageBubble extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        // Feature: permission-gated forwarding — small label
+                        // on any message that was forwarded from another chat.
+                        if (isForwarded)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.forward, size: 12, color: (isMine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.65)),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Forwarded',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontStyle: FontStyle.italic,
+                                    color: (isMine ? scheme.onPrimary : scheme.onSurface).withValues(alpha: 0.65),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (replyPreview != null)
                           Container(
                             margin: const EdgeInsets.only(bottom: 6),
