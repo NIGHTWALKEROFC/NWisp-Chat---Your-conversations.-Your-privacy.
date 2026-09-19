@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/auth_service.dart';
+import '../widgets/strong_password_fields.dart';
 import 'settings/privacy_policy_screen.dart';
 import 'settings/terms_screen.dart';
 
@@ -64,8 +65,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
   int _resendCooldown = 0;
   Timer? _resendTimer;
 
-  bool _obscurePassword = true;
-  bool _obscureConfirm = true;
   bool _agreedPrivacy = false;
   bool _agreedTerms = false;
   bool _loading = false;
@@ -520,39 +519,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
             const SizedBox(height: 4),
             Text('At least 6 characters.', style: TextStyle(color: scheme.onSurfaceVariant)),
             const SizedBox(height: 20),
-            TextField(
-              controller: _passwordController,
-              autofocus: true,
-              obscureText: _obscurePassword,
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                labelText: 'Password',
-                prefixIcon: const Icon(Icons.lock_outline),
-                suffixIcon: IconButton(
-                  icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
-                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                ),
-              ),
+            StrongPasswordFields(
+              passwordController: _passwordController,
+              confirmController: _confirmController,
+              onChanged: () => setState(() {}),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _confirmController,
-              obscureText: _obscureConfirm,
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                labelText: 'Confirm password',
-                prefixIcon: const Icon(Icons.lock_outline),
-                suffixIcon: IconButton(
-                  icon: Icon(_obscureConfirm ? Icons.visibility_outlined : Icons.visibility_off_outlined),
-                  onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
-                ),
-              ),
-            ),
-            if (_confirmController.text.isNotEmpty && _confirmController.text != _passwordController.text)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text("Passwords don't match", style: TextStyle(color: scheme.error, fontSize: 12.5)),
-              ),
           ],
         );
       case _stepReview:
