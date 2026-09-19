@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import '../../services/private_keyboard_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/contact_service.dart';
@@ -158,6 +159,10 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
     return Scaffold(
       appBar: AppBar(
         title: TextField(
+          // Feature: private keyboard mode (off by default).
+          enableSuggestions: !PrivateKeyboardService.enabled.value,
+          autocorrect: !PrivateKeyboardService.enabled.value,
+          enableIMEPersonalizedLearning: !PrivateKeyboardService.enabled.value,
           controller: _searchController,
           autofocus: true,
           textInputAction: TextInputAction.search,
