@@ -53,6 +53,21 @@ class ChatFrozenException implements Exception {
   String toString() => message;
 }
 
+/// Feature: permission-gated message forwarding. Thrown by
+/// [MessageRelayService.forwardTextMessage] when forwarding isn't currently
+/// allowed for the chat the message would be forwarded FROM — either it was
+/// never approved, the other person switched it off, or it couldn't be
+/// verified right now. Deliberately fails CLOSED: if the app can't confirm
+/// permission, nothing is forwarded.
+class ForwardingRestrictedException implements Exception {
+  final String message;
+  ForwardingRestrictedException([
+    this.message = 'Forwarding is restricted in this chat. Ask the other person to allow it first.',
+  ]);
+  @override
+  String toString() => message;
+}
+
 /// Every message_relay insert, in BOTH relay services (this one and
 /// GroupMessageRelayService), goes through this instead of calling
 /// `_client.from('message_relay').insert` directly. It's the one place
@@ -101,6 +116,16 @@ class MessageRelayService {
   /// GroupService.newGroupId) — a 1:1 id is always two sorted uids joined
   /// with "_" and can never itself start with that literal prefix.
   static const _groupIdPrefix = 'group_';
+
+  /// Feature: permission-gated message forwarding. Text messages have no
+  /// metadata envelope (unlike media, which carries a small JSON blob), so a
+  /// forwarded text message is sent as this marker followed by the text —
+  /// INSIDE the end-to-end-encrypted payload, so neither Supabase nor
+  /// Firebase can tell a forward from an ordinary message. The receiving
+  /// side strips it in [_handleRow] and just sets LocalMessage.isForwarded.
+  /// The characters are from a Unicode private-use block, so ordinary typed
+  /// text will never start with them.
+  static const _forwardMarker = '\u{E0F1}NWFWD1\u{E0F1}';
 
   /// A safe accessor instead of a bare `!` null-check — a null session here
   /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
@@ -277,19 +302,27 @@ class MessageRelayService {
         if (_mediaTypes.contains(messageType)) {
           await _receiveMediaMessage(row: row, senderUid: senderUid, payload: payload, createdAt: createdAt, ttlHours: ttlHours);
         } else {
+          // Feature: permission-gated forwarding — see [_forwardMarker].
+          var incomingText = payload;
+          var incomingForwarded = false;
+          if (messageType == 'text' && payload.startsWith(_forwardMarker)) {
+            incomingText = payload.substring(_forwardMarker.length);
+            incomingForwarded = true;
+          }
           await LocalMessageStore.insert(
             id: row['client_id'] as String,
             conversationId: row['conversation_id'] as String,
             peerUid: senderUid,
             senderUid: senderUid,
             isMine: false,
-            text: payload,
+            text: incomingText,
             messageType: messageType,
             mediaPath: null,
             replyToId: row['reply_to_id'] as String?,
             status: 'delivered',
             createdAt: createdAt,
             expiresAt: _expiryFor(createdAt, ttlHours),
+            isForwarded: incomingForwarded,
           );
         }
         await _sendReceipt(
@@ -455,6 +488,7 @@ class MessageRelayService {
     String? mediaPath,
     String? replyToId,
     required int ttlHours,
+    bool isForwarded = false,
   }) async {
     if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
 
@@ -465,7 +499,11 @@ class MessageRelayService {
     // silently encrypted with a stale cached key here, the recipient would
     // never be able to decrypt it and we'd have no way to know the send
     // "failed", since the Supabase insert itself always succeeds.
-    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, text);
+    //
+    // A forwarded text message travels as marker + text (see
+    // [_forwardMarker]); an ordinary message is sent exactly as before.
+    final payload = (isForwarded && messageType == 'text') ? '$_forwardMarker$text' : text;
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, payload);
 
     await insertMessageRelayRow({
       'conversation_id': conversationId,
@@ -494,8 +532,58 @@ class MessageRelayService {
       status: 'sent',
       createdAt: createdAt,
       expiresAt: _expiryFor(createdAt, ttlHours),
+      isForwarded: isForwarded && messageType == 'text',
     );
     return clientId;
+  }
+
+  /// Feature: permission-gated message forwarding — forwards ONE text
+  /// message that lives in [sourceConversationId] into a different 1:1
+  /// chat ([destConversationId] / [destPeerUid]).
+  ///
+  /// Permission is checked HERE, not just in the UI: the source
+  /// conversation's `forwardingEnabled` flag is read straight from the
+  /// server (never the offline cache, which could be stale after the other
+  /// person switched forwarding off), and anything other than a clear "yes"
+  /// throws [ForwardingRestrictedException].
+  ///
+  /// Honest limit: this stops the app itself from forwarding without
+  /// permission. It can't stop someone from retyping or screenshotting what
+  /// they can already read — no messenger can.
+  static Future<String> forwardTextMessage({
+    required String sourceConversationId,
+    required String destConversationId,
+    required String destPeerUid,
+    required String text,
+    required int ttlHours,
+  }) async {
+    if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
+    if (sourceConversationId.startsWith(_groupIdPrefix)) {
+      throw ForwardingRestrictedException('Forwarding from group chats isn\'t available.');
+    }
+    Map<String, dynamic>? convo;
+    try {
+      final doc = await _db
+          .collection('conversations')
+          .doc(sourceConversationId)
+          .get(const GetOptions(source: Source.server));
+      convo = doc.data();
+    } catch (_) {
+      throw ForwardingRestrictedException(
+        "Couldn't confirm that forwarding is allowed right now. Check your connection and try again.",
+      );
+    }
+    final participants = List<String>.from(convo?['participants'] ?? const []);
+    if (convo == null || convo['forwardingEnabled'] != true || !participants.contains(_myUid)) {
+      throw ForwardingRestrictedException();
+    }
+    return sendMessage(
+      conversationId: destConversationId,
+      recipientUid: destPeerUid,
+      text: text,
+      ttlHours: ttlHours,
+      isForwarded: true,
+    );
   }
 
   /// Sends an image/video/voice message. [plainBytes] must already be
