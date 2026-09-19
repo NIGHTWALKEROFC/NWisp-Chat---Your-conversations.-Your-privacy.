@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
+import '../services/app_badge_service.dart';
 import '../services/auth_service.dart';
 import '../services/chat_freeze_service.dart';
 import '../services/chat_lock_service.dart';
@@ -12,6 +13,7 @@ import '../services/group_service.dart';
 import '../services/local_message_store.dart';
 import '../services/settings_service.dart';
 import '../services/signal_session_service.dart';
+import '../widgets/mute_duration_sheet.dart';
 import 'chat/chat_detail_screen.dart';
 import 'chat_folders_screen.dart';
 import 'contacts/contacts_screen.dart';
@@ -43,6 +45,19 @@ class _ChatRow {
   final bool archived;
   final bool pinned;
 
+  /// Feature: "Mark as unread" — a local reminder flag, see
+  /// LocalMessageStore.setManualUnread. Only shown as a dot when there are
+  /// no REAL unread messages (a real unread count always wins).
+  final bool markedUnread;
+
+  /// Feature: timed mute — when the current timed mute ends, or null for a
+  /// forever-mute (or not muted at all).
+  final DateTime? mutedUntil;
+
+  /// Feature: permission-gated forwarding — the other person asked to
+  /// forward messages from this chat and is waiting on my answer.
+  final bool forwardRequestPending;
+
   _ChatRow({
     required this.conversationId,
     required this.peerUid,
@@ -56,6 +71,9 @@ class _ChatRow {
     this.muted = false,
     this.archived = false,
     this.pinned = false,
+    this.markedUnread = false,
+    this.mutedUntil,
+    this.forwardRequestPending = false,
   });
 }
 
@@ -121,6 +139,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
     setState(() => _frozenPeerUids = active);
   }
 
+  // Feature: "Mark as unread" — see LocalMessageStore.watchManualUnread.
+  Set<String> _manualUnread = {};
+  StreamSubscription<Set<String>>? _manualUnreadSub;
+
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
   late final StreamSubscription _groupsSub;
@@ -162,6 +184,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void initState() {
     super.initState();
     _loadHiddenIds();
+    _manualUnreadSub = LocalMessageStore.watchManualUnread().listen((ids) {
+      if (mounted) setState(() => _manualUnread = ids);
+    });
     _foldersSub = ChatFolderService.watchFolders().listen((f) {
       if (mounted) setState(() => _folders = f);
     });
@@ -229,6 +254,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _convoSub.cancel();
     _groupsSub.cancel();
     _foldersSub.cancel();
+    _manualUnreadSub?.cancel();
     _freezeSub?.cancel();
     _freezeSweepTimer?.cancel();
     super.dispose();
@@ -354,6 +380,27 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return false;
   }
 
+  /// When my timed mute on this chat ends — null if it isn't muted, or is
+  /// muted forever. Only returns a time still in the future.
+  DateTime? _muteExpiry(String conversationId) {
+    DateTime? until;
+    for (final d in _convoDocs) {
+      if (d.id == conversationId) until = _conversationService.muteExpiryFor(d.data());
+    }
+    for (final d in _groupDocs) {
+      if (d.id == conversationId) until = GroupService.instance.muteExpiryFor(d.data());
+    }
+    if (until != null && until.isAfter(DateTime.now())) return until;
+    return null;
+  }
+
+  bool _hasIncomingForwardRequest(String conversationId) {
+    for (final d in _convoDocs) {
+      if (d.id == conversationId) return _conversationService.hasIncomingForwardingRequest(d.data());
+    }
+    return false;
+  }
+
   /// Merges real message-backed summaries with any 1:1 conversation or
   /// group you've opened/created but not messaged in yet, so a chat shows
   /// up on the home screen the moment you start it — not only after the
@@ -374,6 +421,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
         muted: _isMuted(s.conversationId),
         archived: _isArchived(s.conversationId),
         pinned: _isPinned(s.conversationId),
+        markedUnread: _manualUnread.contains(s.conversationId),
+        mutedUntil: _muteExpiry(s.conversationId),
+        forwardRequestPending: !s.isGroup && _hasIncomingForwardRequest(s.conversationId),
       );
     }
     for (final doc in _convoDocs) {
@@ -392,6 +442,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
         muted: _conversationService.isMutedByMe(doc.data()),
         archived: _conversationService.isArchivedByMe(doc.data()),
         pinned: _conversationService.isPinnedByMe(doc.data()),
+        markedUnread: _manualUnread.contains(doc.id),
+        mutedUntil: _muteExpiry(doc.id),
+        forwardRequestPending: _conversationService.hasIncomingForwardingRequest(doc.data()),
       );
     }
     for (final doc in _groupDocs) {
@@ -413,6 +466,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         muted: GroupService.instance.isMutedByMe(data),
         archived: GroupService.instance.isArchivedByMe(data),
         pinned: GroupService.instance.isPinnedByMe(data),
+        markedUnread: _manualUnread.contains(doc.id),
+        mutedUntil: _muteExpiry(doc.id),
       );
     }
     final rows = byConvo.values.toList()
@@ -582,6 +637,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
           // feature is 1:1-only — see ChatFreezeService), so isGroup rows
           // never match this regardless of peerUid contents.
           final notFrozen = allRows.where((r) => r.isGroup || !_frozenPeerUids.contains(r.peerUid)).toList();
+          _updateBadge(notFrozen);
           final archivedCount = notFrozen.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
           final unfiltered = _showHiddenOnly
               ? notFrozen
@@ -689,6 +745,161 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
+  // ---- Feature: unread badge on the app icon -----------------------------
+
+  /// Works out the number for the app-icon badge and hands it to
+  /// AppBadgeService (which skips the call if nothing changed).
+  ///
+  /// What counts: real unread messages, plus 1 for each chat manually
+  /// "marked as unread". What NEVER counts: hidden chats (a number on the
+  /// home screen would give away that a hidden chat exists), muted chats,
+  /// archived chats, and paused chats.
+  void _updateBadge(List<_ChatRow> rows) {
+    var total = 0;
+    for (final r in rows) {
+      if (_hiddenIds.contains(r.conversationId) || r.archived || r.muted) continue;
+      total += r.unreadCount > 0 ? r.unreadCount : (r.markedUnread ? 1 : 0);
+    }
+    // After the frame, never during build — updating the launcher isn't
+    // part of drawing this screen.
+    WidgetsBinding.instance.addPostFrameCallback((_) => AppBadgeService.instance.update(total));
+  }
+
+  // ---- Feature: swipe actions (right = mute, left = archive) -------------
+
+  void _snack(String message, {SnackBarAction? action}) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(SnackBar(content: Text(message), action: action, duration: const Duration(seconds: 4)));
+  }
+
+  String _formatUntil(DateTime dt) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final suffix = dt.hour < 12 ? 'AM' : 'PM';
+    final now = DateTime.now();
+    final sameDay = dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    final time = '$hour12:$minute $suffix';
+    return sameDay ? 'today $time' : '${months[dt.month - 1]} ${dt.day}, $time';
+  }
+
+  Future<void> _setMutedForever(_ChatRow row, bool muted) {
+    return row.isGroup
+        ? GroupService.instance.setMuted(row.conversationId, muted)
+        : _conversationService.setMuted(row.conversationId, muted);
+  }
+
+  Future<void> _muteForDuration(_ChatRow row, Duration d) {
+    return row.isGroup
+        ? GroupService.instance.muteFor(row.conversationId, d)
+        : _conversationService.muteFor(row.conversationId, d);
+  }
+
+  /// Shared by the swipe-right gesture and the long-press "Mute" item.
+  /// Already muted -> unmute straight away. Otherwise ask for how long
+  /// (1 hour / 8 hours / 24 hours / 1 week / Custom… / Always).
+  Future<void> _muteOrUnmute(_ChatRow row) async {
+    try {
+      if (row.muted) {
+        await _setMutedForever(row, false);
+        _snack('Notifications are back on');
+        return;
+      }
+      final choice = await showMuteDurationSheet(context);
+      if (choice == null || !mounted) return;
+      if (choice.isForever) {
+        await _setMutedForever(row, true);
+      } else {
+        await _muteForDuration(row, choice.duration!);
+      }
+      _snack(
+        'Muted ${choice.label}',
+        action: SnackBarAction(label: 'UNDO', onPressed: () => _setMutedForever(row, false)),
+      );
+    } catch (e) {
+      _snack("Couldn't change mute — check your connection and try again.");
+    }
+  }
+
+  /// Shared by the swipe-left gesture and the long-press "Archive" item.
+  Future<void> _toggleArchive(_ChatRow row) async {
+    final archive = !row.archived;
+    Future<void> applyArchive(bool value) => row.isGroup
+        ? GroupService.instance.setArchived(row.conversationId, value)
+        : _conversationService.setArchived(row.conversationId, value);
+    try {
+      await applyArchive(archive);
+      _snack(
+        archive ? 'Chat archived' : 'Chat moved back to your chats',
+        action: SnackBarAction(label: 'UNDO', onPressed: () => applyArchive(!archive)),
+      );
+    } catch (e) {
+      _snack("Couldn't update this chat — check your connection and try again.");
+    }
+  }
+
+  Widget _swipeBackground(
+    ColorScheme scheme, {
+    required Alignment alignment,
+    required Color color,
+    required Color onColor,
+    required IconData icon,
+    required String label,
+  }) {
+    return Container(
+      color: color,
+      alignment: alignment,
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: onColor),
+          const SizedBox(height: 2),
+          Text(label, style: TextStyle(color: onColor, fontSize: 12, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  /// Wraps a chat row so it can be swiped: RIGHT = mute/unmute (with a
+  /// choice of how long), LEFT = archive/unarchive. The row itself never
+  /// actually leaves the list on swipe — `confirmDismiss` always returns
+  /// false so it springs back, and the live Firestore streams move it
+  /// between the normal and archived views on their own.
+  Widget _withSwipeActions(ColorScheme scheme, _ChatRow row, Widget tile) {
+    return Dismissible(
+      key: ValueKey('swipe_${row.conversationId}'),
+      direction: DismissDirection.horizontal,
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          _muteOrUnmute(row);
+        } else {
+          _toggleArchive(row);
+        }
+        return false;
+      },
+      background: _swipeBackground(
+        scheme,
+        alignment: Alignment.centerLeft,
+        color: scheme.secondaryContainer,
+        onColor: scheme.onSecondaryContainer,
+        icon: row.muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined,
+        label: row.muted ? 'Unmute' : 'Mute',
+      ),
+      secondaryBackground: _swipeBackground(
+        scheme,
+        alignment: Alignment.centerRight,
+        color: scheme.primary,
+        onColor: scheme.onPrimary,
+        icon: row.archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+        label: row.archived ? 'Unarchive' : 'Archive',
+      ),
+      child: tile,
+    );
+  }
+
   /// WhatsApp-style long-press quick actions on a chat row — pin, mute,
   /// archive, and a LOCAL-ONLY delete. "Delete chat" here intentionally
   /// only clears this device's own copy (see LocalMessageStore.
@@ -716,16 +927,29 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 }
               },
             ),
+            // Feature: "Mark as unread". Only offered when there are no REAL
+            // unread messages (a chat with real unread messages is already
+            // unread) — and when it's already marked, the same slot turns
+            // into "Mark as read".
+            if (!row.isPlaceholder && row.unreadCount == 0)
+              ListTile(
+                leading: Icon(row.markedUnread ? Icons.mark_chat_read_outlined : Icons.mark_chat_unread_outlined),
+                title: Text(row.markedUnread ? 'Mark as read' : 'Mark as unread'),
+                subtitle: row.markedUnread ? null : const Text('A private reminder to come back to this chat'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  LocalMessageStore.setManualUnread(row.conversationId, !row.markedUnread);
+                },
+              ),
             ListTile(
               leading: Icon(row.muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
-              title: Text(row.muted ? 'Unmute' : 'Mute'),
+              title: Text(row.muted ? 'Unmute' : 'Mute…'),
+              subtitle: row.muted
+                  ? Text(row.mutedUntil != null ? 'Muted until ${_formatUntil(row.mutedUntil!)}' : 'Muted until you turn it back on')
+                  : null,
               onTap: () {
                 Navigator.pop(sheetContext);
-                if (row.isGroup) {
-                  GroupService.instance.setMuted(row.conversationId, !row.muted);
-                } else {
-                  _conversationService.setMuted(row.conversationId, !row.muted);
-                }
+                _muteOrUnmute(row);
               },
             ),
             ListTile(
@@ -733,11 +957,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               title: Text(row.archived ? 'Unarchive' : 'Archive'),
               onTap: () {
                 Navigator.pop(sheetContext);
-                if (row.isGroup) {
-                  GroupService.instance.setArchived(row.conversationId, !row.archived);
-                } else {
-                  _conversationService.setArchived(row.conversationId, !row.archived);
-                }
+                _toggleArchive(row);
               },
             ),
             ListTile(
@@ -779,25 +999,40 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Feature: permission-gated forwarding — the other person is
+        // waiting for an answer inside this chat.
+        if (row.forwardRequestPending)
+          Padding(padding: const EdgeInsets.only(right: 6), child: Icon(Icons.forward_to_inbox_outlined, size: 16, color: scheme.primary)),
         if (row.pinned) Padding(padding: const EdgeInsets.only(right: 6), child: Icon(Icons.push_pin, size: 15, color: scheme.onSurfaceVariant)),
-        if (row.muted) Padding(padding: const EdgeInsets.only(right: 6), child: Icon(Icons.notifications_off, size: 16, color: scheme.onSurfaceVariant)),
+        // A timed mute shows a "paused" bell (it comes back on its own); a
+        // forever-mute keeps the plain crossed-out bell.
+        if (row.muted)
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: Icon(row.mutedUntil != null ? Icons.notifications_paused_outlined : Icons.notifications_off, size: 16, color: scheme.onSurfaceVariant),
+          ),
         if (row.unreadCount > 0)
           CircleAvatar(
             radius: 11,
             backgroundColor: scheme.primary,
             child: Text('${row.unreadCount}', style: TextStyle(fontSize: 11, color: scheme.onPrimary, fontWeight: FontWeight.w700)),
-          ),
+          )
+        else if (row.markedUnread)
+          // Feature: "Mark as unread" — a plain dot, no number, because
+          // there's nothing actually new to count.
+          CircleAvatar(radius: 6, backgroundColor: scheme.primary),
       ],
     );
+    final emphasize = row.unreadCount > 0 || row.markedUnread;
 
     if (row.isGroup) {
-      return ListTile(
+      return _withSwipeActions(scheme, row, ListTile(
         leading: CircleAvatar(
           backgroundColor: scheme.primaryContainer,
           backgroundImage: row.avatarUrl != null ? NetworkImage(row.avatarUrl!) : null,
           child: row.avatarUrl == null ? const Icon(Icons.groups_rounded) : null,
         ),
-        title: Text(row.title ?? 'Group'),
+        title: Text(row.title ?? 'Group', style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
         subtitle: row.isPlaceholder
             ? Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic))
             : FutureBuilder<String>(
@@ -816,19 +1051,20 @@ class _ChatListScreenState extends State<ChatListScreen> {
           await _loadHiddenIds();
         },
         onLongPress: () => _showChatOptions(context, scheme, row),
-      );
+      ));
     }
 
     return FutureBuilder<String>(
+      key: ValueKey('row_${row.conversationId}'),
       future: _usernameFor(row.peerUid),
       builder: (context, nameSnap) {
         final username = nameSnap.data ?? '…';
-        return ListTile(
+        return _withSwipeActions(scheme, row, ListTile(
           leading: CircleAvatar(
             backgroundColor: scheme.primaryContainer,
             child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
           ),
-          title: Text(username),
+          title: Text(username, style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
           subtitle: Text(
             row.lastText,
             maxLines: 1,
@@ -848,7 +1084,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             await _loadHiddenIds();
           },
           onLongPress: () => _showChatOptions(context, scheme, row),
-        );
+        ));
       },
     );
   }
