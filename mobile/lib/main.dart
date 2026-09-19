@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'firebase_options.dart';
 import 'services/theme_service.dart';
 import 'services/branding_service.dart';
+import 'services/app_badge_service.dart';
 import 'services/auth_service.dart';
 import 'services/device_session_service.dart';
 import 'services/group_service.dart';
@@ -202,6 +203,9 @@ void _setUpMessagingLifecycle() {
       GroupService.instance.stopCaching();
       DeviceSessionService.instance.stopWatching();
       sweepTimer?.cancel();
+      // Feature: app-icon badge — never leave one account's unread count on
+      // the icon after that account has signed out.
+      AppBadgeService.instance.clear();
       return;
     }
     await SessionService.prepareForUser(user.uid);
