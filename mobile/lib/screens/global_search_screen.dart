@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
+import '../services/private_keyboard_service.dart';
 import '../services/local_message_store.dart';
 import 'chat/chat_detail_screen.dart';
 import 'groups/group_chat_screen.dart';
@@ -123,6 +124,10 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
     return Scaffold(
       appBar: AppBar(
         title: TextField(
+          // Feature: private keyboard mode (off by default).
+          enableSuggestions: !PrivateKeyboardService.enabled.value,
+          autocorrect: !PrivateKeyboardService.enabled.value,
+          enableIMEPersonalizedLearning: !PrivateKeyboardService.enabled.value,
           controller: _controller,
           autofocus: true,
           onChanged: _runSearch,
