@@ -18,6 +18,8 @@ import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
+import '../../services/media_vault_service.dart';
+import '../../services/private_keyboard_service.dart';
 import '../../widgets/media_viewer_screen.dart';
 import '../../widgets/message_link_text.dart';
 import '../../widgets/view_once_media_screen.dart';
@@ -25,6 +27,7 @@ import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import '../chat/chat_search_screen.dart';
 import '../security/safety_number_screen.dart';
+import '../vault/media_vault_screen.dart';
 import 'group_info_screen.dart';
 
 const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉', '😍', '👏', '💯', '😡'];
@@ -1265,12 +1268,99 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   /// "for everyone" — bulk "for everyone" isn't offered here to avoid a
   /// single tap wiping a large batch of messages for the whole group at
   /// once without individually confirming each one).
+  // ---- Feature: locked media vault (same behaviour as in a 1:1 chat) ------
+
+  /// Photos/videos among the selection that can go into the vault. View-once
+  /// media never can — it's meant to disappear after one look.
+  List<LocalMessage> _selectedMovableToVault() {
+    return _messages
+        .where((m) =>
+            _selectedIds.contains(m.id) &&
+            (m.messageType == 'image' || m.messageType == 'video') &&
+            m.mediaPath != null &&
+            !m.isViewOnce)
+        .toList();
+  }
+
+  Future<void> _moveSelectedToVault() async {
+    final movable = _selectedMovableToVault();
+    if (movable.isEmpty) return;
+    final vault = MediaVaultService.instance;
+
+    if (!await vault.isSetUp()) {
+      if (!mounted) return;
+      final setUp = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.enhanced_encryption_outlined),
+          title: const Text('Set up your media vault'),
+          content: const Text(
+            'The media vault is a locked, encrypted place on this phone for photos and videos, protected by its own PIN. '
+            'Set it up first, then select these photos again to move them in.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Not now')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Set up')),
+          ],
+        ),
+      );
+      if (setUp == true && mounted) {
+        setState(_selectedIds.clear);
+        Navigator.push(
+          context,
+          MaterialPageRoute(settings: const RouteSettings(name: '/vault'), builder: (_) => const MediaVaultScreen()),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    final count = movable.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Move $count ${count == 1 ? 'item' : 'items'} to your vault?'),
+        content: const Text(
+          'They will be encrypted and locked behind your vault PIN, and removed from this group on this phone only. '
+          'Everyone else in the group keeps their own copy.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Move')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    var moved = 0;
+    for (final m in movable) {
+      try {
+        await vault.importFile(File(m.mediaPath!), isVideo: m.messageType == 'video');
+        // Removed from the group only AFTER the encrypted copy is safe.
+        await GroupMessageRelayService.deleteForMe(m.id);
+        moved++;
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    setState(_selectedIds.clear);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+        moved == count
+            ? 'Moved to your vault'
+            : (moved == 0 ? "Couldn't move these to the vault" : 'Moved $moved of $count to your vault'),
+      ),
+    ));
+  }
+
   AppBar _buildSelectionAppBar(ColorScheme scheme) {
     final selected = _messages.where((m) => _selectedIds.contains(m.id)).toList();
     return AppBar(
       leading: IconButton(icon: const Icon(Icons.close), onPressed: () => setState(_selectedIds.clear)),
       title: Text('${_selectedIds.length} selected'),
       actions: [
+        // Feature: locked media vault — only for photos/videos.
+        if (_selectedMovableToVault().isNotEmpty)
+          IconButton(icon: const Icon(Icons.enhanced_encryption_outlined), tooltip: 'Move to vault', onPressed: _moveSelectedToVault),
         IconButton(
           icon: const Icon(Icons.copy_outlined),
           tooltip: 'Copy',
@@ -1529,6 +1619,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         minLines: 1,
                         maxLines: 5,
                         textCapitalization: TextCapitalization.sentences,
+                        // Feature: private keyboard mode (off by default).
+                        enableSuggestions: !PrivateKeyboardService.enabled.value,
+                        autocorrect: !PrivateKeyboardService.enabled.value,
+                        enableIMEPersonalizedLearning: !PrivateKeyboardService.enabled.value,
                         decoration: const InputDecoration(
                           hintText: 'Message',
                           isCollapsed: true,
