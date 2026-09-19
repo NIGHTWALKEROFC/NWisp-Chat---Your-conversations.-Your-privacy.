@@ -111,13 +111,41 @@ class AuthService {
 
   /// Instagram-style "forgot password": emails a branded button that
   /// opens a page where the person types a new password directly,
-  /// instead of Firebase's default bare confirmation link. Always
-  /// resolves the same way whether or not the email is registered (the
-  /// server intentionally doesn't reveal that) — show the returned
-  /// message as-is.
-  Future<String> requestPasswordReset(String email) async {
-    final data = await _postFunction('send-password-reset', {'email': email});
-    return (data['message'] as String?) ?? "If an account exists for that email, we've sent reset instructions.";
+  /// instead of Firebase's default bare confirmation link — UNLESS the
+  /// account has opted into OTP-based reset (Settings -> Account
+  /// security -> "Password reset method"), in which case the server
+  /// emails a 6-digit code instead. Returns the raw {mode, message} map
+  /// so the screen can show the right follow-up UI; always resolves the
+  /// same way whether or not the email is registered (the server
+  /// intentionally doesn't reveal that).
+  Future<Map<String, dynamic>> requestPasswordReset(String email) => _postFunction('send-password-reset', {'email': email});
+
+  /// Second half of the OTP-based reset: checks [code] against what was
+  /// emailed for [email], and if correct, sets [newPassword] directly —
+  /// no Firebase email link involved in this path at all. Throws with a
+  /// friendly message ("Incorrect code", "That code expired", …) on
+  /// failure.
+  Future<void> verifyPasswordResetOtp({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) =>
+      _postFunction('verify-password-reset-otp', {'email': email, 'code': code, 'newPassword': newPassword});
+
+  /// Settings -> Account security -> "Password reset method". 'email'
+  /// (the default) or 'otp'. Written straight to the owner-only private
+  /// profile doc — same pattern as [updatePrivacySetting] — so
+  /// send-password-reset can read it server-side the next time this
+  /// account's owner requests a reset.
+  Future<void> updatePasswordResetMethod(String method) async {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    await _privateProfileRef(uid).set({'passwordResetMethod': method}, SetOptions(merge: true));
+  }
+
+  Future<String> currentPasswordResetMethod() async {
+    final snap = await currentUserPrivateProfile();
+    return (snap.data()?['passwordResetMethod'] as String?) ?? 'email';
   }
 
   /// Real-time-ish username availability check for the signup flow.
