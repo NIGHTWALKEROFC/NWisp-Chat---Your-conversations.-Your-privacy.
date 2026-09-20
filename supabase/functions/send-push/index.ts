@@ -122,6 +122,13 @@ Deno.serve(async (req) => {
     if (!record || !NOTIFIABLE_TYPES.has(record.message_type)) {
       return new Response("Skipped", { status: 200 });
     }
+    // Feature: silent send. The sender chose "Send silently" — the message is
+    // still delivered to the recipient's app as normal, it just doesn't
+    // buzz their phone. (The flag is a plain column, not part of the
+    // encrypted payload, precisely so this function can see it.)
+    if (record.silent === true) {
+      return new Response("Silent", { status: 200 });
+    }
 
     const accessToken = await getAccessToken();
 
