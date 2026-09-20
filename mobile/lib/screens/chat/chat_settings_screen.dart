@@ -225,9 +225,9 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     if (enabled) {
       return SwitchListTile.adaptive(
         secondary: const Icon(Icons.forward_outlined),
-        title: const Text('Message forwarding'),
+        title: const Text('Forwarding & copying'),
         subtitle: const Text(
-          'Allowed — either of you can forward messages from this chat. Switch it off any time; no permission needed.',
+          'Allowed — either of you can forward and copy messages from this chat. Switch it off any time; no permission needed.',
         ),
         value: true,
         onChanged: (_) => _runForwardingAction(
@@ -244,8 +244,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           children: [
             ListTile(
               leading: Icon(Icons.forward_to_inbox_outlined, color: scheme.primary),
-              title: const Text('Message forwarding'),
-              subtitle: Text('$name asked to be able to forward messages from this chat. Allow it?'),
+              title: const Text('Forwarding & copying'),
+              subtitle: Text('$name asked to be able to forward and copy messages from this chat. Allow it?'),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -278,7 +278,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     if (mine) {
       return ListTile(
         leading: const Icon(Icons.hourglass_top_outlined),
-        title: const Text('Message forwarding'),
+        title: const Text('Forwarding & copying'),
         subtitle: Text('Waiting for $name to approve your request'),
         trailing: TextButton(
           onPressed: () => _runForwardingAction(
@@ -292,8 +292,8 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
     return SwitchListTile.adaptive(
       secondary: const Icon(Icons.forward_outlined),
-      title: const Text('Message forwarding'),
-      subtitle: Text('Restricted — nobody can forward messages from this chat. Turning it on asks $name for permission first.'),
+      title: const Text('Forwarding & copying'),
+      subtitle: Text('Restricted — nobody can forward or copy messages from this chat. Turning it on asks $name for permission first.'),
       value: false,
       onChanged: (_) => _runForwardingAction(
         () => _conversationService.requestForwarding(widget.conversationId),
