@@ -49,6 +49,9 @@ dependencies:
   # `namespace` and fails to build under the Android Gradle Plugin 8.x this
   # project uses.
   app_badge_plus: ^1.3.5
+  # Feature: "Shake to lock" (see ShakeDetector). Reads the accelerometer only
+  # while the app is unlocked, in the foreground, and the setting is on.
+  sensors_plus: ^5.0.1
 
 dev_dependencies:
   flutter_test:
