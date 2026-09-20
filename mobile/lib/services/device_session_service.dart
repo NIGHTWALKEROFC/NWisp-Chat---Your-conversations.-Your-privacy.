@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -8,6 +9,20 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'secure_storage_service.dart';
+
+/// What [DeviceSessionService.createLoginApprovalRequest] hands back: the
+/// request's id, and the 2-digit number the NEW phone must show on screen.
+///
+/// Feature: number matching. The old phone shows three numbers and the person
+/// has to tap the one that's on the new phone's screen. Somebody who is
+/// tricked into (or just reflexively taps) "Accept" for a login they didn't
+/// start can't get it right — they aren't looking at the new phone — so a
+/// wrong pick DENIES the login instead of approving it.
+class LoginApprovalHandle {
+  final String requestId;
+  final int matchNumber;
+  const LoginApprovalHandle({required this.requestId, required this.matchNumber});
+}
 
 /// Thrown by [DeviceSessionService.respondToLoginApproval] when the request
 /// is no longer waiting for an answer (already accepted/denied, or it
@@ -514,8 +529,10 @@ class DeviceSessionService {
   /// pending request, then best-effort pings Supabase to trigger a push
   /// to the OLD device — a failure there just means no push (the old
   /// device's live listener, if it's foregrounded, still works fine).
-  Future<String> createLoginApprovalRequest(String uid) async {
+  Future<LoginApprovalHandle> createLoginApprovalRequest(String uid) async {
     final requestId = const Uuid().v4();
+    // 10-99: always two digits, so it's quick to read and to compare.
+    final matchNumber = 10 + Random.secure().nextInt(90);
     final deviceId = await _localDeviceId();
     // A fresh attempt supersedes any earlier abandoned one from this phone.
     await _expireMyPendingRequests(uid, deviceId);
@@ -529,6 +546,10 @@ class DeviceSessionService {
       'requestingDeviceLabel': label,
       'requestingLocation': location,
       'requestingIp': ip,
+      // The number itself is NOT sent in the push notification (only the
+      // device label and location are — see the insert below), so a
+      // notification alone never gives the answer away.
+      'matchNumber': matchNumber,
       'createdAt': FieldValue.serverTimestamp(),
     });
 
@@ -543,7 +564,7 @@ class DeviceSessionService {
       // Best-effort — see the doc comment above.
     }
 
-    return requestId;
+    return LoginApprovalHandle(requestId: requestId, matchNumber: matchNumber);
   }
 
   /// The NEW device watches this while its "waiting for approval" dialog
