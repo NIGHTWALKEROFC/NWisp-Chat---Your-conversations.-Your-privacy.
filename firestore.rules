@@ -141,11 +141,30 @@ service cloud.firestore {
         // accepted/denied one).
         match /loginApprovals/{requestId} {
           allow read: if isOwner(uid);
-          allow create: if isOwner(uid);
+          allow create: if isOwner(uid) && request.resource.data.status == 'pending';
+          // BUGFIX: this rule used to demand a matching respondingDeviceId on
+          // EVERY update. But when the NEW phone gives up on its own request
+          // (cancel / 60-second timeout / error) it writes status 'expired'
+          // and it isn't the active device, so that write was silently
+          // refused — and the request stayed 'pending' forever, coming back
+          // later as a phantom "approve this login?" prompt (even on a phone
+          // that had just been reinstalled). Now there are exactly two
+          // allowed moves on a still-pending request, touching nothing but
+          // status/respondingDeviceId:
+          //   1. the ACTIVE device answers: accepted or denied (its deviceId
+          //      must match the session's current activeDeviceId, as before);
+          //   2. anyone signed in as this account marks it 'expired'.
           allow update: if isOwner(uid) &&
             resource.data.status == 'pending' &&
-            request.resource.data.respondingDeviceId ==
-              get(/databases/$(database)/documents/users/$(uid)/private/session).data.activeDeviceId;
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'respondingDeviceId']) &&
+            (
+              (
+                request.resource.data.status in ['accepted', 'denied'] &&
+                request.resource.data.respondingDeviceId ==
+                  get(/databases/$(database)/documents/users/$(uid)/private/session).data.activeDeviceId
+              ) ||
+              request.resource.data.status == 'expired'
+            );
           allow delete: if false;
         }
       }
