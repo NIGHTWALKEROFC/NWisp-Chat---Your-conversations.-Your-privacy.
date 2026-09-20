@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/auth_service.dart';
+import '../widgets/breach_warning_dialog.dart';
 import '../widgets/strong_password_fields.dart';
 import 'settings/privacy_policy_screen.dart';
 import 'settings/terms_screen.dart';
@@ -289,7 +290,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   // ---------- navigation ----------
 
-  void _next() {
+  void _next() async {
     setState(() => _error = null);
     if (_step == _stepUsername && !_canProceedFromUsername) {
       setState(() => _error = 'Pick an available username to continue.');
@@ -314,11 +315,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _verifyOtpAndAdvance();
       return;
     }
-    if (_step == _stepPassword && !_canProceedFromPassword) {
-      setState(() => _error = _passwordController.text.length < 6
-          ? 'Password must be at least 6 characters.'
-          : "Passwords don't match.");
-      return;
+    if (_step == _stepPassword) {
+      if (!_canProceedFromPassword) {
+        setState(() => _error = _passwordController.text.length < 6
+            ? 'Password must be at least 6 characters.'
+            : "Passwords don't match.");
+        return;
+      }
+      // Feature: breached-password warning — checked here, right as
+      // they try to leave this step, rather than on every keystroke.
+      final ok = await confirmPasswordNotBreached(context, _passwordController.text);
+      if (!ok || !mounted) return;
     }
     if (_step < _totalSteps - 1) setState(() => _step++);
   }
