@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import '../models/local_message.dart';
 import 'crypto_service.dart';
 import 'local_media_files.dart';
+import 'media_vault_service.dart';
 
 /// On-device store for message content. This is now the ONLY place message
 /// text lives long-term — Supabase only ever holds a message transiently in
@@ -898,6 +899,10 @@ class LocalMessageStore {
     await _db!.delete('pending_media_sends');
     await _db!.delete('manual_unread');
     _notifyManualUnread();
+    // Feature: locked media vault — it belongs to the account that set it up,
+    // so a different account signing in on this phone (or an account being
+    // deleted) wipes it too, exactly like everything else here.
+    await MediaVaultService.instance.wipeAll();
     await LocalMediaFiles.deleteAll();
     for (final controller in _convoControllers.values) {
       if (!controller.isClosed) controller.add([]);
