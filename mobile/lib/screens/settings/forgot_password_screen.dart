@@ -5,11 +5,21 @@ import '../../services/app_lock_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/device_session_service.dart';
 import '../../widgets/contact_developer_sheet.dart';
+import '../../widgets/breach_warning_dialog.dart';
 import '../../widgets/strong_password_fields.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   final bool alsoResetAppLock;
-  const ForgotPasswordScreen({super.key, this.alsoResetAppLock = false});
+
+  /// Set when this screen is opened from WITHIN an already-signed-in
+  /// account (Account Security -> "Not sure this was you?") — we
+  /// already know this account's email in that case, so there's no
+  /// reason to make the person type it again. When null (the normal
+  /// pre-login "Forgot password?" entry point), the person types
+  /// either their email OR their username.
+  final String? knownEmail;
+
+  const ForgotPasswordScreen({super.key, this.alsoResetAppLock = false, this.knownEmail});
 
   @override
   State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
@@ -18,7 +28,9 @@ class ForgotPasswordScreen extends StatefulWidget {
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _authService = AuthService();
 
-  final _emailController = TextEditingController();
+  late final _identifierController = TextEditingController(text: widget.knownEmail ?? '');
+  bool get _identifierIsFixed => widget.knownEmail != null;
+
   bool _sendingEmail = false;
   bool _emailSent = false;
   String? _emailError;
@@ -64,7 +76,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _identifierController.dispose();
     _otpController.dispose();
     _newPasswordController.dispose();
     _confirmNewPasswordController.dispose();
@@ -89,14 +101,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   }
 
   Future<void> _sendResetEmail() async {
-    final email = _emailController.text.trim();
-    if (email.isEmpty) return;
+    final identifier = _identifierController.text.trim();
+    if (identifier.isEmpty) return;
     setState(() {
       _sendingEmail = true;
       _emailError = null;
     });
     try {
-      final result = await _authService.requestPasswordReset(email);
+      final result = await _authService.requestPasswordReset(identifier);
       if (!mounted) return;
       final mode = (result['mode'] as String?) ?? 'email';
       setState(() {
@@ -109,6 +121,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       if (!mounted) return;
       setState(() {
         _sendingEmail = false;
+        // Includes the "No account found with that email or username."
+        // case — this screen deliberately shows that outright rather
+        // than a generic "check your email" either way. See
+        // AuthService.requestPasswordReset's doc comment for why.
         _emailError = e.toString().replaceFirst('Exception: ', '');
       });
     }
@@ -121,7 +137,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       _otpError = null;
     });
     try {
-      await _authService.requestPasswordReset(_emailController.text.trim());
+      await _authService.requestPasswordReset(_identifierController.text.trim());
       if (!mounted) return;
       setState(() => _sendingEmail = false);
       _startResendCooldown();
@@ -150,10 +166,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       setState(() => _otpError = "Passwords don't match.");
       return;
     }
+    final ok = await confirmPasswordNotBreached(context, newPassword);
+    if (!ok || !mounted) return;
     setState(() => _resettingViaOtp = true);
     try {
       await _authService.verifyPasswordResetOtp(
-        email: _emailController.text.trim(),
+        email: _identifierController.text.trim(),
         code: code,
         newPassword: newPassword,
       );
@@ -220,13 +238,20 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text("We'll email you a way to reset your password."),
+            Text(
+              _identifierIsFixed
+                  ? "We'll email a way to reset your password to ${widget.knownEmail}."
+                  : "Enter your email or username and we'll email you a way to reset your password.",
+            ),
             const SizedBox(height: 16),
             TextField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              enabled: !_emailSent,
-              decoration: const InputDecoration(labelText: 'Account email', border: OutlineInputBorder()),
+              controller: _identifierController,
+              keyboardType: _identifierIsFixed ? TextInputType.text : TextInputType.emailAddress,
+              enabled: !_emailSent && !_identifierIsFixed,
+              decoration: InputDecoration(
+                labelText: _identifierIsFixed ? 'Account email' : 'Email or username',
+                border: const OutlineInputBorder(),
+              ),
             ),
             if (_emailError != null)
               Padding(
@@ -306,10 +331,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Enter the 6-digit code we sent to ${_emailController.text.trim()}, then choose a new password.',
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
+        const Text('Enter the 6-digit code we sent to your email, then choose a new password.'),
         const SizedBox(height: 12),
         TextField(
           controller: _otpController,
