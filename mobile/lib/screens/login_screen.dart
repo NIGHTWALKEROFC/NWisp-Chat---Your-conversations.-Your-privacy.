@@ -36,6 +36,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _login() async {
+    // BUGFIX: a second tap while a login (or its approval wait) is already
+    // running must do nothing — two overlapping attempts were creating a
+    // second approval request for the same sign-in.
+    if (_loading) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -48,8 +52,18 @@ class _LoginScreenState extends State<LoginScreen> {
     // main.dart the moment Firebase Auth signs in) needs to know not to
     // treat that as "someone else logged in" for this whole window.
     DeviceSessionService.instance.isClaimPending = true;
+    // BUGFIX: tracks how far this attempt got, so that if ANYTHING fails after
+    // the password was accepted (creating the approval request, waiting for it,
+    // or finishing the sign-in) this phone is signed back out instead of being
+    // left half signed-in. A half signed-in phone is what made a retry
+    // impossible without clearing the app's data: it looked signed in, never
+    // owned the account, and was kicked out again straight away.
+    var passwordAccepted = false;
+    var approved = false;
+    var finished = false;
     try {
       final uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
+      passwordAccepted = true;
 
       // BUGFIX: was DeviceSessionService.instance.isLoginApprovalRequired(uid)
       // — the raw toggle check, with no regard for whether the account's
@@ -57,8 +71,9 @@ class _LoginScreenState extends State<LoginScreen> {
       // shouldRequireApprovalForNewLogin's doc comment for why that
       // permanently locked people out after an app delete/reinstall.
       if (await DeviceSessionService.instance.shouldRequireApprovalForNewLogin(uid)) {
-        final requestId = await DeviceSessionService.instance.createLoginApprovalRequest(uid);
-        final outcome = await _waitForApproval(uid, requestId);
+        final handle = await DeviceSessionService.instance.createLoginApprovalRequest(uid);
+        final requestId = handle.requestId;
+        final outcome = await _waitForApproval(uid, requestId, handle.matchNumber);
         if (outcome != _ApprovalOutcome.accepted) {
           await DeviceSessionService.instance.expireLoginApprovalRequest(uid, requestId);
           await _authService.abortLogin();
@@ -72,13 +87,25 @@ class _LoginScreenState extends State<LoginScreen> {
           }
           return;
         }
+        approved = true;
       }
 
       await _authService.finishLogin(uid);
+      finished = true;
       await SettingsService.setStayLoggedIn(_stayLoggedIn);
       // AuthGate's authStateChanges listener takes it from here.
     } catch (e) {
-      if (mounted) setState(() => _error = _friendlyError(e));
+      debugPrint('Login failed (passwordAccepted=$passwordAccepted, approved=$approved): $e');
+      if (passwordAccepted && !finished) {
+        try {
+          await _authService.abortLogin();
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() => _error = approved
+            ? 'Your other device approved this login, but signing in could not be finished. Please try again.'
+            : _friendlyError(e));
+      }
     } finally {
       DeviceSessionService.instance.isClaimPending = false;
       if (mounted) setState(() => _loading = false);
@@ -90,14 +117,19 @@ class _LoginScreenState extends State<LoginScreen> {
   /// person taps Cancel — whichever happens first. Only ever one of these
   /// three ends the wait; the losers are cleaned up (stream cancelled,
   /// timer cancelled, dialog popped) before returning.
-  Future<_ApprovalOutcome> _waitForApproval(String uid, String requestId) async {
+  Future<_ApprovalOutcome> _waitForApproval(String uid, String requestId, int matchNumber) async {
     final outcomeCompleter = Completer<_ApprovalOutcome>();
 
-    final sub = DeviceSessionService.instance.watchApprovalStatus(uid, requestId).listen((status) {
-      if (outcomeCompleter.isCompleted) return;
-      if (status == 'accepted') outcomeCompleter.complete(_ApprovalOutcome.accepted);
-      if (status == 'denied') outcomeCompleter.complete(_ApprovalOutcome.denied);
-    });
+    final sub = DeviceSessionService.instance.watchApprovalStatus(uid, requestId).listen(
+      (status) {
+        if (outcomeCompleter.isCompleted) return;
+        if (status == 'accepted') outcomeCompleter.complete(_ApprovalOutcome.accepted);
+        if (status == 'denied') outcomeCompleter.complete(_ApprovalOutcome.denied);
+      },
+      // A failing status stream must not become an uncaught error — the wait
+      // simply runs to its 60-second timeout instead.
+      onError: (Object e) => debugPrint('watchApprovalStatus error: $e'),
+    );
     final timeoutTimer = Timer(const Duration(seconds: 60), () {
       if (!outcomeCompleter.isCompleted) outcomeCompleter.complete(_ApprovalOutcome.timedOut);
     });
@@ -110,10 +142,28 @@ class _LoginScreenState extends State<LoginScreen> {
           title: const Text('Waiting for approval'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
-            children: const [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Approve this login from your other device, or wait for it to time out.'),
+            children: [
+              const Text(
+                'Open NWisp on your other device and tap this number to approve the login:',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 14),
+              // Feature: number matching — this is what the other device asks for.
+              Text(
+                '$matchNumber',
+                style: Theme.of(dialogContext).textTheme.displayMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 4,
+                      color: Theme.of(dialogContext).colorScheme.primary,
+                    ),
+              ),
+              const SizedBox(height: 14),
+              const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
+              const SizedBox(height: 12),
+              Text(
+                'It times out after a minute.',
+                style: TextStyle(color: Theme.of(dialogContext).colorScheme.onSurfaceVariant, fontSize: 12.5),
+              ),
             ],
           ),
           actions: [
