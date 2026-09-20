@@ -104,6 +104,19 @@ export async function markEmailVerified(uid: string): Promise<void> {
   if (!res.ok) throw new Error(`accounts:update failed: ${await res.text()}`);
 }
 
+/** Sets a new password on `uid`'s Firebase Auth account via the Identity
+ *  Toolkit admin API — used by password-reset-otp once the emailed code has
+ *  been verified. The person never needs to know the old password. */
+export async function setUserPassword(uid: string, newPassword: string): Promise<void> {
+  const accessToken = await getIdentityToolkitAccessToken();
+  const res = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:update", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ localId: uid, password: newPassword }),
+  });
+  if (!res.ok) throw new Error(`accounts:update (password) failed: ${await res.text()}`);
+}
+
 /** Looks a user up by email via the Identity Toolkit admin API. Returns
  *  null if no account has that email (used so send-password-reset can
  *  quietly no-op for unknown emails instead of leaking which emails are
@@ -119,6 +132,47 @@ export async function findUserByEmail(email: string): Promise<{ localId: string 
   const data = await res.json();
   const user = data.users?.[0];
   return user ? { localId: user.localId } : null;
+}
+
+/** Resolves what a person typed on the Reset password screen — an EMAIL or
+ *  a USERNAME — to the account it belongs to. Returns null if nothing matches.
+ *
+ *  Usernames live in Firestore at usernames/{lowercase-name} -> { uid }, and
+ *  your firestore.rules already make that collection publicly readable (the
+ *  signup screen relies on it to check availability), so it's read through
+ *  Firestore's plain REST endpoint with no token. The uid is then turned into
+ *  an email with the Identity Toolkit admin API. */
+export async function resolveAccount(identifier: string): Promise<{ localId: string; email: string } | null> {
+  const typed = identifier.trim();
+  if (!typed) return null;
+  const accessToken = await getIdentityToolkitAccessToken();
+
+  let query: Record<string, string[]>;
+  if (typed.includes("@")) {
+    query = { email: [typed.toLowerCase()] };
+  } else {
+    const name = typed.toLowerCase();
+    const res = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/usernames/${encodeURIComponent(name)}`,
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`usernames lookup failed: ${await res.text()}`);
+    const doc = await res.json();
+    const uid = doc?.fields?.uid?.stringValue as string | undefined;
+    if (!uid) return null;
+    query = { localId: [uid] };
+  }
+
+  const res = await fetch("https://identitytoolkit.googleapis.com/v1/accounts:lookup", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(query),
+  });
+  if (!res.ok) throw new Error(`accounts:lookup failed: ${await res.text()}`);
+  const data = await res.json();
+  const user = data.users?.[0];
+  if (!user?.email) return null;
+  return { localId: user.localId as string, email: String(user.email).toLowerCase() };
 }
 
 /** Generates a password-reset action link WITHOUT Firebase sending its
