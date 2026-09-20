@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
+import '../services/note_to_self_service.dart';
 import '../services/private_keyboard_service.dart';
+import 'notes/note_to_self_screen.dart';
 import '../services/local_message_store.dart';
 import 'chat/chat_detail_screen.dart';
 import 'groups/group_chat_screen.dart';
@@ -82,6 +84,9 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
   void _openChat(ConversationSummary s) {
     if (s.isGroup) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: s.conversationId)));
+    } else if (NoteToSelfService.isNotes(s.conversationId)) {
+      // Feature: Note to self — opens the notepad, not a chat with yourself.
+      Navigator.push(context, MaterialPageRoute(builder: (_) => const NoteToSelfScreen()));
     } else {
       Navigator.push(
         context,
@@ -96,6 +101,9 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen> {
     final isGroup = _allSummaries.any((s) => s.conversationId == m.conversationId && s.isGroup) || m.conversationId.startsWith('group_');
     if (isGroup) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: m.conversationId)));
+    } else if (NoteToSelfService.isNotes(m.conversationId)) {
+      // Feature: Note to self — a matching note opens the notepad.
+      Navigator.push(context, MaterialPageRoute(builder: (_) => const NoteToSelfScreen()));
     } else {
       final username = await _usernameFor(m.peerUid);
       if (!mounted) return;
