@@ -9,6 +9,16 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'secure_storage_service.dart';
 
+/// Thrown by [DeviceSessionService.respondToLoginApproval] when the request
+/// is no longer waiting for an answer (already accepted/denied, or it
+/// expired) — so a double-tap, or two screens open for the same request, can
+/// never answer it twice.
+class LoginApprovalAlreadyHandled implements Exception {
+  const LoginApprovalAlreadyHandled();
+  @override
+  String toString() => 'This login request has already been handled or has expired.';
+}
+
 /// Enforces a single active device per account — logging in on a second
 /// device signs the first one out, the same way WhatsApp/most banking
 /// apps behave — and keeps a simple security-activity log (logins,
@@ -90,6 +100,32 @@ class DeviceSessionService {
   // finished. The public get/set below keep every existing call site
   // (`DeviceSessionService.instance.isClaimPending = true/false`, `if
   // (isClaimPending) return;`) working unchanged.
+  // BUGFIX (login approval — "several Done screens" / "requests when nobody
+  // is logging in"): approval requests reach the active phone from THREE
+  // places (the live Firestore listener, a notification tap, and the app
+  // being opened from a notification), and nothing stopped the same request
+  // being put on screen by more than one of them — so accepting it once
+  // left several "Login approved / Done" screens stacked up. Every path now
+  // has to claim the request id here first; only the first one gets to show
+  // it, and the screen releases it again when it closes.
+  final Set<String> _presentedApprovals = {};
+
+  /// Returns true if THIS caller may put [requestId] on screen (nobody else
+  /// has). Call [unmarkApprovalPresented] when that screen closes.
+  bool tryMarkApprovalPresented(String requestId) => _presentedApprovals.add(requestId);
+  void unmarkApprovalPresented(String requestId) => _presentedApprovals.remove(requestId);
+
+  /// A request older than this is dead: the phone that made it waits at most
+  /// 60 seconds, so anything past a few minutes was abandoned (app killed,
+  /// network lost, uninstalled). It must never be shown to anyone.
+  static const Duration approvalFreshFor = Duration(minutes: 3);
+
+  bool isApprovalFresh(Map<String, dynamic> data) {
+    final ts = data['createdAt'];
+    if (ts is! Timestamp) return true; // server time not stamped yet => just created
+    return DateTime.now().difference(ts.toDate()) < approvalFreshFor;
+  }
+
   final ValueNotifier<bool> claimPendingNotifier = ValueNotifier<bool>(false);
   bool get isClaimPending => claimPendingNotifier.value;
   set isClaimPending(bool value) => claimPendingNotifier.value = value;
@@ -272,6 +308,32 @@ class DeviceSessionService {
 
   /// Records that the account's password was changed — shown in the
   /// Account Security history list. Called from AuthService.updatePassword.
+  /// True only if THIS phone is the account's current active device. Only
+  /// the active device is ever allowed to be asked to approve a new login —
+  /// a phone that is itself still signing in (or one that was signed out
+  /// earlier) must never be shown someone else's approval prompt.
+  Future<bool> isThisDeviceActive(String uid) async {
+    final data = (await _sessionRef(uid).get()).data();
+    final activeDeviceId = data?['activeDeviceId'] as String?;
+    if (activeDeviceId == null) return false;
+    return activeDeviceId == await _localDeviceId();
+  }
+
+  /// Called on a normal sign-out: if this phone is the account's active
+  /// device, give that up so the account honestly reads as "nobody is signed
+  /// in". If ANOTHER phone already took over, this does nothing (the claim
+  /// isn't ours to release).
+  Future<void> releaseActiveClaimIfMine(String uid) async {
+    final myId = await _localDeviceId();
+    final data = (await _sessionRef(uid).get().timeout(const Duration(seconds: 5))).data();
+    if (data?['activeDeviceId'] != myId) return;
+    await _sessionRef(uid).update({
+      'activeDeviceId': FieldValue.delete(),
+      'activeDeviceLabel': FieldValue.delete(),
+      'activeLocation': FieldValue.delete(),
+    }).timeout(const Duration(seconds: 5));
+  }
+
   Future<void> logPasswordChanged(String uid) async {
     final deviceId = await _localDeviceId();
     final label = await _realDeviceLabel();
@@ -419,6 +481,17 @@ class DeviceSessionService {
   Future<bool> shouldRequireApprovalForNewLogin(String uid) async {
     if (!await isLoginApprovalRequired(uid)) return false;
     try {
+      // BUGFIX: approval is only meaningful if there is another phone that is
+      // actually signed in to answer. If nobody holds the active-device claim
+      // (everyone signed out), or the claim is this very phone signing back
+      // in, asking for approval just made the person wait 60 seconds for a
+      // phone that could never reply — "requests coming even though nobody is
+      // logged in".
+      final session = (await _sessionRef(uid).get()).data();
+      final activeDeviceId = session?['activeDeviceId'] as String?;
+      if (activeDeviceId == null) return false;
+      if (activeDeviceId == await _localDeviceId()) return false;
+
       final presence = await _db.collection('users').doc(uid).collection('private').doc('presence').get();
       final data = presence.data();
       if (data == null) return false; // never seen online - nothing to protect against
@@ -444,6 +517,8 @@ class DeviceSessionService {
   Future<String> createLoginApprovalRequest(String uid) async {
     final requestId = const Uuid().v4();
     final deviceId = await _localDeviceId();
+    // A fresh attempt supersedes any earlier abandoned one from this phone.
+    await _expireMyPendingRequests(uid, deviceId);
     final label = await _realDeviceLabel();
     final location = await _locationLabel();
     final ip = await _realIp();
@@ -474,6 +549,25 @@ class DeviceSessionService {
   /// The NEW device watches this while its "waiting for approval" dialog
   /// is up (see LoginScreen) — emits 'pending', then eventually 'accepted'
   /// or 'denied' once the OLD device responds.
+  Future<void> _expireMyPendingRequests(String uid, String myDeviceId) async {
+    try {
+      final pending = await _approvalsRef(uid).where('status', isEqualTo: 'pending').get();
+      for (final doc in pending.docs) {
+        if (doc.data()['requestingDeviceId'] == myDeviceId) {
+          await expireLoginApprovalRequest(uid, doc.id);
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// One-shot read of a request (used to double-check it's still pending and
+  /// fresh before showing it).
+  Future<Map<String, dynamic>?> getApprovalRequest(String uid, String requestId) async {
+    final snap = await _approvalsRef(uid).doc(requestId).get();
+    final data = snap.data();
+    return data == null ? null : {'requestId': snap.id, ...data};
+  }
+
   Stream<String> watchApprovalStatus(String uid, String requestId) => _approvalsRef(uid)
       .doc(requestId)
       .snapshots()
@@ -512,11 +606,27 @@ class DeviceSessionService {
   /// Dropping the orderBy avoids needing that index at all — in normal
   /// use there's only ever one pending request at a time anyway, so
   /// which one `.limit(1)` happens to return doesn't meaningfully matter.
-  Stream<Map<String, dynamic>?> watchPendingApprovalRequest(String uid) => _approvalsRef(uid)
-      .where('status', isEqualTo: 'pending')
-      .limit(1)
-      .snapshots()
-      .map((snap) => snap.docs.isEmpty ? null : {'requestId': snap.docs.first.id, ...snap.docs.first.data()});
+  /// The newest still-FRESH pending request, or null. Stale ones (abandoned
+  /// attempts that were never marked expired) are ignored — before this they
+  /// kept coming back as phantom "approve this login?" prompts, including on
+  /// a phone that had just been reinstalled. Deliberately still a plain
+  /// single-field query (no orderBy/limit) so it needs no composite index.
+  Stream<Map<String, dynamic>?> watchPendingApprovalRequest(String uid) =>
+      _approvalsRef(uid).where('status', isEqualTo: 'pending').snapshots().map((snap) {
+        Map<String, dynamic>? newest;
+        DateTime? newestAt;
+        for (final doc in snap.docs) {
+          final data = doc.data();
+          if (!isApprovalFresh(data)) continue;
+          final ts = data['createdAt'];
+          final at = ts is Timestamp ? ts.toDate() : DateTime.now();
+          if (newest == null || at.isAfter(newestAt!)) {
+            newest = {'requestId': doc.id, ...data};
+            newestAt = at;
+          }
+        }
+        return newest;
+      });
 
   /// Called from the OLD/active device — either the in-app dialog
   /// (foreground) or LoginApprovalScreen (opened from a tapped push).
@@ -530,9 +640,19 @@ class DeviceSessionService {
     required bool approve,
   }) async {
     final deviceId = await _localDeviceId();
-    await _approvalsRef(uid).doc(requestId).update({
-      'status': approve ? 'accepted' : 'denied',
-      'respondingDeviceId': deviceId,
+    final ref = _approvalsRef(uid).doc(requestId);
+    // A transaction so it only goes through if the request is STILL waiting:
+    // a second tap, a second open screen, or an already-expired request
+    // throws [LoginApprovalAlreadyHandled] instead of answering twice.
+    await _db.runTransaction((tx) async {
+      final snap = await tx.get(ref);
+      if (!snap.exists || (snap.data()?['status'] as String?) != 'pending') {
+        throw const LoginApprovalAlreadyHandled();
+      }
+      tx.update(ref, {
+        'status': approve ? 'accepted' : 'denied',
+        'respondingDeviceId': deviceId,
+      });
     });
   }
 }
