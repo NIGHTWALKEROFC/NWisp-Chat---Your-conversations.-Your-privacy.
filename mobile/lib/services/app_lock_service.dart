@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// BUGFIX: this used to store the app-lock PIN as plain text in secure
@@ -50,7 +51,22 @@ class AppLockService {
   // nothing stored) = "Immediately", which is exactly how the app behaved
   // before this setting existed, so nobody's security silently loosens.
   static const _backgroundGraceKey = 'app_lock_background_grace_minutes';
+  // Feature: "shake to lock" — off by default (an accidental shake shouldn't
+  // surprise anyone), switched on in Settings > Security.
+  static const _shakeToLockKey = 'app_lock_shake_to_lock';
   static final _sha256 = Sha256();
+
+  /// Feature: "Lock now". Anything (the lock button on the chat list, a
+  /// shake) calls [requestLockNow]; the lock gate in auth_gate.dart listens
+  /// to this and locks the app instantly. Kept as a notifier so callers don't
+  /// need a reference to the gate's widget state.
+  static final ValueNotifier<int> lockNowRequests = ValueNotifier<int>(0);
+
+  /// Bumped whenever a lock-related setting changes (currently just the
+  /// shake switch) so the gate can start/stop listening without a restart.
+  static final ValueNotifier<int> lockSettingsChanged = ValueNotifier<int>(0);
+
+  static void requestLockNow() => lockNowRequests.value++;
 
   static Future<bool> isEnabled() async {
     return (await _storage.read(key: _enabledKey)) == 'true';
@@ -100,7 +116,9 @@ class AppLockService {
     await _storage.delete(key: _biometricEnabledKey);
     await _storage.delete(key: _idleTimeoutKey);
     await _storage.delete(key: _backgroundGraceKey);
+    await _storage.delete(key: _shakeToLockKey);
     await _storage.write(key: _enabledKey, value: 'false');
+    lockSettingsChanged.value++;
   }
 
   /// Null = off (default — matches the app's behavior before this
@@ -137,6 +155,19 @@ class AppLockService {
     } else {
       await _storage.write(key: _backgroundGraceKey, value: minutes.toString());
     }
+  }
+
+  static Future<bool> getShakeToLockEnabled() async {
+    return (await _storage.read(key: _shakeToLockKey)) == 'true';
+  }
+
+  static Future<void> setShakeToLockEnabled(bool enabled) async {
+    if (enabled) {
+      await _storage.write(key: _shakeToLockKey, value: 'true');
+    } else {
+      await _storage.delete(key: _shakeToLockKey);
+    }
+    lockSettingsChanged.value++;
   }
 
   static Future<bool> verify(String pin) async {
