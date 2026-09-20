@@ -27,6 +27,7 @@ import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import '../chat/chat_search_screen.dart';
 import '../security/safety_number_screen.dart';
+import '../chat/media_preview_screen.dart';
 import '../vault/media_vault_screen.dart';
 import 'group_info_screen.dart';
 
@@ -615,36 +616,52 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       onGalleryPhoto: () => _pickAndSendImage(ImageSource.gallery),
       onCameraVideo: () => _pickAndSendVideo(ImageSource.camera),
       onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
-      onCameraPhotoViewOnce: () => _pickAndSendImage(ImageSource.camera, viewOnce: true),
-      onGalleryPhotoViewOnce: () => _pickAndSendImage(ImageSource.gallery, viewOnce: true),
-      onCameraVideoViewOnce: () => _pickAndSendVideo(ImageSource.camera, viewOnce: true),
-      onGalleryVideoViewOnce: () => _pickAndSendVideo(ImageSource.gallery, viewOnce: true),
+      // The separate "view once" entries are gone from this menu: view once is
+      // now a switch inside the preview that opens after you pick something.
     );
   }
 
   Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
     final picked = await ImagePicker().pickImage(source: source, imageQuality: 100);
-    if (picked == null) return;
-    await _sendMedia(
+    if (picked == null || !mounted) return;
+    // Feature: media preview — crop/rotate/draw/add text and "view once"
+    // before anything is sent. Backing out sends nothing.
+    final result = await showMediaPreview(
+      context,
       file: File(picked.path),
+      isVideo: false,
+      recipientLabel: _groupName,
+      initialViewOnce: viewOnce,
+    );
+    if (result == null || !mounted) return;
+    await _sendMedia(
+      file: result.file,
       messageType: 'image',
       mime: 'image/jpeg',
       extension: 'jpg',
       compress: (file) => MediaCompressionService.compressImage(file),
-      viewOnce: viewOnce,
+      viewOnce: result.viewOnce,
     );
   }
 
   Future<void> _pickAndSendVideo(ImageSource source, {bool viewOnce = false}) async {
     final picked = await ImagePicker().pickVideo(source: source, maxDuration: const Duration(minutes: 2));
-    if (picked == null) return;
-    await _sendMedia(
+    if (picked == null || !mounted) return;
+    final result = await showMediaPreview(
+      context,
       file: File(picked.path),
+      isVideo: true,
+      recipientLabel: _groupName,
+      initialViewOnce: viewOnce,
+    );
+    if (result == null || !mounted) return;
+    await _sendMedia(
+      file: result.file,
       messageType: 'video',
       mime: 'video/mp4',
       extension: 'mp4',
       compress: (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync(),
-      viewOnce: viewOnce,
+      viewOnce: result.viewOnce,
     );
   }
 
