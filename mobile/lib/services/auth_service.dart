@@ -4,6 +4,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
 import 'device_session_service.dart';
+import 'presence_service.dart';
 import 'session_service.dart';
 
 /// Field-level privacy note (see firestore.rules): the public `users/{uid}`
@@ -122,20 +123,34 @@ class AuthService {
   /// username (resolved server-side — see send-password-reset), and
   /// emails a branded button that opens a page where the person types a
   /// new password directly, instead of Firebase's default bare
-  /// confirmation link — UNLESS the account has opted into OTP-based
-  /// reset (Settings -> Account security -> "Password reset method"),
-  /// in which case the server emails a 6-digit code instead. Returns
-  /// the raw {mode, message} map so the screen can show the right
-  /// follow-up UI.
+  /// confirmation link — or, when [method] is 'otp', a 6-digit code
+  /// instead. Returns the raw {mode, message} map (mode = what the
+  /// server ACTUALLY sent) so the screen can show the right follow-up UI.
   ///
   /// HONESTY NOTE: unlike a typical "forgot password" endpoint, this one
   /// DOES tell the caller outright if no account matches — a deliberate
   /// product choice (see send-password-reset's own comment for the
   /// trade-off), not an oversight.
-  Future<Map<String, dynamic>> requestPasswordReset(String identifier) async {
+  ///
+  /// [method] is what the person picked on the Reset password screen:
+  /// 'otp' (a 6-digit code) or 'email' (a link). The screen now ALWAYS asks —
+  /// nothing is decided for them — so this is passed on every call. When it's
+  /// omitted the server falls back to emailing the link.
+  Future<Map<String, dynamic>> requestPasswordReset(String identifier, {String? method}) async {
     final deviceId = await DeviceSessionService.instance.localDeviceId();
-    return _postFunction('send-password-reset', {'identifier': identifier, 'deviceId': deviceId});
+    return _postFunction('send-password-reset', {
+      'identifier': identifier,
+      'deviceId': deviceId,
+      if (method != null) 'method': method,
+    });
   }
+
+  /// Checks a reset code WITHOUT using it up or changing anything, so the
+  /// reset screen can turn the code boxes green (right) or red (wrong) the
+  /// moment the last digit is typed — before asking for the new password.
+  /// Throws with the server's message on a wrong or expired code.
+  Future<void> checkPasswordResetOtp({required String email, required String code}) =>
+      _postFunction('verify-password-reset-otp', {'email': email, 'code': code});
 
   /// Second half of the OTP-based reset: checks [code] against what was
   /// emailed for [email], and if correct, sets [newPassword] directly —
@@ -345,6 +360,20 @@ class AuthService {
     // getting the FIRST account's push notifications too.
     final uid = currentUserId;
     if (uid != null) {
+      // BUGFIX (login approval): sign-out used to leave this phone marked
+      // "online" and as the account's "active device". For the next few
+      // minutes any new login was then told to wait for an approval from a
+      // phone that was no longer signed in — and nobody could ever answer.
+      // Now a normal sign-out marks the account offline and releases this
+      // phone's active-device claim first. (If this sign-out is a forced one
+      // because ANOTHER phone took over, the claim isn't ours any more, so
+      // releaseActiveClaimIfMine correctly leaves it alone.)
+      try {
+        await PresenceService.goOffline();
+      } catch (_) {}
+      try {
+        await DeviceSessionService.instance.releaseActiveClaimIfMine(uid);
+      } catch (_) {}
       try {
         final token = await FirebaseMessaging.instance.getToken();
         if (token != null) await removeFcmToken(token);
