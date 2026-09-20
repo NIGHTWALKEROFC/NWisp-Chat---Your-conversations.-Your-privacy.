@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/account_lifecycle_service.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/breach_warning_dialog.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import 'account_security_screen.dart';
 import 'delete_account_screen.dart';
@@ -64,6 +65,8 @@ class _AccountScreenState extends State<AccountScreen> {
       if (newPassword != null) _showErrorWithHelp('Password must be at least 6 characters.');
       return;
     }
+    final ok = await confirmPasswordNotBreached(context, newPassword);
+    if (!ok || !mounted) return;
     try {
       await _authService.reauthenticate(currentPassword);
       await _authService.updatePassword(newPassword);
