@@ -18,6 +18,9 @@ import 'reactivate_account_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'suspended_account_screen.dart';
 import '../services/local_message_store.dart';
+import '../services/media_vault_service.dart';
+import '../services/scheduled_message_service.dart';
+import '../services/shake_detector.dart';
 
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
@@ -51,6 +54,8 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       PresenceService.goOnline();
       LocalMessageStore.purgeExpired();
+      // Send anything scheduled that came due while the app was closed.
+      ScheduledMessageService.instance.tick();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       PresenceService.goOffline();
     }
@@ -231,6 +236,45 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   int _graceMinutes = 0;
   int? _idleMinutesCache;
 
+  // Feature: shake to lock + the Lock now button. _shake only exists while
+  // the person has "Shake to lock" switched on; _foreground is tracked so
+  // the accelerometer is never listened to while the app is in the
+  // background.
+  ShakeDetector? _shake;
+  bool _foreground = true;
+
+  void _onLockNowRequested() {
+    if (!mounted || !_unlocked) return;
+    _lockNow();
+  }
+
+  /// Starts or stops the shake detector to match the setting. Only ever
+  /// running when the app lock is on, the shake switch is on, the app is
+  /// unlocked, and it's in the foreground.
+  Future<void> _syncShake() async {
+    final lockOn = await AppLockService.isEnabled();
+    final shakeOn = lockOn && await AppLockService.getShakeToLockEnabled();
+    if (!mounted) return;
+    if (shakeOn && _unlocked && _foreground) {
+      _shake ??= ShakeDetector(onShake: _onLockNowRequested);
+      _shake!.start();
+    } else {
+      _shake?.stop();
+    }
+  }
+
+  /// A lock has to hide EVERYTHING, not just the screen underneath. The app
+  /// has one shared Navigator with this gate as its home screen, so a chat,
+  /// the media vault, a settings page or a photo opened on top of it would
+  /// otherwise stay fully visible when this swaps to the PIN screen. So every
+  /// lock path closes all open screens first (back to the home route) and
+  /// re-locks the media vault.
+  void _closeEverythingOpen() {
+    _shake?.stop();
+    MediaVaultService.instance.lock();
+    if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
   Future<void> _scheduleIdleTimer() async {
     _idleTimer?.cancel();
     if (!_unlocked) return;
@@ -245,6 +289,7 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   void _onIdleTimeout() {
     if (!mounted) return;
     _pausedAt = null;
+    _closeEverythingOpen();
     setState(() {
       _unlocked = false;
       _duress = false;
@@ -264,10 +309,15 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    AppLockService.lockNowRequests.addListener(_onLockNowRequested);
+    AppLockService.lockSettingsChanged.addListener(_syncShake);
   }
 
   @override
   void dispose() {
+    AppLockService.lockNowRequests.removeListener(_onLockNowRequested);
+    AppLockService.lockSettingsChanged.removeListener(_syncShake);
+    _shake?.stop();
     WidgetsBinding.instance.removeObserver(this);
     _idleTimer?.cancel();
     super.dispose();
@@ -291,6 +341,12 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
     // below). If Android kills the app in the meantime it starts cold, which
     // always asks for the PIN, so a longer setting can never leave a killed
     // app unlocked.
+    if (state == AppLifecycleState.paused) {
+      _foreground = false;
+      _shake?.stop();
+    } else if (state == AppLifecycleState.resumed) {
+      _foreground = true;
+    }
     if (state == AppLifecycleState.paused && _unlocked) {
       _idleTimer?.cancel();
       if (_graceMinutes <= 0) {
@@ -300,6 +356,7 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
       }
     } else if (state == AppLifecycleState.resumed) {
       _resumeOrLock();
+      _syncShake();
     }
   }
 
@@ -332,6 +389,7 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   void _lockNow() {
     _idleTimer?.cancel();
     _pausedAt = null;
+    _closeEverythingOpen();
     setState(() {
       _unlocked = false;
       _duress = false;
@@ -355,6 +413,7 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
             onUnlocked: () {
               setState(() => _unlocked = true);
               _scheduleIdleTimer();
+              _syncShake();
             },
             onDuressUnlocked: () {
               setState(() {
