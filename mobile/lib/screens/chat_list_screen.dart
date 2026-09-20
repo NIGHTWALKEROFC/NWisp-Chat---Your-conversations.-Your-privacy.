@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/local_message.dart';
 import '../services/app_badge_service.dart';
+import '../services/app_lock_service.dart';
+import '../services/note_to_self_service.dart';
 import '../services/auth_service.dart';
 import '../services/chat_freeze_service.dart';
 import '../services/chat_lock_service.dart';
@@ -15,6 +17,9 @@ import '../services/settings_service.dart';
 import '../services/signal_session_service.dart';
 import '../widgets/mute_duration_sheet.dart';
 import 'chat/chat_detail_screen.dart';
+import 'chat/scheduled_messages_screen.dart';
+import 'notes/note_to_self_screen.dart';
+import 'vault/media_vault_screen.dart';
 import 'chat_folders_screen.dart';
 import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
@@ -511,7 +516,33 @@ class _ChatListScreenState extends State<ChatListScreen> {
       case 'folders':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatFoldersScreen()));
         break;
+      case 'note_to_self':
+        // Feature: Note to self — a private, local-only notepad.
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const NoteToSelfScreen()));
+        break;
+      case 'scheduled':
+        // Feature: send later — every message waiting to be sent.
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ScheduledMessagesScreen()));
+        break;
+      case 'media_vault':
+        // Feature: locked media vault (its own PIN — see MediaVaultScreen).
+        Navigator.push(
+          context,
+          MaterialPageRoute(settings: const RouteSettings(name: '/vault'), builder: (_) => const MediaVaultScreen()),
+        );
+        break;
     }
+  }
+
+  /// Feature: "Lock now". Locks the app instantly and closes every open
+  /// screen (see the lock gate in auth_gate.dart). Only meaningful if App
+  /// lock is on — otherwise there's no PIN to lock behind, so say so.
+  Future<void> _lockNow() async {
+    if (!await AppLockService.isEnabled()) {
+      _snack('Turn on App lock in Settings > Security to use Lock now.');
+      return;
+    }
+    AppLockService.requestLockNow();
   }
 
   @override
@@ -549,6 +580,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const GroupInvitesScreen())),
               );
             },
+          ),
+          IconButton(
+            icon: const Icon(Icons.lock_outline),
+            tooltip: 'Lock now',
+            onPressed: _lockNow,
           ),
           IconButton(
             icon: const Icon(Icons.search),
@@ -602,6 +638,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
               PopupMenuItem(
                 value: 'folders',
                 child: ListTile(leading: Icon(Icons.folder_outlined), title: Text('Chat folders'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'note_to_self',
+                child: ListTile(leading: Icon(Icons.edit_note), title: Text('Note to self'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'scheduled',
+                child: ListTile(leading: Icon(Icons.schedule), title: Text('Scheduled messages'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'media_vault',
+                child: ListTile(leading: Icon(Icons.enhanced_encryption_outlined), title: Text('Media vault'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuDivider(),
               PopupMenuItem(
@@ -1024,6 +1072,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
       ],
     );
     final emphasize = row.unreadCount > 0 || row.markedUnread;
+
+    // Feature: Note to self. Its "peer" is you, so it must NOT go through the
+    // normal 1:1 path (which would look up a username, open a chat screen and
+    // offer archive/mute swipes that only make sense for a real chat).
+    if (NoteToSelfService.isNotes(row.conversationId)) {
+      return ListTile(
+        leading: CircleAvatar(
+          backgroundColor: scheme.primaryContainer,
+          child: Icon(Icons.edit_note, color: scheme.onPrimaryContainer),
+        ),
+        title: const Text('Note to self'),
+        subtitle: Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NoteToSelfScreen())),
+      );
+    }
 
     if (row.isGroup) {
       return _withSwipeActions(scheme, row, ListTile(
