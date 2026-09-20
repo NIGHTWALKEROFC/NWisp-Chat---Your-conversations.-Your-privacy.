@@ -88,7 +88,15 @@ class AuthService {
   /// [email] via our own branded email (not Firebase's default one). Safe
   /// to call again for the same email; the server enforces its own
   /// resend cooldown and surfaces that as the thrown message.
-  Future<void> sendSignupOtp(String email) => _postFunction('send-signup-otp', {'email': email});
+  /// Sends the code with this device's persisted id attached (see
+  /// DeviceSessionService._localDeviceId) so the server's abuse
+  /// throttle can key on device as well as IP — see send-signup-otp's
+  /// own comments for why that matters (switching WiFi alone no longer
+  /// resets a block).
+  Future<void> sendSignupOtp(String email) async {
+    final deviceId = await DeviceSessionService.instance.localDeviceId();
+    await _postFunction('send-signup-otp', {'email': email, 'deviceId': deviceId});
+  }
 
   /// Step 2 — checks [code] against what was emailed for [email]. Throws
   /// with a friendly message ("Incorrect code", "That code expired", …)
@@ -105,20 +113,29 @@ class AuthService {
   /// had for the same reason.
   Future<void> _confirmVerifiedEmail() async {
     try {
-      await _postFunction('confirm-verified-email', {}, includeIdToken: true);
+      final deviceId = await DeviceSessionService.instance.localDeviceId();
+      await _postFunction('confirm-verified-email', {'deviceId': deviceId}, includeIdToken: true);
     } catch (_) {}
   }
 
-  /// Instagram-style "forgot password": emails a branded button that
-  /// opens a page where the person types a new password directly,
-  /// instead of Firebase's default bare confirmation link — UNLESS the
-  /// account has opted into OTP-based reset (Settings -> Account
-  /// security -> "Password reset method"), in which case the server
-  /// emails a 6-digit code instead. Returns the raw {mode, message} map
-  /// so the screen can show the right follow-up UI; always resolves the
-  /// same way whether or not the email is registered (the server
-  /// intentionally doesn't reveal that).
-  Future<Map<String, dynamic>> requestPasswordReset(String email) => _postFunction('send-password-reset', {'email': email});
+  /// Instagram-style "forgot password": accepts either an email OR a
+  /// username (resolved server-side — see send-password-reset), and
+  /// emails a branded button that opens a page where the person types a
+  /// new password directly, instead of Firebase's default bare
+  /// confirmation link — UNLESS the account has opted into OTP-based
+  /// reset (Settings -> Account security -> "Password reset method"),
+  /// in which case the server emails a 6-digit code instead. Returns
+  /// the raw {mode, message} map so the screen can show the right
+  /// follow-up UI.
+  ///
+  /// HONESTY NOTE: unlike a typical "forgot password" endpoint, this one
+  /// DOES tell the caller outright if no account matches — a deliberate
+  /// product choice (see send-password-reset's own comment for the
+  /// trade-off), not an oversight.
+  Future<Map<String, dynamic>> requestPasswordReset(String identifier) async {
+    final deviceId = await DeviceSessionService.instance.localDeviceId();
+    return _postFunction('send-password-reset', {'identifier': identifier, 'deviceId': deviceId});
+  }
 
   /// Second half of the OTP-based reset: checks [code] against what was
   /// emailed for [email], and if correct, sets [newPassword] directly —
@@ -352,9 +369,21 @@ class AuthService {
     await user.reauthenticateWithCredential(credential);
   }
 
+  /// Feature: notifies BOTH the current email and [newEmail] the moment
+  /// this is requested — see notify-email-change's own comments for why
+  /// (the current/old address is the one that matters most: if this
+  /// wasn't the real owner requesting it, they need to hear about it
+  /// from an address the attacker doesn't control). Best-effort: if the
+  /// notification fails to send for some reason, the actual email
+  /// change (Firebase's own verifyBeforeUpdateEmail flow, unchanged
+  /// below) still proceeds — a notification failing shouldn't block the
+  /// legitimate feature.
   Future<void> requestEmailChange(String newEmail) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No signed-in user');
+    try {
+      await _postFunction('notify-email-change', {'newEmail': newEmail}, includeIdToken: true);
+    } catch (_) {}
     await user.verifyBeforeUpdateEmail(newEmail);
   }
 
