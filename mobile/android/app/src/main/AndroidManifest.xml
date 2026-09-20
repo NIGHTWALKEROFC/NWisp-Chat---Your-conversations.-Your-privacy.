@@ -15,6 +15,12 @@
          covers face/iris unlock too on devices that support it. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
 
+    <!-- Feature: screenshot alert. Lets the app find out (Android 14+) when the
+         screenshot button combo is pressed, so the other person in a chat can
+         be told. Screenshots themselves are still blocked (FLAG_SECURE) — this
+         only detects the ATTEMPT. Install-time permission, no prompt. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE"/>
+
     <!-- Feature: unread-count badge on the app icon (app_badge_plus). Android
          has no official badge API, so each launcher brand has its own
          permission; these are the ones the plugin documents. Harmless on
