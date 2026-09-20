@@ -32,12 +32,14 @@ class AccountSecurityScreen extends StatelessWidget {
   String _labelFor(Map<String, dynamic> data) {
     final device = data['deviceLabel'] as String? ?? 'a device';
     final location = data['location'] as String?;
-    final deviceWithLocation = location != null ? '$device ($location)' : device;
+    final ip = data['ip'] as String?;
+    final tags = [if (location != null) location, if (ip != null) ip];
+    final deviceWithExtras = tags.isNotEmpty ? '$device (${tags.join(' • ')})' : device;
     switch (data['event']) {
       case 'login':
-        return 'Signed in on $deviceWithLocation';
+        return 'Signed in on $deviceWithExtras';
       case 'password_changed':
-        return 'Password changed from $deviceWithLocation';
+        return 'Password changed from $deviceWithExtras';
       default:
         return 'Security event';
     }
@@ -139,8 +141,14 @@ class AccountSecurityScreen extends StatelessWidget {
               final sessionData = sessionSnapshot.data?.data();
               final label = sessionData?['activeDeviceLabel'] as String? ?? 'This device';
               final location = sessionData?['activeLocation'] as String?;
+              final ip = sessionData?['activeIp'] as String?;
               final since = (sessionData?['activeSince'] as Timestamp?)?.toDate();
               final clearedAt = (sessionData?['historyClearedAt'] as Timestamp?)?.toDate();
+
+              final activeTags = [if (location != null) location, if (ip != null) ip];
+              final activeSubtitle = activeTags.isNotEmpty
+                  ? 'Active device • ${activeTags.join(' • ')} • signed in ${_timeAgo(since)}'
+                  : 'Active device • signed in ${_timeAgo(since)}';
 
               return Column(
                 children: [
@@ -149,11 +157,7 @@ class AccountSecurityScreen extends StatelessWidget {
                     child: ListTile(
                       leading: Icon(Icons.phone_android, color: scheme.primary),
                       title: Text(label),
-                      subtitle: Text(
-                        location != null
-                            ? 'Active device • $location • signed in ${_timeAgo(since)}'
-                            : 'Active device • signed in ${_timeAgo(since)}',
-                      ),
+                      subtitle: Text(activeSubtitle),
                       trailing: Icon(Icons.check_circle, color: scheme.primary, size: 20),
                     ),
                   ),
@@ -282,7 +286,11 @@ class AccountSecurityScreen extends StatelessWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+              MaterialPageRoute(
+                // Already signed in, so we already know this account's
+                // email — no need to make them type it again.
+                builder: (_) => ForgotPasswordScreen(knownEmail: AuthService().currentUser?.email),
+              ),
             ),
           ),
         ],
