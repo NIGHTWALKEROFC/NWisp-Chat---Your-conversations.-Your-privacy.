@@ -91,4 +91,36 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_appBadgeEnabledKey, value);
   }
+
+  /// Feature: private keyboard mode (see PrivateKeyboardService). OFF by
+  /// default — the normal keyboard behaviour (suggestions, autocorrect,
+  /// learning from what you type) is what everyone gets until they choose
+  /// otherwise in Settings > Privacy.
+  static const _privateKeyboardKey = 'private_keyboard_enabled';
+
+  static Future<bool> getPrivateKeyboardEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_privateKeyboardKey) ?? false;
+  }
+
+  static Future<void> setPrivateKeyboardEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_privateKeyboardKey, value);
+  }
+
+  /// Feature: hide the app preview in the recent-apps switcher (see
+  /// ScreenshotGuardService.setRecentsPreviewHidden). ON by default — this
+  /// is a security-first app, and this only ever ADDS protection (chats stay
+  /// screenshot-blocked no matter what this is set to).
+  static const _hideRecentsPreviewKey = 'hide_recents_preview';
+
+  static Future<bool> getHideRecentsPreview() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_hideRecentsPreviewKey) ?? true;
+  }
+
+  static Future<void> setHideRecentsPreview(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_hideRecentsPreviewKey, value);
+  }
 }
