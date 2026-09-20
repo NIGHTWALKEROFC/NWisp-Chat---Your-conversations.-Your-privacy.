@@ -17,6 +17,11 @@ import 'services/inactivity_wipe_service.dart';
 import 'services/keyword_mute_service.dart';
 import 'services/local_message_store.dart';
 import 'services/message_relay_service.dart';
+import 'services/scheduled_message_service.dart';
+import 'services/media_vault_service.dart';
+import 'services/private_keyboard_service.dart';
+import 'services/screenshot_guard_service.dart';
+import 'services/settings_service.dart';
 import 'services/session_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
@@ -46,6 +51,16 @@ void main() async {
     anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
   );
   await LocalMessageStore.init();
+
+  // Screenshot alert: lets the native side (MainActivity.kt) report screenshot
+  // attempts up to Dart. Recents preview: applies the saved "Hide app preview
+  // in recent apps" choice (on by default). Private keyboard: loads its saved
+  // choice (off by default). Vault: clears any decrypted temp copies a
+  // previous run might have left behind.
+  ScreenshotGuardService.init();
+  ScreenshotGuardService.setRecentsPreviewHidden(await SettingsService.getHideRecentsPreview());
+  await PrivateKeyboardService.load();
+  MediaVaultService.instance.cleanTemp();
 
   // If a session is already persisted from a previous run (the normal
   // "reopen the app" case), get this device's crypto keys ready BEFORE the
@@ -109,18 +124,14 @@ void _handleNotificationData(Map<String, dynamic> data) {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final requestId = data['requestId'] as String?;
     if (uid == null || requestId == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      navigatorKey.currentState?.push(
-        MaterialPageRoute(
-          builder: (_) => LoginApprovalScreen(
-            uid: uid,
-            requestId: requestId,
-            deviceLabel: data['deviceLabel'] as String? ?? 'Unknown device',
-            location: data['location'] as String?,
-          ),
-        ),
-      );
-    });
+    // Same checks and same one-screen-per-request guard as the live
+    // listener — a tapped notification can no longer stack a second copy.
+    _presentLoginApproval(
+      uid: uid,
+      requestId: requestId,
+      deviceLabel: data['deviceLabel'] as String?,
+      location: data['location'] as String?,
+    );
     return;
   }
   final conversationId = data['conversationId'] as String?;
@@ -200,17 +211,32 @@ void _setUpMessagingLifecycle() {
   FirebaseAuth.instance.authStateChanges().listen((user) async {
     if (user == null) {
       MessageRelayService.stop();
+      ScheduledMessageService.instance.stop();
       GroupService.instance.stopCaching();
       DeviceSessionService.instance.stopWatching();
+      _approvalWatchSub?.cancel();
+      _approvalWatchSub = null;
       sweepTimer?.cancel();
       // Feature: app-icon badge — never leave one account's unread count on
       // the icon after that account has signed out.
       AppBadgeService.instance.clear();
       return;
     }
+    // BUGFIX (login approval): if this is a login still waiting for the old
+    // phone's approval, hold off — don't publish keys, start pulling
+    // messages, or start watching for approvals until it has really finished.
+    // If it was denied / cancelled / timed out, the user is signed out again
+    // by then and there is nothing to set up.
+    if (DeviceSessionService.instance.isClaimPending) {
+      await _waitForClaimToSettle();
+      if (FirebaseAuth.instance.currentUser?.uid != user.uid) return;
+    }
     await SessionService.prepareForUser(user.uid);
     await LocalMessageStore.purgeExpired();
     await MessageRelayService.start();
+    // Feature: send later — starts the timer that sends scheduled messages
+    // when they come due (see ScheduledMessageService for its limits).
+    ScheduledMessageService.instance.start();
     GroupService.instance.startCaching();
     GroupService.instance.retryAllPendingResends();
     sweepTimer?.cancel();
@@ -260,49 +286,108 @@ void _setUpMessagingLifecycle() {
 /// screen the instant a new login requests approval — no need to wait for
 /// the push notification, which only matters if the app is backgrounded
 /// or killed (see _handleNotificationData above for that path).
-String? _lastHandledApprovalRequestId;
+StreamSubscription? _approvalWatchSub;
+
+/// Waits (up to 3 minutes, as a safety net) until a login attempt that is
+/// still in progress on THIS phone has fully finished or been abandoned.
+///
+/// BUGFIX (login approval): the sign-in listeners in this file used to start
+/// the moment Firebase accepted the password — before the old phone had
+/// approved anything — and immediately published this phone's encryption
+/// keys, started pulling the account's queued messages and registered this
+/// phone for the account's push notifications. That happened even if the
+/// login was then denied or timed out. Everything that should only follow a
+/// COMPLETED sign-in now waits here first.
+Future<void> _waitForClaimToSettle() async {
+  final notifier = DeviceSessionService.instance.claimPendingNotifier;
+  if (!notifier.value) return;
+  final completer = Completer<void>();
+  void listener() {
+    if (!notifier.value && !completer.isCompleted) completer.complete();
+  }
+
+  notifier.addListener(listener);
+  try {
+    await completer.future.timeout(const Duration(minutes: 3));
+  } catch (_) {
+    // Safety net only — fall through rather than block forever.
+  } finally {
+    notifier.removeListener(listener);
+  }
+}
+
+/// The ONE place a login-approval screen is ever put on screen — used by the
+/// live listener below AND by tapped notifications, so they can't both show
+/// the same request.
+///
+/// A request is shown only if ALL of these hold (each one fixes a specific
+/// glitch that was reported):
+///  * this phone isn't itself in the middle of signing in;
+///  * this phone IS the account's active device — a phone that isn't active
+///    has no business answering, which stops phantom prompts on a phone that
+///    was just reinstalled or is still signing in;
+///  * the request is still pending and still fresh (not an abandoned old
+///    attempt);
+///  * it wasn't created by this very phone;
+///  * no other screen is already showing it.
+Future<void> _presentLoginApproval({
+  required String uid,
+  required String requestId,
+  String? deviceLabel,
+  String? location,
+}) async {
+  final sessions = DeviceSessionService.instance;
+  try {
+    if (sessions.isClaimPending) return;
+    if (!await sessions.isThisDeviceActive(uid)) return;
+    final request = await sessions.getApprovalRequest(uid, requestId);
+    if (request == null || request['status'] != 'pending') return;
+    if (!sessions.isApprovalFresh(request)) return;
+    if (request['requestingDeviceId'] == await sessions.localDeviceId()) return;
+    if (!sessions.tryMarkApprovalPresented(requestId)) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final nav = navigatorKey.currentState;
+      if (nav == null) {
+        sessions.unmarkApprovalPresented(requestId);
+        return;
+      }
+      nav.push(
+        MaterialPageRoute(
+          builder: (_) => LoginApprovalScreen(
+            uid: uid,
+            requestId: requestId,
+            deviceLabel: (request['requestingDeviceLabel'] as String?) ?? deviceLabel ?? 'Unknown device',
+            location: (request['requestingLocation'] as String?) ?? location,
+            // Feature: number matching. Null for a request from an older app
+            // build that doesn't send one — the screen falls back to plain
+            // Accept / Deny in that case.
+            matchNumber: (request['matchNumber'] as num?)?.toInt(),
+          ),
+        ),
+      );
+    });
+  } catch (e) {
+    debugPrint('_presentLoginApproval error: $e');
+  }
+}
+
 void _watchForIncomingLoginApprovals(String uid) {
-  DeviceSessionService.instance.watchPendingApprovalRequest(uid).listen(
-    (request) async {
+  // BUGFIX: this used to start a NEW listener on every sign-in and never
+  // stop the old ones, so listeners piled up. There is only ever one now.
+  _approvalWatchSub?.cancel();
+  _approvalWatchSub = DeviceSessionService.instance.watchPendingApprovalRequest(uid).listen(
+    (request) {
       if (request == null) return;
       final requestId = request['requestId'] as String?;
-      if (requestId == null || requestId == _lastHandledApprovalRequestId) return;
-      // BUGFIX: this listener is (re)started the instant Firebase Auth
-      // reports a signed-in user — which fires the moment
-      // signInWithEmailAndPassword succeeds inside beginEmailLogin, well
-      // before THIS SAME device (if it's the one currently logging in)
-      // has gone on to create its own approval request and finish
-      // claiming itself. Without this check, a device could catch the
-      // pending request it had just created about itself and pop the
-      // "approve this login" screen on itself — asking the person to
-      // approve their own sign-in. Racing that self-prompt against
-      // LoginScreen's own approval wait is what caused needing to
-      // accept/deny several times before a login actually went through.
-      // A device must never be asked to approve its own login.
-      final myDeviceId = await DeviceSessionService.instance.localDeviceId();
-      if (request['requestingDeviceId'] == myDeviceId) return;
-      _lastHandledApprovalRequestId = requestId;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        navigatorKey.currentState?.push(
-          MaterialPageRoute(
-            builder: (_) => LoginApprovalScreen(
-              uid: uid,
-              requestId: requestId,
-              deviceLabel: request['requestingDeviceLabel'] as String? ?? 'Unknown device',
-              location: request['requestingLocation'] as String?,
-            ),
-          ),
-        );
-      });
+      if (requestId == null) return;
+      _presentLoginApproval(
+        uid: uid,
+        requestId: requestId,
+        deviceLabel: request['requestingDeviceLabel'] as String?,
+        location: request['requestingLocation'] as String?,
+      );
     },
-    // BUGFIX: this used to have no error handler at all, so a query
-    // failure (e.g. the missing-composite-index issue this same fix
-    // resolves — see watchPendingApprovalRequest's own doc comment) died
-    // completely silently: no crash, no log, the active device's "new
-    // login wants approval" screen just never showed up, with nothing
-    // anywhere pointing at why. debugPrint at minimum makes a future
-    // failure of this listener, for any reason, visible in the device
-    // log instead of invisible.
     onError: (Object e) => debugPrint('watchPendingApprovalRequest error: $e'),
   );
 }
@@ -317,6 +402,15 @@ void _setUpPushNotifications() {
   // sign-in.
   FirebaseAuth.instance.authStateChanges().listen((user) async {
     if (user == null) return;
+    // BUGFIX (login approval): don't register THIS phone for the account's
+    // push notifications until its sign-in has really been approved and
+    // finished — otherwise a login that is still waiting (or gets denied)
+    // would already be receiving the account's notifications, including
+    // the approval request about ITSELF.
+    if (DeviceSessionService.instance.isClaimPending) {
+      await _waitForClaimToSettle();
+      if (FirebaseAuth.instance.currentUser?.uid != user.uid) return;
+    }
     final token = await FirebaseMessaging.instance.getToken();
     if (token != null) {
       await AuthService().saveFcmToken(token);
