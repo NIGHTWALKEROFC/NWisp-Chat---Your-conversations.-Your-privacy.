@@ -25,6 +25,8 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
   int? _idleTimeoutMinutes;
   // Feature: lock timing when leaving the app. 0 = immediately (default).
   int _graceMinutes = 0;
+  // Feature: shake to lock (off by default).
+  bool _shakeToLock = false;
   bool _inactivityWipeEnabled = false;
   int _inactivityWipeMonths = 3;
   bool _loading = true;
@@ -41,6 +43,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
     final biometricAvailable = await BiometricUnlockService.isAvailable();
     final idleTimeoutMinutes = await AppLockService.getIdleTimeoutMinutes();
     final graceMinutes = await AppLockService.getBackgroundGraceMinutes();
+    final shakeToLock = await AppLockService.getShakeToLockEnabled();
     final inactivityWipeEnabled = await SettingsService.getInactivityWipeGlobalEnabled();
     final inactivityWipeMonths = await SettingsService.getInactivityWipeGlobalMonths();
     if (!mounted) return;
@@ -50,6 +53,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
       _biometricAvailable = biometricAvailable;
       _idleTimeoutMinutes = idleTimeoutMinutes;
       _graceMinutes = graceMinutes;
+      _shakeToLock = shakeToLock;
       _inactivityWipeEnabled = inactivityWipeEnabled;
       _inactivityWipeMonths = inactivityWipeMonths;
       _loading = false;
@@ -86,6 +90,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
         _biometricEnabled = false;
         _idleTimeoutMinutes = null;
         _graceMinutes = 0;
+        _shakeToLock = false;
       });
     }
   }
@@ -246,6 +251,19 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                     subtitle: const Text('Face/fingerprint as a shortcut for your PIN — the PIN itself still always works too'),
                     value: _biometricEnabled,
                     onChanged: _toggleBiometric,
+                  ),
+                // Feature: shake to lock. The Lock now button on the chat
+                // list works with or without this.
+                if (_appLockEnabled)
+                  SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.vibration),
+                    title: const Text('Shake to lock'),
+                    subtitle: const Text('Shake your phone firmly to lock the app instantly, from anywhere in it'),
+                    value: _shakeToLock,
+                    onChanged: (v) async {
+                      setState(() => _shakeToLock = v);
+                      await AppLockService.setShakeToLockEnabled(v);
+                    },
                   ),
                 if (_appLockEnabled)
                   ListTile(
