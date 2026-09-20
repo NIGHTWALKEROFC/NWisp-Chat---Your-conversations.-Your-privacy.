@@ -20,6 +20,10 @@ import '../../services/pin_service.dart';
 import '../../services/presence_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
+import '../../services/media_vault_service.dart';
+import '../../services/private_keyboard_service.dart';
+import '../../services/scheduled_message_service.dart';
+import '../../widgets/schedule_send_sheet.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
 import '../../widgets/media_viewer_screen.dart';
@@ -29,6 +33,9 @@ import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import 'chat_search_screen.dart';
 import 'forward_destination_screen.dart';
+import 'media_preview_screen.dart';
+import 'scheduled_messages_screen.dart';
+import '../vault/media_vault_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import 'chat_settings_screen.dart';
@@ -131,6 +138,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   // request are read from it via ConversationService's forwarding helpers.
   Map<String, dynamic> _convoData = {};
 
+  // Feature: screenshot alert — throttles notices so holding the buttons
+  // down or mashing them can't flood the other person.
+  DateTime? _lastScreenshotNoticeAt;
+
   int? _profileTtlHours;
   int? _chatTtlOverride;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _convoSub;
@@ -158,6 +169,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     // Screenshot / screen-recording prevention (Android FLAG_SECURE) —
     // see ScreenshotGuardService. Released in dispose() below.
     ScreenshotGuardService.acquire();
+    // Feature: screenshot alert — while this chat is open, a screenshot
+    // attempt (Android 14+) is reported to the other person.
+    ScreenshotGuardService.onScreenshotDetected = _onScreenshotAttempt;
     _checkChatLock();
     _conversationService.ensureConversation(otherUid: widget.peerUid);
     SignalSessionService.instance.hasUnverifiedIdentityChange(widget.peerUid).then((changed) {
@@ -199,6 +213,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   @override
   void dispose() {
+    if (ScreenshotGuardService.onScreenshotDetected == _onScreenshotAttempt) {
+      ScreenshotGuardService.onScreenshotDetected = null;
+    }
     ScreenshotGuardService.release();
     _conversationService.setTyping(widget.conversationId, false);
     // Feature: "clear on exit" ephemeral view mode. Fires exactly once,
@@ -353,7 +370,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
   }
 
-  Future<void> _send() async {
+  Future<void> _send({bool silent = false}) async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
     if (_myUid == null) {
@@ -399,13 +416,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     _textController.clear();
     final replyId = _replyingTo?.id;
     setState(() => _replyingTo = null);
-    Future<void> attemptSend() => MessageRelayService.sendMessage(
-          conversationId: widget.conversationId,
-          recipientUid: widget.peerUid,
-          text: text,
-          replyToId: replyId,
-          ttlHours: _effectiveTtlHours,
-        );
+    Future<void> attemptSend() async {
+      await MessageRelayService.sendMessage(
+        conversationId: widget.conversationId,
+        recipientUid: widget.peerUid,
+        text: text,
+        replyToId: replyId,
+        ttlHours: _effectiveTtlHours,
+        // Feature: silent send — delivered normally, no notification on
+        // their phone.
+        silent: silent,
+      );
+      if (silent && mounted) _showForwardSnack('Sent silently — no notification on their phone.');
+    }
     try {
       await attemptSend();
     } on IdentityChangedException catch (_) {
@@ -439,6 +462,119 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Message not sent — $e'), duration: const Duration(seconds: 6)));
     }
     await _conversationService.setTyping(widget.conversationId, false);
+  }
+
+  // ---- Feature: send options (silent / send later) ------------------------
+
+  /// Press-and-hold on the send button. Only when there's text to send and
+  /// the compose bar isn't editing an existing message.
+  Future<void> _showSendOptions() async {
+    if (_editingMessage != null || _textController.text.trim().isEmpty || _sendingMedia) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.notifications_off_outlined),
+              title: const Text('Send silently'),
+              subtitle: const Text('Delivered as normal, but no notification on their phone'),
+              onTap: () => Navigator.pop(sheetContext, 'silent'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.schedule),
+              title: const Text('Send later…'),
+              subtitle: const Text('Pick a time — it sends from this phone'),
+              onTap: () => Navigator.pop(sheetContext, 'later'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'silent') {
+      await _send(silent: true);
+    } else if (choice == 'later') {
+      await _scheduleCurrentMessage();
+    }
+  }
+
+  /// Queues what's in the compose bar to be sent later (see
+  /// ScheduledMessageService for how, and its honest limit).
+  Future<void> _scheduleCurrentMessage() async {
+    final text = _textController.text.trim();
+    if (text.isEmpty || _editingMessage != null) return;
+    if (_peerBlockedByMe) {
+      _showForwardSnack('Unblock ${widget.peerUsername} first.');
+      return;
+    }
+    final choice = await showScheduleSendSheet(context);
+    if (choice == null || !mounted) return;
+    await ScheduledMessageService.instance.schedule(
+      conversationId: widget.conversationId,
+      peerUid: widget.peerUid,
+      peerUsername: widget.peerUsername,
+      text: text,
+      sendAt: choice.sendAt,
+      silent: choice.silent,
+      ttlHours: _effectiveTtlHours,
+      replyToId: _replyingTo?.id,
+    );
+    _textController.clear();
+    setState(() => _replyingTo = null);
+    await _conversationService.setTyping(widget.conversationId, false);
+    _showForwardSnack('Scheduled for ${formatScheduledTime(choice.sendAt)}${choice.silent ? ' (silent)' : ''}.');
+  }
+
+  /// The "N scheduled" bar above the compose box — appears only while this
+  /// chat has something waiting.
+  Widget _buildScheduledBanner(ColorScheme scheme) {
+    return ValueListenableBuilder<List<ScheduledMessage>>(
+      valueListenable: ScheduledMessageService.instance.items,
+      builder: (context, all, _) {
+        final mine = all.where((m) => m.conversationId == widget.conversationId).toList();
+        if (mine.isEmpty) return const SizedBox.shrink();
+        final failed = mine.where((m) => m.isFailed).length;
+        return Material(
+          color: failed > 0 ? scheme.errorContainer : scheme.secondaryContainer,
+          child: InkWell(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ScheduledMessagesScreen(conversationId: widget.conversationId, title: widget.peerUsername),
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+              child: Row(
+                children: [
+                  Icon(
+                    failed > 0 ? Icons.warning_amber_rounded : Icons.schedule,
+                    size: 18,
+                    color: failed > 0 ? scheme.onErrorContainer : scheme.onSecondaryContainer,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      failed > 0
+                          ? '${mine.length} scheduled · $failed need${failed == 1 ? 's' : ''} your attention'
+                          : '${mine.length} scheduled · next ${formatScheduledTime(mine.first.sendAt)}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: failed > 0 ? scheme.onErrorContainer : scheme.onSecondaryContainer,
+                      ),
+                    ),
+                  ),
+                  Icon(Icons.chevron_right, size: 20, color: failed > 0 ? scheme.onErrorContainer : scheme.onSecondaryContainer),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   /// Entry point for the "Edit" selection-app-bar action — only offered
@@ -494,22 +630,30 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       onGalleryPhoto: () => _pickAndSendImage(ImageSource.gallery),
       onCameraVideo: () => _pickAndSendVideo(ImageSource.camera),
       onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
-      onCameraPhotoViewOnce: () => _pickAndSendImage(ImageSource.camera, viewOnce: true),
-      onGalleryPhotoViewOnce: () => _pickAndSendImage(ImageSource.gallery, viewOnce: true),
-      onCameraVideoViewOnce: () => _pickAndSendVideo(ImageSource.camera, viewOnce: true),
-      onGalleryVideoViewOnce: () => _pickAndSendVideo(ImageSource.gallery, viewOnce: true),
+      // The separate "view once" entries are gone from this menu: view once is
+      // now a switch inside the preview that opens after you pick something.
     );
   }
 
   Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
     final picked = await ImagePicker().pickImage(source: source, imageQuality: 100);
-    if (picked == null) return;
-    await _sendMedia(
+    if (picked == null || !mounted) return;
+    // Feature: media preview — look at it, crop/rotate/draw/add text, choose
+    // "view once", THEN send. Backing out sends nothing.
+    final result = await showMediaPreview(
+      context,
       file: File(picked.path),
+      isVideo: false,
+      recipientLabel: widget.peerUsername,
+      initialViewOnce: viewOnce,
+    );
+    if (result == null || !mounted) return;
+    await _sendMedia(
+      file: result.file,
       messageType: 'image',
       mime: 'image/jpeg',
       compress: (file) => MediaCompressionService.compressImage(file),
-      viewOnce: viewOnce,
+      viewOnce: result.viewOnce,
     );
   }
 
@@ -519,13 +663,21 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     // it's better to stop the user before they wait through a compression
     // pass that's doomed to fail than after.
     final picked = await ImagePicker().pickVideo(source: source, maxDuration: const Duration(minutes: 2));
-    if (picked == null) return;
-    await _sendMedia(
+    if (picked == null || !mounted) return;
+    final result = await showMediaPreview(
+      context,
       file: File(picked.path),
+      isVideo: true,
+      recipientLabel: widget.peerUsername,
+      initialViewOnce: viewOnce,
+    );
+    if (result == null || !mounted) return;
+    await _sendMedia(
+      file: result.file,
       messageType: 'video',
       mime: 'video/mp4',
       compress: (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync(),
-      viewOnce: viewOnce,
+      viewOnce: result.viewOnce,
     );
   }
 
@@ -829,7 +981,151 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     if (mounted) setState(() => _selectedIds.clear());
   }
 
+  // ---- Feature: screenshot alert -----------------------------------------
+
+  /// Android told us the screenshot buttons were just pressed while this
+  /// chat is open. The screenshot itself was already blocked (FLAG_SECURE);
+  /// this tells the person WHY nothing was captured and quietly lets the
+  /// other person know it was attempted.
+  void _onScreenshotAttempt() {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final last = _lastScreenshotNoticeAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 10)) return;
+    _lastScreenshotNoticeAt = now;
+    _showForwardSnack('Screenshots are blocked in this chat — ${widget.peerUsername} was told you tried.');
+    MessageRelayService.sendScreenshotNotice(
+      conversationId: widget.conversationId,
+      toUid: widget.peerUid,
+      ttlHours: _effectiveTtlHours,
+    );
+  }
+
+  /// The small centered line shown where the other person tried to take a
+  /// screenshot (a 'screenshot_notice' message — see the relay service).
+  Widget _buildScreenshotNotice(ColorScheme scheme, LocalMessage msg) {
+    return Padding(
+      key: _bubbleKeyFor(msg.id),
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 24),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: scheme.errorContainer.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.no_photography_outlined, size: 14, color: scheme.onErrorContainer),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  '${widget.peerUsername} tried to take a screenshot of this chat',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: scheme.onErrorContainer),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- Feature: locked media vault ---------------------------------------
+
+  /// The selected messages that CAN go into the vault: real photos/videos
+  /// still on this device. View-once media never can — it's designed to
+  /// disappear after one look, so keeping a copy would defeat the point.
+  List<LocalMessage> _selectedMovableToVault() {
+    return _messages
+        .where((m) =>
+            _selectedIds.contains(m.id) &&
+            (m.messageType == 'image' || m.messageType == 'video') &&
+            m.mediaPath != null &&
+            !m.isViewOnce)
+        .toList();
+  }
+
+  Future<void> _moveSelectedToVault() async {
+    final movable = _selectedMovableToVault();
+    if (movable.isEmpty) return;
+    final vault = MediaVaultService.instance;
+
+    if (!await vault.isSetUp()) {
+      if (!mounted) return;
+      final setUp = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.enhanced_encryption_outlined),
+          title: const Text('Set up your media vault'),
+          content: const Text(
+            'The media vault is a locked, encrypted place on this phone for photos and videos, protected by its own PIN. '
+            'Set it up first, then select these photos again to move them in.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Not now')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Set up')),
+          ],
+        ),
+      );
+      if (setUp == true && mounted) {
+        setState(() => _selectedIds.clear());
+        Navigator.push(
+          context,
+          MaterialPageRoute(settings: const RouteSettings(name: '/vault'), builder: (_) => const MediaVaultScreen()),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    final count = movable.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Move $count ${count == 1 ? 'item' : 'items'} to your vault?'),
+        content: Text(
+          'They will be encrypted and locked behind your vault PIN, and removed from this chat on this phone only. '
+          '${widget.peerUsername} keeps their own copy.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Move')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    var moved = 0;
+    for (final m in movable) {
+      try {
+        await vault.importFile(File(m.mediaPath!), isVideo: m.messageType == 'video');
+        // Only removed from the chat AFTER the encrypted copy is safely in
+        // the vault — a failed import leaves the original exactly where it was.
+        await LocalMessageStore.deleteMessage(m.id);
+        moved++;
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    setState(() => _selectedIds.clear());
+    _showForwardSnack(
+      moved == count
+          ? 'Moved to your vault'
+          : (moved == 0 ? "Couldn't move these to the vault" : 'Moved $moved of $count to your vault'),
+    );
+  }
+
   void _copySelected() {
+    // Feature: copy protection. Copying is only available where forwarding
+    // is switched on for this chat (both people agreed). The button is
+    // hidden otherwise, and this guard makes sure nothing else can reach
+    // the clipboard path either.
+    if (!_conversationService.isForwardingEnabled(_convoData)) {
+      _showForwardSnack('Copying is restricted in this chat.');
+      return;
+    }
     final ordered = _messages.where((m) => _selectedIds.contains(m.id)).toList()
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     final text = ordered.map((m) => m.text).join('\n');
@@ -881,8 +1177,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    '${widget.peerUsername} would like to be able to forward messages from this chat. '
-                    'If you allow it, either of you can forward from here — and either of you can switch it off again at any time.',
+                    '${widget.peerUsername} would like to be able to forward and copy messages from this chat. '
+                    'If you allow it, either of you can forward and copy from here — and either of you can switch it off again at any time.',
                     style: TextStyle(fontSize: 13, color: scheme.onTertiaryContainer),
                   ),
                 ),
@@ -916,8 +1212,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     final String body;
     final List<Widget> Function(BuildContext) actions;
     if (incoming) {
-      body = '$name has asked to be able to forward messages from this chat. Allow it and either of you will be able to '
-          'forward from here. You can switch it off again at any time, without asking.';
+      body = '$name has asked to be able to forward and copy messages from this chat. Allow it and either of you will be able to '
+          'forward and copy from here. You can switch it off again at any time, without asking.';
       actions = (c) => [
             TextButton(onPressed: () => Navigator.pop(c, 'deny'), child: const Text('Deny')),
             FilledButton(onPressed: () => Navigator.pop(c, 'approve'), child: const Text('Allow')),
@@ -929,8 +1225,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
             FilledButton(onPressed: () => Navigator.pop(c), child: const Text('OK')),
           ];
     } else {
-      body = 'To protect privacy, messages in this chat can only be forwarded if $name agrees first. '
-          'If they allow it, either of you will be able to forward from here — and either of you can switch it off '
+      body = 'To protect privacy, messages in this chat can only be forwarded or copied if $name agrees first. '
+          'If they allow it, either of you will be able to forward and copy from here — and either of you can switch it off '
           'again at any time.';
       actions = (c) => [
             TextButton(onPressed: () => Navigator.pop(c), child: const Text('Not now')),
@@ -1165,7 +1461,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                         // list, so this is purely a rendering concern —
                         // nothing here is stored or sent anywhere.
                         final showDateHeader = i == 0 || !_isSameDay(messages[i - 1].createdAt, msg.createdAt);
-                        final bubble = KeyedSubtree(
+                        final Widget bubble = msg.messageType == 'screenshot_notice'
+                            ? _buildScreenshotNotice(scheme, msg)
+                            : KeyedSubtree(
                           key: _bubbleKeyFor(msg.id),
                           child: _MessageBubble(
                             id: msg.id,
@@ -1277,6 +1575,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     ],
                   ),
                 ),
+              _buildScheduledBanner(scheme),
               if (_peerBlockedByMe)
                 _buildBlockedBar(scheme)
               else if (_voiceController.isRecording)
@@ -1315,6 +1614,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                               onChanged: _onTextChanged,
                               minLines: 1,
                               maxLines: 4,
+                              // Feature: private keyboard mode (off by default).
+                              enableSuggestions: !PrivateKeyboardService.enabled.value,
+                              autocorrect: !PrivateKeyboardService.enabled.value,
+                              enableIMEPersonalizedLearning: !PrivateKeyboardService.enabled.value,
                               decoration: const InputDecoration(
                                 hintText: 'Message',
                                 border: InputBorder.none,
@@ -1334,7 +1637,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                               colors: [scheme.primary, scheme.primary.withValues(alpha: 0.7)],
                             ),
                           ),
-                          child: IconButton(
+                          // Press and hold the send button for "Send silently" /
+                          // "Send later…" (only offered when there's text).
+                          child: GestureDetector(
+                            onLongPress: (_editingMessage == null && _textController.text.trim().isNotEmpty && !_sendingMedia)
+                                ? _showSendOptions
+                                : null,
+                            child: IconButton(
                             onPressed: _sendingMedia
                                 ? null
                                 : (_editingMessage == null && _textController.text.trim().isEmpty
@@ -1346,6 +1655,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                                   : (_textController.text.trim().isEmpty ? Icons.mic : Icons.arrow_upward_rounded),
                               color: scheme.onPrimary,
                             ),
+                          ),
                           ),
                         ),
                       ],
@@ -1641,7 +1951,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         // offers to ask the other person, rather than the button vanishing.
         if (single && singleMessage != null && singleMessage.messageType == 'text')
           IconButton(icon: const Icon(Icons.forward_rounded), tooltip: 'Forward', onPressed: _forwardSelected),
-        IconButton(icon: const Icon(Icons.copy_outlined), tooltip: 'Copy', onPressed: _copySelected),
+        // Feature: copy protection — Copy only exists in chats where
+        // forwarding has been allowed by both people.
+        if (_conversationService.isForwardingEnabled(_convoData))
+          IconButton(icon: const Icon(Icons.copy_outlined), tooltip: 'Copy', onPressed: _copySelected),
+        // Feature: locked media vault — only for photos/videos.
+        if (_selectedMovableToVault().isNotEmpty)
+          IconButton(icon: const Icon(Icons.enhanced_encryption_outlined), tooltip: 'Move to vault', onPressed: _moveSelectedToVault),
         IconButton(
           icon: Icon(single && _messages.any((m) => m.id == _selectedIds.first && m.starred) ? Icons.star : Icons.star_border),
           tooltip: 'Star',
