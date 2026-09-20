@@ -296,6 +296,29 @@ class MessageRelayService {
         final data = jsonDecode(payload) as Map<String, dynamic>;
         await LocalMessageStore.setReaction(data['ref'] as String, senderUid, data['emoji'] as String?);
         break;
+      case 'screenshot':
+        // Feature: screenshot alert. The other person's phone reported that
+        // they pressed the screenshot buttons in this chat (the screenshot
+        // itself was blocked). Shown as a small centered notice in the chat
+        // — see ChatDetailScreen's 'screenshot_notice' handling. Only ever
+        // sent for 1:1 chats, so no group branch is needed.
+        final noticeTtl = (row['ttl_hours'] as num?)?.toInt() ?? 0;
+        final noticeAt = DateTime.now();
+        await LocalMessageStore.insert(
+          id: row['client_id'] as String,
+          conversationId: row['conversation_id'] as String,
+          peerUid: senderUid,
+          senderUid: senderUid,
+          isMine: false,
+          text: 'Screenshot attempt',
+          messageType: 'screenshot_notice',
+          mediaPath: null,
+          replyToId: null,
+          status: 'delivered',
+          createdAt: noticeAt,
+          expiresAt: _expiryFor(noticeAt, noticeTtl),
+        );
+        break;
       default:
         final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 0;
         final createdAt = DateTime.now();
@@ -489,6 +512,7 @@ class MessageRelayService {
     String? replyToId,
     required int ttlHours,
     bool isForwarded = false,
+    bool silent = false,
   }) async {
     if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
 
@@ -505,18 +529,35 @@ class MessageRelayService {
     final payload = (isForwarded && messageType == 'text') ? '$_forwardMarker$text' : text;
     final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, payload);
 
-    await insertMessageRelayRow({
-      'conversation_id': conversationId,
-      'sender_uid': _myUid,
-      'recipient_uid': recipientUid,
-      'ciphertext': ciphertext,
-      'nonce': nonce,
-      'message_type': messageType,
-      'media_path': mediaPath,
-      'reply_to_id': replyToId,
-      'client_id': clientId,
-      'ttl_hours': ttlHours,
-    });
+    try {
+      await insertMessageRelayRow({
+        'conversation_id': conversationId,
+        'sender_uid': _myUid,
+        'recipient_uid': recipientUid,
+        'ciphertext': ciphertext,
+        'nonce': nonce,
+        'message_type': messageType,
+        'media_path': mediaPath,
+        'reply_to_id': replyToId,
+        'client_id': clientId,
+        'ttl_hours': ttlHours,
+        // Feature: silent send. Only ever added when true, so an ordinary
+        // message is byte-for-byte what it was before. The server's push
+        // function (send-push) sees this flag and doesn't notify the
+        // recipient's phone; the message still arrives and counts as unread.
+        if (silent) 'silent': true,
+      });
+    } on PostgrestException catch (e) {
+      // Only silent sends ever include the column, so this can only mean the
+      // database hasn't been given it yet (supabase/migrations/0006).
+      if (silent && e.message.toLowerCase().contains('silent')) {
+        throw Exception(
+          "Silent send isn't set up on the server yet. Run migration 0006_silent_messages.sql in Supabase, "
+          "or send this one normally.",
+        );
+      }
+      rethrow;
+    }
 
     final createdAt = DateTime.now();
     await LocalMessageStore.insert(
@@ -856,6 +897,40 @@ class MessageRelayService {
       'client_id': _uuid.v4(),
       'ttl_hours': 1,
     });
+  }
+
+  /// Feature: screenshot alert. Tells the other person in a 1:1 chat that
+  /// this device just tried to take a screenshot (which was blocked).
+  ///
+  /// Best-effort by design: if the person is blocked or frozen, the keys
+  /// need re-verifying, or the network is down, nothing is sent and nothing
+  /// is surfaced — a failed alert must never get in the way of the chat.
+  /// Not counted by the message rate limiter (only text/image/video/voice
+  /// are), and the row is a control message so it never triggers a push.
+  static Future<void> sendScreenshotNotice({
+    required String conversationId,
+    required String toUid,
+    required int ttlHours,
+  }) async {
+    try {
+      if (FirebaseAuth.instance.currentUser == null) return;
+      if (conversationId.startsWith(_groupIdPrefix)) return;
+      await _checkNotBlocked(toUid);
+      await _checkNotFrozen(toUid);
+      final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'v': 1}));
+      await insertMessageRelayRow({
+        'conversation_id': conversationId,
+        'sender_uid': _myUid,
+        'recipient_uid': toUid,
+        'ciphertext': ciphertext,
+        'nonce': nonce,
+        'message_type': 'screenshot',
+        'client_id': _uuid.v4(),
+        'ttl_hours': ttlHours,
+      });
+    } catch (_) {
+      // See the doc comment above — deliberately silent.
+    }
   }
 
   /// Telegram-style "delete for everyone": removes it from our own device
