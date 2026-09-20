@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -178,6 +179,38 @@ class DeviceSessionService {
     }
   }
 
+  /// Real, server-verified IP address for THIS login/security event —
+  /// deliberately separate from [_locationLabel] above, which is a
+  /// best-effort city/country guess the device reports about itself.
+  /// This instead asks the get-client-ip Edge Function, which reads the
+  /// actual IP Supabase's own gateway saw the request come from — not
+  /// something the device could get wrong or fake. Shown in Account
+  /// Security's activity list so the account's real owner can tell
+  /// "was this actually me?" apart for any login, the same way
+  /// Instagram/Google's own "where you're signed in" lists show an IP.
+  /// Never blocks or fails a sign-in — same best-effort tolerance as
+  /// [_locationLabel]: any error here just means this one history entry
+  /// has no IP on it.
+  Future<String?> _realIp() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return null;
+      final idToken = await user.getIdToken();
+      final base = const String.fromEnvironment('SUPABASE_URL');
+      final res = await http
+          .get(
+            Uri.parse('$base/functions/v1/get-client-ip'),
+            headers: {'Authorization': 'Bearer $idToken'},
+          )
+          .timeout(const Duration(seconds: 5));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return data['ip'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Call right after a successful sign-in/sign-up (see AuthService). Makes
   /// THIS device the one-and-only active device for the account — any
   /// other device that was previously active gets signed out next time its
@@ -193,14 +226,37 @@ class DeviceSessionService {
     return future;
   }
 
+  /// Feature: emails the account owner immediately on a new login —
+  /// see send-security-alert's own comments. Best-effort, same
+  /// tolerance as [_realIp]: never blocks or fails the login itself.
+  Future<void> _sendSecurityAlert(String event, String? deviceLabel, String? location, String? ip) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final idToken = await user.getIdToken();
+      final base = const String.fromEnvironment('SUPABASE_URL');
+      await http
+          .post(
+            Uri.parse('$base/functions/v1/send-security-alert'),
+            headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
+            body: jsonEncode({'event': event, 'deviceLabel': deviceLabel, 'location': location, 'ip': ip}),
+          )
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // Best-effort — see doc comment above.
+    }
+  }
+
   Future<void> _claimThisDevice(String uid) async {
     final deviceId = await _localDeviceId();
     final label = await _realDeviceLabel();
     final location = await _locationLabel();
+    final ip = await _realIp();
     await _sessionRef(uid).set({
       'activeDeviceId': deviceId,
       'activeDeviceLabel': label,
       'activeLocation': location,
+      'activeIp': ip,
       'activeSince': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
     await _historyRef(uid).add({
@@ -208,8 +264,10 @@ class DeviceSessionService {
       'deviceId': deviceId,
       'deviceLabel': label,
       'location': location,
+      'ip': ip,
       'timestamp': FieldValue.serverTimestamp(),
     });
+    unawaited(_sendSecurityAlert('login', label, location, ip));
   }
 
   /// Records that the account's password was changed — shown in the
@@ -218,13 +276,16 @@ class DeviceSessionService {
     final deviceId = await _localDeviceId();
     final label = await _realDeviceLabel();
     final location = await _locationLabel();
+    final ip = await _realIp();
     await _historyRef(uid).add({
       'event': 'password_changed',
       'deviceId': deviceId,
       'deviceLabel': label,
       'location': location,
+      'ip': ip,
       'timestamp': FieldValue.serverTimestamp(),
     });
+    unawaited(_sendSecurityAlert('password_changed', label, location, ip));
   }
 
   /// Starts watching for "a different device just claimed this account."
@@ -385,12 +446,14 @@ class DeviceSessionService {
     final deviceId = await _localDeviceId();
     final label = await _realDeviceLabel();
     final location = await _locationLabel();
+    final ip = await _realIp();
 
     await _approvalsRef(uid).doc(requestId).set({
       'status': 'pending',
       'requestingDeviceId': deviceId,
       'requestingDeviceLabel': label,
       'requestingLocation': location,
+      'requestingIp': ip,
       'createdAt': FieldValue.serverTimestamp(),
     });
 
