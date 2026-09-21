@@ -44,6 +44,22 @@ class _LoginScreenState extends State<LoginScreen> {
       _loading = true;
       _error = null;
     });
+
+    // Feature: failed-login lockout — checked BEFORE anything else, so a
+    // device/network that's already locked out from previous failures
+    // never even reaches the Firebase sign-in call below.
+    try {
+      await _authService.checkLoginLockout();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
+      }
+      return;
+    }
+
     // BUGFIX: covers the ENTIRE login attempt, not just the approval wait
     // — see DeviceSessionService.isClaimPending's doc comment for the
     // full explanation. In short: this device hasn't claimed itself as
@@ -96,6 +112,14 @@ class _LoginScreenState extends State<LoginScreen> {
       // AuthGate's authStateChanges listener takes it from here.
     } catch (e) {
       debugPrint('Login failed (passwordAccepted=$passwordAccepted, approved=$approved): $e');
+      // Feature: failed-login lockout — only counts as a "failure" for
+      // lockout purposes if the PASSWORD itself was wrong (beginEmailLogin
+      // threw before setting passwordAccepted); an approval being denied
+      // or timing out, or finishLogin failing afterwards, are not
+      // credential-guessing attempts and shouldn't count toward the block.
+      if (!passwordAccepted) {
+        unawaited(_authService.recordLoginFailure(_emailController.text.trim()));
+      }
       if (passwordAccepted && !finished) {
         try {
           await _authService.abortLogin();
