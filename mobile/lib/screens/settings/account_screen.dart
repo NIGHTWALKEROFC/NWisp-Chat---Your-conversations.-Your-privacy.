@@ -3,6 +3,7 @@ import '../../services/account_lifecycle_service.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/breach_warning_dialog.dart';
 import '../../widgets/contact_developer_sheet.dart';
+import '../../widgets/strong_password_fields.dart';
 import 'account_security_screen.dart';
 import 'delete_account_screen.dart';
 import 'forgot_password_screen.dart';
@@ -81,13 +82,69 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Future<void> _exportData() async {
+    final password = await _promptExportPassword();
+    if (password == null) return;
     setState(() => _exporting = true);
     try {
-      await AccountLifecycleService.exportAndShareUserData();
+      await AccountLifecycleService.exportAndShareUserData(password);
     } catch (e) {
       _showErrorWithHelp('Could not export your data. Please try again.');
     } finally {
       if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  /// Feature: password-protected export. Uses the same
+  /// StrongPasswordFields widget (generate/copy/show-hide) as signup and
+  /// password reset — setting an export password is exactly that same
+  /// "pick a strong password" moment. Returns null if cancelled.
+  Future<String?> _promptExportPassword() async {
+    final passwordController = TextEditingController();
+    final confirmController = TextEditingController();
+    try {
+      return await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final matches = passwordController.text.isNotEmpty && passwordController.text == confirmController.text;
+            return AlertDialog(
+              title: const Text('Protect your export'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      "Choose a password to encrypt this file. Without it, the file is unreadable — "
+                      "so save this password somewhere safe, you'll need it to open the export later.",
+                    ),
+                    const SizedBox(height: 16),
+                    StrongPasswordFields(
+                      passwordController: passwordController,
+                      confirmController: confirmController,
+                      passwordLabel: 'Export password',
+                      confirmLabel: 'Confirm export password',
+                      onChanged: () => setDialogState(() {}),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: matches && passwordController.text.length >= 6
+                      ? () => Navigator.pop(dialogContext, passwordController.text)
+                      : null,
+                  child: const Text('Export'),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      passwordController.dispose();
+      confirmController.dispose();
     }
   }
 
