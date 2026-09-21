@@ -85,6 +85,49 @@ class AccountSecurityScreen extends StatelessWidget {
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
             ),
           ),
+          // Feature: failed-login lockout — warns if 10+ failed sign-in
+          // attempts have hit this account recently from ANY device or
+          // network (each individual device/network is already blocked
+          // on its own after 3 — this catches someone spreading attempts
+          // across many to dodge that).
+          FutureBuilder<int>(
+            future: AuthService().recentLoginFailureCount(),
+            builder: (context, snapshot) {
+              final count = snapshot.data ?? 0;
+              if (count < 10) return const SizedBox.shrink();
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                color: scheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.gpp_maybe_outlined, color: scheme.onErrorContainer),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '$count failed sign-in attempts recently',
+                              style: TextStyle(color: scheme.onErrorContainer, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Someone has been trying to sign in to this account. Consider changing your '
+                              'password below, and turning on extra security settings on this page.',
+                              style: TextStyle(color: scheme.onErrorContainer, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
           StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
             stream: ModerationService().myProfileStream(),
             builder: (context, profileSnapshot) {
