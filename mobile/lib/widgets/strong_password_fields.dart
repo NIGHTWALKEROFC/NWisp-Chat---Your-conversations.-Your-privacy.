@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../utils/password_generator.dart';
+import '../utils/secure_clipboard.dart';
 
 /// Feature: shared password + confirm-password UI with show/hide toggles,
 /// a "Suggest strong password" button (fills both fields, repeatable —
@@ -54,8 +54,13 @@ class _StrongPasswordFieldsState extends State<StrongPasswordFields> {
   void _copy() {
     final pw = widget.passwordController.text;
     if (pw.isEmpty) return;
-    Clipboard.setData(ClipboardData(text: pw));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password copied')));
+    // Feature: clipboard auto-clear — this password sits in the system
+    // clipboard, readable by any other app, only for a short window
+    // instead of indefinitely.
+    SecureClipboard.copyWithAutoClear(pw);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Password copied — clipboard clears automatically in 45s')),
+    );
   }
 
   @override
