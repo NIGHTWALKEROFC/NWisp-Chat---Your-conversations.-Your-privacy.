@@ -305,6 +305,54 @@ class AuthService {
     return cred.user!.uid;
   }
 
+  /// Feature: failed-login lockout. Call BEFORE [beginEmailLogin] — throws
+  /// if this device/network is currently locked out from previous
+  /// failures, so LoginScreen never even attempts the Firebase sign-in
+  /// call in that case. Fails OPEN on its own errors (network hiccup
+  /// reaching login-guard, etc.) — a bug in this check should never be
+  /// able to lock someone out who isn't actually blocked.
+  Future<void> checkLoginLockout() async {
+    try {
+      final deviceId = await DeviceSessionService.instance.localDeviceId();
+      final data = await _postFunction('login-guard', {'action': 'check', 'deviceId': deviceId});
+      if (data['blocked'] == true) {
+        throw Exception((data['message'] as String?) ?? 'Too many failed sign-in attempts. Try again later.');
+      }
+    } on Exception catch (e) {
+      if (e.toString().contains('Too many failed sign-in attempts')) rethrow;
+      // Any other failure (network, function not deployed yet, etc.) —
+      // fail open rather than block a legitimate sign-in over it.
+    }
+  }
+
+  /// Feature: failed-login lockout. Call after [beginEmailLogin] throws
+  /// with wrong credentials — logs the failure against both this
+  /// device/network (escalating block) and the account itself (for the
+  /// "10+ attempts from everywhere" Account Security warning). Always
+  /// best-effort: never throws, never blocks showing the person their
+  /// own "incorrect password" message.
+  Future<void> recordLoginFailure(String email) async {
+    try {
+      final deviceId = await DeviceSessionService.instance.localDeviceId();
+      await _postFunction('login-guard', {'action': 'record_failure', 'email': email, 'deviceId': deviceId});
+    } catch (_) {}
+  }
+
+  /// Feature: failed-login lockout. How many failed attempts have been
+  /// logged against THIS signed-in account in the last 7 days,
+  /// regardless of which device/network they came from — shown as a
+  /// warning banner in Account Security when 10 or higher. Fails
+  /// silently to 0 rather than throwing, since this is informational,
+  /// not something that should ever break the settings screen.
+  Future<int> recentLoginFailureCount() async {
+    try {
+      final data = await _postFunction('login-failure-count', {}, includeIdToken: true);
+      return (data['count'] as num?)?.toInt() ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   /// Step 2 (only reached if login-approval was required and was denied,
   /// timed out, or was cancelled by the person waiting): undoes step 1's
   /// Firebase Auth sign-in so this device is fully back to "signed out",
