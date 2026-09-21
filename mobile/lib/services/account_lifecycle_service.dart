@@ -11,6 +11,7 @@ import 'local_message_store.dart';
 import 'pin_service.dart';
 import 'secure_storage_service.dart';
 import 'signal_session_service.dart';
+import '../utils/encrypted_export.dart';
 
 /// Account deletion, data export, and temporary self-disable ("deactivate").
 ///
@@ -125,9 +126,22 @@ class AccountLifecycleService {
   /// Builds the export file client-side (no backend cost) and hands it to
   /// the OS share sheet so the person can save it wherever they like or
   /// send it to themselves.
-  static Future<void> exportAndShareUserData() async {
+  ///
+  /// Feature: password-protected export — [password] encrypts the file
+  /// (see EncryptedExport) before it's shared, so the file itself is
+  /// worthless without that password. The file extension changes to
+  /// `.nwispenc` to make clear at a glance it's encrypted, not a plain
+  /// JSON file someone could just open and read.
+  static Future<void> exportAndShareUserData(String password) async {
     final file = await _buildExportFile();
-    await Share.shareXFiles([XFile(file.path)], text: 'NWisp data export');
+    final plaintext = await file.readAsString();
+    final encrypted = await EncryptedExport.encrypt(plaintext, password);
+    final encFile = File('${file.path}.nwispenc');
+    await encFile.writeAsString(encrypted);
+    await Share.shareXFiles(
+      [XFile(encFile.path)],
+      text: 'NWisp data export (password-protected — you set the password when you exported this)',
+    );
   }
 
   // ---------------------------------------------------------------------
