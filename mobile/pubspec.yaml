@@ -52,6 +52,9 @@ dependencies:
   # Feature: "Shake to lock" (see ShakeDetector). Reads the accelerometer only
   # while the app is unlocked, in the foreground, and the setting is on.
   sensors_plus: ^5.0.1
+  # Feature: Intruder photo (see IntruderPhotoService) — takes a silent
+  # front-camera photo after wrong app-lock PINs.
+  camera: ^0.11.0
 
 dev_dependencies:
   flutter_test:
