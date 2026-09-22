@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/user_avatar.dart';
 import '../login_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
@@ -7,6 +8,7 @@ import 'chats_settings_screen.dart';
 import 'edit_profile_screen.dart';
 import 'help_about_screen.dart';
 import 'notifications_settings_screen.dart';
+import 'privacy_checkup_screen.dart';
 import 'privacy_settings_screen.dart';
 import 'security_settings_screen.dart';
 
@@ -69,13 +71,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 ListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: CircleAvatar(
+                  leading: UserAvatar(
+                    // New key whenever my photo address changes, so this
+                    // avatar redraws right after I edit my profile.
+                    key: ValueKey('me_${AvatarCache.instance.peek(_authService.currentUserId ?? '')}'),
+                    uid: _authService.currentUserId ?? '',
+                    name: _username,
                     radius: 26,
-                    backgroundColor: scheme.primaryContainer,
-                    child: Text(
-                      _username.isNotEmpty ? _username[0].toUpperCase() : '?',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
-                    ),
                   ),
                   title: Text(_username, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
                   subtitle: Text(_email),
@@ -89,6 +91,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
                 const Divider(height: 24),
+                // Feature: Privacy checkup — a guided, WhatsApp-style walk
+                // through every privacy / security setting, with a one-tap
+                // "make it all as private as possible" option.
+                ListTile(
+                  leading: Icon(Icons.health_and_safety_outlined, color: scheme.primary),
+                  title: const Text('Privacy checkup', style: TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Check your privacy settings and turn them all on in one tap'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrivacyCheckupScreen())),
+                ),
                 ListTile(
                   leading: const Icon(Icons.badge_outlined),
                   title: const Text('Account'),
