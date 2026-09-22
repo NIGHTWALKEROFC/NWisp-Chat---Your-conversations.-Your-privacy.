@@ -8,13 +8,15 @@ import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
 import '../../services/inactivity_wipe_service.dart';
 import '../../services/media_service.dart';
-import '../chat_list_screen.dart';
+import '../home_shell.dart';
+import '../../services/community_service.dart';
 import '../chat/chat_media_browser_screen.dart';
 import '../chat/chat_wallpaper_screen.dart';
 import '../settings/keyword_mute_screen.dart';
 import 'report_group_screen.dart';
 import '../security/safety_number_screen.dart';
 import '../../widgets/mute_duration_sheet.dart';
+import '../../widgets/user_avatar.dart';
 
 const _groupTtlOptions = [0, 1, 6, 24, 72, 168]; // 0 = never, hours after that
 
@@ -300,7 +302,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       final uid = u['uid'] as String;
                       final username = (u['username'] as String?) ?? 'Unknown';
                       return ListTile(
-                        leading: CircleAvatar(child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?')),
+                        leading: UserAvatar(uid: uid, name: username),
                         title: Text(username),
                         trailing: FilledButton(
                           onPressed: () async {
@@ -353,6 +355,42 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     );
     if (confirmed != true) return;
     await GroupService.instance.removeMember(widget.groupId, uid);
+    await _syncCommunityCount();
+  }
+
+  /// Feature: Community moderation — remove someone AND stop them from
+  /// joining this community again on their own.
+  Future<void> _banMember(String uid, String username) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove and ban?'),
+        content: Text('$username is removed and can no longer join this community by themselves.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove and ban'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await GroupService.instance.banMember(widget.groupId, uid);
+    await _syncCommunityCount();
+  }
+
+  /// After an admin removes people from a community, put its public member
+  /// counter back to the true number (no-op for a normal group).
+  Future<void> _syncCommunityCount() async {
+    try {
+      final snap = await GroupService.instance.groupStream(widget.groupId).first;
+      final data = snap.data();
+      if (data == null || data['isCommunity'] != true) return;
+      final count = List<String>.from(data['members'] ?? const []).length;
+      await CommunityService.instance.syncMemberCount(widget.groupId, count);
+    } catch (_) {}
   }
 
   /// Feature: ownership transfer. A deliberate handoff — separate from
@@ -401,10 +439,16 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       ),
     );
     if (confirmed != true) return;
-    await GroupService.instance.leaveGroup(widget.groupId);
+    // A community also has a public listing whose member counter (and, for the
+    // very last member, the listing itself) has to be kept in step.
+    if (group.isCommunity) {
+      await CommunityService.instance.leave(widget.groupId);
+    } else {
+      await GroupService.instance.leaveGroup(widget.groupId);
+    }
     if (!mounted) return;
     Navigator.of(context).popUntil((route) => route.isFirst);
-    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const ChatListScreen()));
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const HomeShell()));
   }
 
   void _openTtlPicker(Group group) {
@@ -520,8 +564,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               // document, so a non-admin can't call it directly either.
               SwitchListTile.adaptive(
                 secondary: const Icon(Icons.campaign_outlined),
-                title: const Text('Only admins can send messages'),
-                subtitle: const Text('Everyone can still read and react — only sending is restricted'),
+                title: const Text('Announcement-only'),
+                subtitle: const Text('Only admins can post. Members can still read, react and reply privately.'),
                 value: group.onlyAdminsCanSend,
                 onChanged: amAdmin ? (v) => GroupService.instance.setOnlyAdminsCanSend(widget.groupId, v) : null,
               ),
@@ -582,8 +626,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 ),
               ),
               ListTile(
-                leading: const Icon(Icons.wallpaper_outlined),
-                title: const Text('Chat wallpaper'),
+                leading: const Icon(Icons.palette_outlined),
+                title: const Text('Chat theme'),
+                subtitle: const Text('Wallpaper and bubble colour'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.push(
                   context,
@@ -677,7 +722,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     final isOwnerRow = group.isOwner(uid);
                     final isAdminRow = group.isAdmin(uid);
                     return ListTile(
-                      leading: CircleAvatar(child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?')),
+                      leading: UserAvatar(uid: uid, name: username),
                       title: Text(uid == _myUid ? '$username (you)' : username),
                       subtitle: Text(isOwnerRow ? 'Owner' : (isAdminRow ? 'Admin' : 'Member')),
                       trailing: uid == _myUid
@@ -702,6 +747,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                   case 'remove':
                                     _removeMember(uid, username);
                                     break;
+                                  case 'ban':
+                                    _banMember(uid, username);
+                                    break;
                                   case 'transfer_owner':
                                     _confirmTransferOwnership(uid, username);
                                     break;
@@ -712,6 +760,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                 if (amAdmin && !isAdminRow) const PopupMenuItem(value: 'promote', child: Text('Make admin')),
                                 if (amAdmin && isAdminRow && !isOwnerRow) const PopupMenuItem(value: 'demote', child: Text('Remove as admin')),
                                 if (amAdmin && !isOwnerRow) const PopupMenuItem(value: 'remove', child: Text('Remove from group')),
+                                if (amAdmin && !isOwnerRow && group.isCommunity) const PopupMenuItem(value: 'ban', child: Text('Remove and ban')),
                                 if (group.isOwner(_myUid) && !isOwnerRow) const PopupMenuItem(value: 'transfer_owner', child: Text('Make group owner')),
                               ],
                             ),
