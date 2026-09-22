@@ -33,6 +33,11 @@ class VaultItem {
   final DateTime addedAt;
   final bool hasThumb;
 
+  /// Where this item came from, when it wasn't added by hand. Currently only
+  /// 'intruder' (a photo the front camera took after wrong app-lock PINs —
+  /// see IntruderPhotoService). Missing on every older item, which is fine.
+  final String? source;
+
   const VaultItem({
     required this.id,
     required this.kind,
@@ -40,9 +45,11 @@ class VaultItem {
     required this.size,
     required this.addedAt,
     required this.hasThumb,
+    this.source,
   });
 
   bool get isVideo => kind == 'video';
+  bool get isIntruder => source == 'intruder';
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -51,6 +58,7 @@ class VaultItem {
         'size': size,
         'addedAt': addedAt.millisecondsSinceEpoch,
         'hasThumb': hasThumb,
+        if (source != null) 'source': source,
       };
 
   factory VaultItem.fromJson(Map<String, dynamic> j) => VaultItem(
@@ -60,6 +68,7 @@ class VaultItem {
         size: (j['size'] as num).toInt(),
         addedAt: DateTime.fromMillisecondsSinceEpoch((j['addedAt'] as num).toInt()),
         hasThumb: j['hasThumb'] == true,
+        source: j['source'] as String?,
       );
 }
 
@@ -273,7 +282,7 @@ class MediaVaultService {
   /// adding needs the key but doesn't reveal anything, so it doesn't need the
   /// vault to be unlocked (that's what lets "Move to vault" in a chat be one
   /// tap). The source file is left untouched; the caller removes it.
-  Future<VaultItem> importFile(File source, {required bool isVideo, String? extension}) {
+  Future<VaultItem> importFile(File source, {required bool isVideo, String? extension, String? origin}) {
     return _serial(() async {
       if (!await isSetUp()) throw StateError('The vault is not set up.');
       final key = await _masterKey();
@@ -298,6 +307,7 @@ class MediaVaultService {
         size: size,
         addedAt: DateTime.now(),
         hasThumb: hasThumb,
+        source: origin,
       );
       final items = await _readIndex(key);
       items.add(item);
