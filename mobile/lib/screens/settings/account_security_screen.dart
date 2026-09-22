@@ -266,62 +266,6 @@ class AccountSecurityScreen extends StatelessWidget {
             },
           ),
           const Divider(height: 32),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Text('Password reset', style: Theme.of(context).textTheme.titleSmall),
-          ),
-          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance.collection('users').doc(uid).collection('private').doc('profile').snapshots(),
-            builder: (context, snapshot) {
-              final method = (snapshot.data?.data()?['passwordResetMethod'] as String?) ?? 'email';
-              return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: ListTile(
-                  leading: const Icon(Icons.password_outlined),
-                  title: const Text('Password reset method'),
-                  subtitle: Text(
-                    method == 'otp'
-                        ? 'Email a 6-digit code — you type it in the app along with a new password'
-                        : 'Email a "Reset your password" button — the default',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () async {
-                    final choice = await showDialog<String>(
-                      context: context,
-                      builder: (dialogContext) => SimpleDialog(
-                        title: const Text('Password reset method'),
-                        children: [
-                          SimpleDialogOption(
-                            onPressed: () => Navigator.pop(dialogContext, 'email'),
-                            child: Row(
-                              children: [
-                                Icon(method == 'email' ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
-                                const SizedBox(width: 12),
-                                const Expanded(child: Text('Email link (default)')),
-                              ],
-                            ),
-                          ),
-                          SimpleDialogOption(
-                            onPressed: () => Navigator.pop(dialogContext, 'otp'),
-                            child: Row(
-                              children: [
-                                Icon(method == 'otp' ? Icons.radio_button_checked : Icons.radio_button_unchecked, size: 18),
-                                const SizedBox(width: 12),
-                                const Expanded(child: Text('Email code (OTP)')),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (choice != null && choice != method) {
-                      await AuthService().updatePasswordResetMethod(choice);
-                    }
-                  },
-                ),
-              );
-            },
-          ),
           ListTile(
             leading: const Icon(Icons.lock_reset_outlined),
             title: const Text('Not sure this was you?'),
