@@ -588,6 +588,32 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> with WidgetsBinding
           ),
           if (item.isVideo)
             const Positioned(right: 6, bottom: 6, child: Icon(Icons.play_circle_fill, color: Colors.white, size: 22)),
+          // Feature: intruder photo — a red label with the date and time the
+          // wrong PINs were entered.
+          if (item.isIntruder)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                color: Colors.red.shade700.withValues(alpha: 0.9),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, size: 12, color: Colors.white),
+                    const SizedBox(width: 3),
+                    Expanded(
+                      child: Text(
+                        'Intruder · ${_intruderStamp(item.addedAt)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           if (selected)
             Container(
               color: scheme.primary.withValues(alpha: 0.35),
@@ -596,6 +622,13 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> with WidgetsBinding
         ],
       ),
     );
+  }
+
+  static String _intruderStamp(DateTime t) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final m = t.minute.toString().padLeft(2, '0');
+    return '${t.day} ${months[t.month - 1]} $h:$m ${t.hour < 12 ? 'AM' : 'PM'}';
   }
 
   @override
