@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../services/auth_service.dart';
 import '../widgets/breach_warning_dialog.dart';
+import '../widgets/otp_code_field.dart';
 import '../widgets/strong_password_fields.dart';
 import 'settings/privacy_policy_screen.dart';
 import 'settings/terms_screen.dart';
@@ -43,7 +43,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _authService = AuthService();
   final _usernameController = TextEditingController();
   final _emailController = TextEditingController();
-  final _otpController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
 
@@ -59,6 +58,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
   int _emailRequestId = 0;
 
   // ---- email verification (OTP) state ----
+  // Feature: Telegram-style boxed code entry (same widget the password
+  // reset screen already uses) instead of a plain text field.
+  final _otpKey = GlobalKey<OtpCodeFieldState>();
+  String _otpCode = '';
+  OtpFieldStatus _otpStatus = OtpFieldStatus.idle;
   bool _emailVerified = false;
   bool _sendingOtp = false;
   bool _verifyingOtp = false;
@@ -78,7 +82,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _resendTimer?.cancel();
     _usernameController.dispose();
     _emailController.dispose();
-    _otpController.dispose();
     _passwordController.dispose();
     _confirmController.dispose();
     super.dispose();
@@ -218,7 +221,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     try {
       await _authService.sendSignupOtp(_emailController.text.trim());
       if (!mounted) return;
-      _otpController.clear();
+      _otpCode = '';
+      _otpStatus = OtpFieldStatus.idle;
+      _otpKey.currentState?.clear();
       setState(() {
         _sendingOtp = false;
         _step = _stepVerify;
@@ -242,6 +247,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
     try {
       await _authService.sendSignupOtp(_emailController.text.trim());
       if (!mounted) return;
+      _otpCode = '';
+      _otpStatus = OtpFieldStatus.idle;
+      _otpKey.currentState?.clear();
+      _otpKey.currentState?.focus();
       setState(() => _sendingOtp = false);
       _startResendCooldown();
     } catch (e) {
@@ -254,7 +263,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _verifyOtpAndAdvance() async {
-    final code = _otpController.text.trim();
+    if (_verifyingOtp) return; // guards against onCompleted + the bottom button both firing
+    final code = _otpCode;
     if (code.length != 6) {
       setState(() => _otpError = 'Enter the 6-digit code from your email.');
       return;
@@ -269,15 +279,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _resendTimer?.cancel();
       setState(() {
         _verifyingOtp = false;
+        _otpStatus = OtpFieldStatus.success;
         _emailVerified = true;
-        _step = _stepPassword;
       });
+      // A short beat so the person actually sees the boxes turn green
+      // (matching the password-reset screen's own timing) before moving
+      // on to the next step.
+      await Future.delayed(const Duration(milliseconds: 450));
+      if (!mounted) return;
+      setState(() => _step = _stepPassword);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _verifyingOtp = false;
+        _otpStatus = OtpFieldStatus.error;
         _otpError = e.toString().replaceFirst('Exception: ', '');
       });
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+      _otpCode = '';
+      _otpKey.currentState?.clear();
+      setState(() => _otpStatus = OtpFieldStatus.idle);
+      _otpKey.currentState?.focus();
     }
   }
 
@@ -489,28 +512,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
               'Enter the 6-digit code we sent to ${_emailController.text.trim()}.',
               style: TextStyle(color: scheme.onSurfaceVariant),
             ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: _otpController,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              maxLength: 6,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 28, letterSpacing: 10, fontWeight: FontWeight.bold),
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(counterText: '', border: OutlineInputBorder()),
-              onChanged: (_) {
-                if (_otpError != null) setState(() => _otpError = null);
-              },
+            const SizedBox(height: 24),
+            OtpCodeField(
+              key: _otpKey,
+              status: _otpStatus,
+              enabled: !_verifyingOtp,
+              onChanged: (value) => _otpCode = value,
+              onCompleted: (_) => _verifyOtpAndAdvance(),
             ),
             if (_otpError != null)
               Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(_otpError!, style: TextStyle(color: scheme.error, fontSize: 12.5)),
+                padding: const EdgeInsets.only(top: 16),
+                child: Text(_otpError!, textAlign: TextAlign.center, style: TextStyle(color: scheme.error, fontSize: 12.5)),
               ),
             const SizedBox(height: 12),
             Align(
-              alignment: Alignment.centerLeft,
+              alignment: Alignment.center,
               child: TextButton(
                 onPressed: (_resendCooldown > 0 || _sendingOtp) ? null : _resendOtp,
                 child: Text(_resendCooldown > 0 ? 'Resend code in ${_resendCooldown}s' : 'Resend code'),
