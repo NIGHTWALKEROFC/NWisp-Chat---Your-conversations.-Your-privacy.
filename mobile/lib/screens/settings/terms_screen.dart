@@ -23,9 +23,10 @@ class TermsScreen extends StatelessWidget {
           _Section(
             title: '2. The service',
             body: 'NWisp is a free, ad-free, privacy-focused messaging app for 1:1 chats, group '
-                'chats, and 24-hour Stories, built on end-to-end encryption (the Signal Protocol). '
-                "Messages can auto-delete after a duration you set (default 24 hours). There's no "
-                'guaranteed uptime or support level — this is a small, independently run app.',
+                'chats, public Communities, and 24-hour Stories, built on end-to-end encryption (the '
+                'Signal Protocol). Messages can auto-delete after a duration you set (default 24 '
+                "hours). There's no guaranteed uptime or support level — this is a small, "
+                'independently run app.',
           ),
           _Section(
             title: '3. Your account',
@@ -42,21 +43,34 @@ class TermsScreen extends StatelessWidget {
                 'first. A group admin can add an existing contact to a group directly; adding anyone '
                 'else requires that person to accept an invite before they join or see anything about '
                 'the group. You can leave any group, block any contact, or decline any request at any '
-                'time. Group admins can also turn on "Only admins can send messages" for a group — '
-                'everyone can still read and react, but sending is limited to admins until that '
-                'setting is turned back off.',
+                'time. Group admins can also turn on "Announcement-only" for a group — everyone can '
+                'still read and react, and can reply privately to whoever posted, but sending into the '
+                'group itself is limited to admins until that setting is turned back off.',
           ),
           _Section(
-            title: '5. Acceptable use',
+            title: '5. Communities',
+            body: 'A Community is a public group anyone can find and join from the Community tab — '
+                'unlike a regular group, its name, description, topic, and any location it gives '
+                'itself are visible to every NWisp user, whether or not they\'ve joined. Anyone can '
+                'create one, subject to Community Guidelines. A Community\'s admins are responsible '
+                'for moderating it, including removing and banning members who break the rules; an '
+                'unmoderated Community can be reported and suspended the same as an individual '
+                'account. Joining is open unless you\'ve previously been removed and banned from that '
+                'specific Community, and its member cap (25, 50, or 100) may mean it\'s temporarily '
+                'full.',
+          ),
+          _Section(
+            title: '6. Acceptable use',
             body: "Don't use NWisp to harass, threaten, or abuse others; send illegal content; spam; "
                 'attempt to break the encryption, security, or infrastructure; use it to add or invite '
-                'people without a legitimate reason to contact them; or use it in any way that '
-                'violates the law where you live. The full, specific list of rules — the same list '
-                'shown on every in-app "Report" button — is in Community Guidelines. Accounts found '
-                'breaking a rule there may be suspended; see §10.',
+                'people without a legitimate reason to contact them; use a Community\'s public nature '
+                'to advertise, scam, or target people who haven\'t joined it; or use it in any way '
+                'that violates the law where you live. The full, specific list of rules — the same '
+                'list shown on every in-app "Report" button — is in Community Guidelines. Accounts '
+                'or Communities found breaking a rule there may be suspended; see §11.',
           ),
           _Section(
-            title: '6. Editing and deleting messages',
+            title: '7. Editing and deleting messages',
             body: 'A text message you sent can be edited for a short window after sending, and shows '
                 '"(edited)" to the recipient once changed — it is not a way to silently rewrite what '
                 'someone already read. "Delete for everyone" removes a message from the recipient\'s '
@@ -65,43 +79,53 @@ class TermsScreen extends StatelessWidget {
                 'the original message.',
           ),
           _Section(
-            title: '7. Verifying contacts and QR codes',
+            title: '8. Verifying contacts and QR codes',
             body: 'The "Verify safety number" and QR-code contact features exist to help you confirm '
                 'who you\'re actually talking to. Don\'t use these features to try to identify or '
                 'target someone without their consent — a QR code only ever encodes an account id, '
                 'never a real name, phone number, or location.',
           ),
           _Section(
-            title: '8. Content is yours',
+            title: '9. Camera use (Intruder photo)',
+            body: 'Intruder photo is off by default and only ever asks your phone for camera access '
+                'when you turn it on yourself in Settings. Once on, it may take a photo with your '
+                'device\'s front camera after repeated wrong app-lock PIN attempts and save it to your '
+                'on-device Media vault — this photo is never uploaded or sent anywhere, including to '
+                'us. You\'re responsible for how you use any photo this feature captures, including '
+                'making sure doing so is lawful where you are.',
+          ),
+          _Section(
+            title: '10. Content is yours',
             body: "You own what you send. Because of NWisp's design, message content is never "
                 'readable by the server and is deleted from it as soon as it reaches the recipient '
                 "— so there's no way for us to recover, moderate, or restore lost messages after the "
                 'fact. See the Privacy Policy for exactly what is and isn\'t stored.',
           ),
           _Section(
-            title: '9. No warranty',
+            title: '11. No warranty',
             body: 'NWisp is provided "as is," without warranties of any kind. Auto-delete timing, '
-                'delivery, screenshot prevention, and encryption are implemented carefully but not '
+                'delivery, screenshot prevention, encryption, and features that depend on your '
+                'specific device\'s hardware (like Intruder photo) are implemented carefully but not '
                 'guaranteed to be perfect — see the known-limitations notes in the in-app Help Centre.',
           ),
           _Section(
-            title: '10. Reports, suspension, and appeals',
-            body: 'Anyone can report an account for a specific rule from Community Guidelines, '
-                'optionally with details and a photo as proof. Reports are reviewed by a person, not '
-                'automatically. If an account is suspended, that account sees the specific rule cited '
-                'and can submit a written appeal, optionally with proof — appeals are also reviewed '
-                'by a person. If an appeal is found to have been made in bad faith, the appeal option '
-                'for that account may be turned off, with an alternate contact method shown instead. '
-                "You can also stop using NWisp and request account deletion at any time — from "
-                'Account settings, or by contacting the developer.',
+            title: '12. Reports, suspension, and appeals',
+            body: 'Anyone can report an account, a group, or a Community for a specific rule from '
+                'Community Guidelines, optionally with details and a photo as proof. Reports are '
+                'reviewed by a person, not automatically. If an account is suspended, that account '
+                'sees the specific rule cited and can submit a written appeal, optionally with proof '
+                '— appeals are also reviewed by a person. If an appeal is found to have been made in '
+                'bad faith, the appeal option for that account may be turned off, with an alternate '
+                'contact method shown instead. You can also stop using NWisp and request account '
+                'deletion at any time — from Account settings, or by contacting the developer.',
           ),
           _Section(
-            title: '11. Changes',
+            title: '13. Changes',
             body: "These Terms may change as the app changes. We'll update the date at the top of "
                 'this page — continuing to use the app after a change means you accept the update.',
           ),
           _Section(
-            title: '12. Contact',
+            title: '14. Contact',
             body: 'Questions about these Terms can be sent to rinshan602@gmail.com.',
           ),
           const SizedBox(height: 8),
