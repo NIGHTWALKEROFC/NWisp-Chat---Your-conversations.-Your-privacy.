@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
+import '../../widgets/user_avatar.dart';
 import '../chat/chat_detail_screen.dart';
 import '../groups/create_group_screen.dart';
 import '../security/chat_pin_guard.dart';
@@ -192,10 +193,7 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                   return ListTile(
                     leading: Stack(
                       children: [
-                        CircleAvatar(
-                          backgroundColor: scheme.primaryContainer,
-                          child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
-                        ),
+                        UserAvatar(uid: uid, name: username),
                         if (_selectionMode && isSelected)
                           Positioned(
                             right: -2,
@@ -241,10 +239,7 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                   final fromUid = data['fromUid'] as String;
                   final fromUsername = (data['fromUsername'] as String?) ?? '';
                   return ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: scheme.primaryContainer,
-                      child: Text(fromUsername.isNotEmpty ? fromUsername[0].toUpperCase() : '?'),
-                    ),
+                    leading: UserAvatar(uid: fromUid, name: fromUsername),
                     title: Text(fromUsername),
                     subtitle: const Text('wants to add you'),
                     trailing: Row(
