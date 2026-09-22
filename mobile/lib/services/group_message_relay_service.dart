@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:uuid/uuid.dart';
 import 'crypto_service.dart';
+import 'group_service.dart';
 import 'local_media_files.dart';
 import 'local_message_store.dart';
 import 'media_service.dart';
@@ -83,6 +84,20 @@ class GroupMessageRelayService {
     return createdAt.add(Duration(hours: ttlHours));
   }
 
+  /// Feature: announcement-only groups. Refuses early if this is an
+  /// announcement-only group and I'm not an admin. It is only a courtesy to
+  /// the sender — the real enforcement is on every RECEIVING phone. If the
+  /// group can't be looked up right now, the send is allowed to continue.
+  static Future<void> _ensureMayPost(String groupId) async {
+    bool allowed;
+    try {
+      allowed = await GroupService.instance.mayPost(groupId);
+    } catch (_) {
+      return;
+    }
+    if (!allowed) throw StateError('Only admins can post in this group.');
+  }
+
   /// Sends a text message to every uid in [memberUids] (pass every OTHER
   /// current member — GroupChatScreen gets that list live from
   /// GroupService/Firestore; this method itself also filters out the
@@ -97,6 +112,7 @@ class GroupMessageRelayService {
     String? replyToId,
     required int ttlHours,
   }) async {
+    await _ensureMayPost(groupId);
     final myUid = _myUid;
     final clientId = _uuid.v4();
     final others = memberUids.where((u) => u != myUid).toSet().toList();
@@ -173,6 +189,7 @@ class GroupMessageRelayService {
     required int ttlHours,
     bool isViewOnce = false,
   }) async {
+    await _ensureMayPost(groupId);
     final myUid = _myUid;
     final clientId = _uuid.v4();
     final others = memberUids.where((u) => u != myUid).toSet().toList();
