@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../models/local_message.dart';
+import '../../services/contact_service.dart';
+import '../../services/conversation_service.dart';
 import '../../services/group_message_relay_service.dart';
 import '../../services/group_service.dart';
 import '../../services/local_message_store.dart';
@@ -18,6 +20,7 @@ import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
+import '../../widgets/chat_theme_scope.dart';
 import '../../services/media_vault_service.dart';
 import '../../services/private_keyboard_service.dart';
 import '../../widgets/media_viewer_screen.dart';
@@ -25,7 +28,9 @@ import '../../widgets/message_link_text.dart';
 import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
+import '../chat/chat_detail_screen.dart';
 import '../chat/chat_search_screen.dart';
+import '../security/chat_pin_guard.dart';
 import '../security/safety_number_screen.dart';
 import '../chat/media_preview_screen.dart';
 import '../vault/media_vault_screen.dart';
@@ -46,15 +51,28 @@ String _mediaLabel(String type) {
   }
 }
 
-class GroupChatScreen extends StatefulWidget {
+/// The group chat screen. This thin outer widget only applies the chat's own
+/// colour theme (see ChatThemeScope); everything else lives in
+/// [_GroupChatBody] below, unchanged.
+class GroupChatScreen extends StatelessWidget {
   final String groupId;
   const GroupChatScreen({super.key, required this.groupId});
 
   @override
-  State<GroupChatScreen> createState() => _GroupChatScreenState();
+  Widget build(BuildContext context) {
+    return ChatThemeScope(conversationId: groupId, child: _GroupChatBody(groupId: groupId));
+  }
 }
 
-class _GroupChatScreenState extends State<GroupChatScreen> {
+class _GroupChatBody extends StatefulWidget {
+  final String groupId;
+  const _GroupChatBody({required this.groupId});
+
+  @override
+  State<_GroupChatBody> createState() => _GroupChatScreenState();
+}
+
+class _GroupChatScreenState extends State<_GroupChatBody> {
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
   // Feature: unified voice/media UI (chat + group) — shared controller
@@ -71,6 +89,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   String _groupName = 'Group';
   bool _onlyAdminsCanSend = false;
   bool _amAdmin = false;
+
+  /// Feature: announcement-only groups. True when this is an announcement-
+  /// only group and I'm NOT an admin: I can read, react and reply privately,
+  /// but not post. (Every phone ALSO enforces this on the receiving side, so
+  /// a modified app can't post anyway — see MessageRelayService._handleRow.)
+  bool get _restrictedForMe => _onlyAdminsCanSend && !_amAdmin;
   String? _groupAvatarUrl;
   int _ttlHours = 0;
   // Feature: "clear on exit" ephemeral view mode, group version — kept in
@@ -530,6 +554,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("You're not signed in. Please sign in again.")));
       return;
     }
+    if (_restrictedForMe) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Only admins can post in this group.')));
+      return;
+    }
 
     final editing = _editingMessage;
     if (editing != null) {
@@ -678,6 +706,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("You're not signed in. Please sign in again.")));
       return;
     }
+    if (_restrictedForMe) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Only admins can post in this group.')));
+      return;
+    }
     setState(() => _sendingMedia = true);
     try {
       final bytes = await compress(file);
@@ -795,14 +827,27 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               ),
             ),
             const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.reply),
-              title: const Text('Reply'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                setState(() => _replyingTo = message);
-              },
-            ),
+            // Announcement-only group + I'm not an admin: there is no compose
+            // bar to reply in, so offer a PRIVATE reply to whoever posted.
+            if (!_restrictedForMe)
+              ListTile(
+                leading: const Icon(Icons.reply),
+                title: const Text('Reply'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  setState(() => _replyingTo = message);
+                },
+              ),
+            if (_restrictedForMe && !mine)
+              ListTile(
+                leading: const Icon(Icons.reply),
+                title: const Text('Reply privately'),
+                subtitle: const Text('Opens a private chat with the sender'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _replyPrivately(message);
+                },
+              ),
             ListTile(
               leading: Icon(message.starred ? Icons.star : Icons.star_border),
               title: Text(message.starred ? 'Unstar' : 'Star'),
@@ -1586,10 +1631,73 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  /// Feature: announcement-only groups — "Reply privately". Opens a normal
+  /// 1:1 chat with whoever posted. Chats in this app only exist between
+  /// contacts, so if the sender isn't a contact yet this offers to send a
+  /// contact request instead (never a chat with a stranger by the back door).
+  Future<void> _replyPrivately(LocalMessage message) async {
+    final uid = message.senderUid;
+    final me = _myUid;
+    if (uid.isEmpty || me == null || uid == me) return;
+    void snack(String text) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
+
+    try {
+      var name = _usernames[uid];
+      if (name == null) {
+        final d = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+        name = (d.data()?['username'] as String?) ?? 'this member';
+      }
+      final contacts = await ContactService().myContactUids();
+      if (!mounted) return;
+
+      if (!contacts.contains(uid)) {
+        final send = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text('Message $name privately?'),
+            content: Text("$name isn't in your contacts yet. Send them a contact request — you can chat as soon as they accept."),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Send request')),
+            ],
+          ),
+        );
+        if (send != true) return;
+        final mine = await FirebaseFirestore.instance.collection('users').doc(me).get();
+        await ContactService().sendRequest(
+          toUid: uid,
+          toUsername: name,
+          myUsername: (mine.data()?['username'] as String?) ?? '',
+        );
+        snack('Contact request sent to $name.');
+        return;
+      }
+
+      await ConversationService().ensureConversation(otherUid: uid);
+      final conversationId = ConversationService().conversationIdFor(me, uid);
+      if (!mounted) return;
+      if (!await canOpenChat(context, conversationId: conversationId, otherUid: uid)) return;
+      if (!mounted) return;
+      if (!await requireChatPinIfLocked(context, conversationId)) return;
+      if (!mounted) return;
+      final peerName = name;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatDetailScreen(conversationId: conversationId, peerUid: uid, peerUsername: peerName)),
+      );
+    } catch (e) {
+      final text = e.toString().replaceFirst('Exception: ', '');
+      snack(text.length < 90 ? text : "Couldn't open a private chat — try again.");
+    }
+  }
+
   /// Feature: group security setting — shown instead of the normal
-  /// compose bar for a non-admin member when GroupInfoScreen's "Only
-  /// admins can send messages" toggle is on. Everyone can still read and
-  /// react to messages as normal; only sending is restricted.
+  /// compose bar for a non-admin member when the group is announcement-
+  /// only. Everyone can still read, react and reply privately; only
+  /// posting is restricted.
   Widget _buildAdminsOnlyNotice(ColorScheme scheme) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -1600,7 +1708,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Only admins can send messages in this group',
+              'Only admins can post here. React to a message, or long-press it to reply privately.',
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
             ),
           ),
