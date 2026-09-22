@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/biometric_unlock_service.dart';
+import '../../services/intruder_photo_service.dart';
 import '../../services/settings_service.dart';
 import '../../widgets/duration_picker_dialog.dart';
 import '../security/duress_pin_setup_screen.dart';
 import '../security/pin_screen.dart';
 import 'chat_lock_setup_screen.dart';
+import 'intruder_photo_screen.dart';
 
 /// Feature: settings reorganized into WhatsApp-style category pages.
 /// Everything about locking the app/hiding chats/wiping inactive data,
@@ -27,6 +29,8 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
   int _graceMinutes = 0;
   // Feature: shake to lock (off by default).
   bool _shakeToLock = false;
+  // Feature: intruder photo (off by default).
+  bool _intruderPhoto = false;
   bool _inactivityWipeEnabled = false;
   int _inactivityWipeMonths = 3;
   bool _loading = true;
@@ -44,6 +48,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
     final idleTimeoutMinutes = await AppLockService.getIdleTimeoutMinutes();
     final graceMinutes = await AppLockService.getBackgroundGraceMinutes();
     final shakeToLock = await AppLockService.getShakeToLockEnabled();
+    final intruderPhoto = await IntruderPhotoService.instance.isEnabled();
     final inactivityWipeEnabled = await SettingsService.getInactivityWipeGlobalEnabled();
     final inactivityWipeMonths = await SettingsService.getInactivityWipeGlobalMonths();
     if (!mounted) return;
@@ -54,6 +59,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
       _idleTimeoutMinutes = idleTimeoutMinutes;
       _graceMinutes = graceMinutes;
       _shakeToLock = shakeToLock;
+      _intruderPhoto = intruderPhoto;
       _inactivityWipeEnabled = inactivityWipeEnabled;
       _inactivityWipeMonths = inactivityWipeMonths;
       _loading = false;
@@ -288,6 +294,20 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _pickIdleTimeout,
+                  ),
+                // Feature: intruder photo — front-camera photo after wrong
+                // PINs, saved in the vault. Off by default; needs App lock.
+                if (_appLockEnabled)
+                  ListTile(
+                    leading: const Icon(Icons.no_photography_outlined),
+                    title: const Text('Intruder photo'),
+                    subtitle: Text(
+                      _intruderPhoto
+                          ? 'On — a photo is taken after wrong PINs and saved in your Media vault'
+                          : 'Off — take a photo of anyone who enters wrong PINs',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const IntruderPhotoScreen())).then((_) => _load()),
                   ),
                 ListTile(
                   leading: const Icon(Icons.privacy_tip_outlined),
