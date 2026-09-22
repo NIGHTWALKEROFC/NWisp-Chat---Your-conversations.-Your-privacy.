@@ -6,6 +6,7 @@ import '../../services/auth_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
+import '../../widgets/user_avatar.dart';
 import '../chat/chat_detail_screen.dart';
 import '../security/chat_pin_guard.dart';
 import '../security/hidden_chat_pin_screen.dart';
@@ -236,10 +237,7 @@ class _FindUsersScreenState extends State<FindUsersScreen> {
               final isPending = _pendingUids.contains(uid);
               final isSending = _sendingTo.contains(uid);
               return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: scheme.primaryContainer,
-                  child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
-                ),
+                leading: UserAvatar(uid: uid, name: username),
                 title: Text(username),
                 onTap: isContact ? () => _openChat(uid, username) : null,
                 trailing: isContact
