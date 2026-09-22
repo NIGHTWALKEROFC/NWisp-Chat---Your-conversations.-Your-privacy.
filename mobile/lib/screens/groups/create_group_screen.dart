@@ -27,6 +27,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   late final Set<String> _selectedUids = Set<String>.from(widget.initialSelectedUids);
   File? _avatarFile;
   bool _creating = false;
+  // Feature: announcement-only group — only admins can post.
+  bool _announcementOnly = false;
 
   @override
   void dispose() {
@@ -63,6 +65,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
         name: name,
         avatarUrl: avatarUrl,
         memberUids: _selectedUids.toList(),
+        onlyAdminsCanSend: _announcementOnly,
       );
       if (!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: groupId)));
@@ -113,6 +116,14 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                 ),
               ],
             ),
+          ),
+          SwitchListTile.adaptive(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            secondary: const Icon(Icons.campaign_outlined),
+            title: const Text('Announcement-only'),
+            subtitle: const Text('Only admins can post. Members can read, react and reply privately. Shows in the Announcements tab.'),
+            value: _announcementOnly,
+            onChanged: _creating ? null : (v) => setState(() => _announcementOnly = v),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
