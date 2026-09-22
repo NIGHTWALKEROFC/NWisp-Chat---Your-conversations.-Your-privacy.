@@ -46,6 +46,21 @@ class Group {
   /// besides this one groupId. See GroupChatScreen.dispose().
   final bool ephemeralViewEnabled;
 
+  /// Feature: Community. True for a group that is ALSO listed publicly in
+  /// the Community tab (its public listing lives in `communities/{id}` —
+  /// see CommunityService). Anyone signed in can join an open community
+  /// themselves, up to [maxMembers]. Missing = false, so every existing
+  /// group is untouched.
+  final bool isCommunity;
+
+  /// Hard member cap for a community (each message is encrypted once per
+  /// member, so this stays small on purpose). Enforced by firestore.rules.
+  final int? maxMembers;
+
+  /// People an admin removed AND banned from a community — they cannot
+  /// join it again on their own (enforced by firestore.rules).
+  final List<String> bannedUids;
+
   const Group({
     required this.id,
     required this.name,
@@ -61,6 +76,9 @@ class Group {
     this.readReceiptsEnabled = true,
     this.hideMemberListFromNonAdmins = false,
     this.ephemeralViewEnabled = false,
+    this.isCommunity = false,
+    this.maxMembers,
+    this.bannedUids = const [],
   });
 
   factory Group.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -80,6 +98,9 @@ class Group {
       readReceiptsEnabled: (data['readReceiptsEnabled'] as bool?) ?? true,
       hideMemberListFromNonAdmins: (data['hideMemberListFromNonAdmins'] as bool?) ?? false,
       ephemeralViewEnabled: (data['ephemeralViewEnabled'] as bool?) ?? false,
+      isCommunity: (data['isCommunity'] as bool?) ?? false,
+      maxMembers: (data['maxMembers'] as num?)?.toInt(),
+      bannedUids: List<String>.from(data['bannedUids'] ?? const []),
     );
   }
 
