@@ -39,12 +39,17 @@ import '../vault/media_vault_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
 import 'chat_settings_screen.dart';
+import '../../widgets/chat_theme_scope.dart';
+import '../../widgets/user_avatar.dart';
 
 // Expanded quick-reaction set (was 6, now 12) — tapping the same emoji you
 // already reacted with removes it; tapping a different one switches to it.
 const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉', '😍', '👏', '💯', '😡'];
 
-class ChatDetailScreen extends StatefulWidget {
+/// The chat screen. This thin outer widget only applies the chat's own
+/// colour theme (see ChatThemeScope); everything else lives in
+/// [_ChatDetailBody] below, unchanged.
+class ChatDetailScreen extends StatelessWidget {
   final String conversationId;
   final String peerUid;
   final String peerUsername;
@@ -57,10 +62,30 @@ class ChatDetailScreen extends StatefulWidget {
   });
 
   @override
-  State<ChatDetailScreen> createState() => _ChatDetailScreenState();
+  Widget build(BuildContext context) {
+    return ChatThemeScope(
+      conversationId: conversationId,
+      child: _ChatDetailBody(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername),
+    );
+  }
 }
 
-class _ChatDetailScreenState extends State<ChatDetailScreen> {
+class _ChatDetailBody extends StatefulWidget {
+  final String conversationId;
+  final String peerUid;
+  final String peerUsername;
+
+  const _ChatDetailBody({
+    required this.conversationId,
+    required this.peerUid,
+    required this.peerUsername,
+  });
+
+  @override
+  State<_ChatDetailBody> createState() => _ChatDetailScreenState();
+}
+
+class _ChatDetailScreenState extends State<_ChatDetailBody> {
   final _conversationService = ConversationService();
   final _moderationService = ModerationService();
   final _textController = TextEditingController();
@@ -1827,14 +1852,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
-                  CircleAvatar(
-                    radius: 18,
-                    backgroundColor: scheme.primaryContainer,
-                    child: Text(
-                      widget.peerUsername.isNotEmpty ? widget.peerUsername[0].toUpperCase() : '?',
-                      style: TextStyle(fontWeight: FontWeight.w700, color: scheme.onPrimaryContainer),
-                    ),
-                  ),
+                  UserAvatar(uid: widget.peerUid, name: widget.peerUsername, radius: 18),
                   if (online)
                     Positioned(
                       right: -1,
