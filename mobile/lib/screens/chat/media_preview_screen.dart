@@ -34,6 +34,10 @@ Future<MediaPreviewResult?> showMediaPreview(
   required bool isVideo,
   required String recipientLabel,
   bool initialViewOnce = false,
+  // Feature: profile photo editing. Same crop / rotate / draw / text tools,
+  // but no "view once" button and the confirm button is a tick (OK) instead
+  // of a send arrow. Used for profile and community photos.
+  bool forProfilePhoto = false,
 }) {
   return Navigator.push<MediaPreviewResult>(
     context,
@@ -44,6 +48,7 @@ Future<MediaPreviewResult?> showMediaPreview(
         isVideo: isVideo,
         recipientLabel: recipientLabel,
         initialViewOnce: initialViewOnce,
+        forProfilePhoto: forProfilePhoto,
       ),
     ),
   );
@@ -203,6 +208,7 @@ class MediaPreviewScreen extends StatefulWidget {
   final bool isVideo;
   final String recipientLabel;
   final bool initialViewOnce;
+  final bool forProfilePhoto;
 
   const MediaPreviewScreen({
     super.key,
@@ -210,6 +216,7 @@ class MediaPreviewScreen extends StatefulWidget {
     required this.isVideo,
     required this.recipientLabel,
     this.initialViewOnce = false,
+    this.forProfilePhoto = false,
   });
 
   @override
@@ -819,8 +826,9 @@ class _MediaPreviewScreenState extends State<MediaPreviewScreen> {
             ),
           ),
           const SizedBox(width: 10),
-          // "View once" — the circled 1, like WhatsApp/Telegram.
-          Tooltip(
+          // "View once" — the circled 1, like WhatsApp/Telegram. Not
+          // offered when this screen is editing a profile photo.
+          if (!widget.forProfilePhoto) Tooltip(
             message: _viewOnce ? 'View once: on' : 'View once: off',
             child: InkWell(
               customBorder: const CircleBorder(),
@@ -852,7 +860,7 @@ class _MediaPreviewScreenState extends State<MediaPreviewScreen> {
             onPressed: _working ? null : _send,
             child: _working
                 ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
-                : const Icon(Icons.send),
+                : Icon(widget.forProfilePhoto ? Icons.check : Icons.send),
           ),
         ],
       ),
