@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 class PrivacyPolicyScreen extends StatelessWidget {
   const PrivacyPolicyScreen({super.key});
 
-  static const _lastUpdated = 'August 2026';
+  static const _lastUpdated = 'September 2026';
 
   @override
   Widget build(BuildContext context) {
@@ -61,11 +61,13 @@ class PrivacyPolicyScreen extends StatelessWidget {
             title: '5. Account and profile information',
             body: '• Account info: your username and email address, used to sign in and to let '
                 'contacts find and message you.\n'
-                '• Profile photo, if you add one.\n'
+                '• Profile photo, if you add one — this is visible to every user you share a chat, '
+                'group, or Community with (see §8 below on Communities specifically), not just your '
+                'existing contacts.\n'
                 '• Your contacts list and group memberships (who you\'re connected to, not the '
                 'content of what you say to them).\n'
                 '• A push-notification token for your device, used only to alert you to a new '
-                'message (the notification itself never contains message content — see section 8).\n'
+                'message (the notification itself never contains message content — see section 9).\n'
                 '• Presence info (online/offline, last seen), only if you\'ve left that visible in '
                 'Settings.\n'
                 '• We do not collect your phone number, and do not access your phone\'s contact '
@@ -81,7 +83,7 @@ class PrivacyPolicyScreen extends StatelessWidget {
                 'third-party IP-geolocation lookup (ipapi.co) — it is a rough, city-level estimate, '
                 'not GPS or precise location, and we do not track your location at any other time. '
                 'This history is visible only to you, and you can clear it from that same screen at '
-                'any time (clearing it hides old entries from your view — see section 11 for how the '
+                'any time (clearing it hides old entries from your view — see section 12 for how the '
                 'underlying record is handled).',
           ),
           _Section(
@@ -92,10 +94,24 @@ class PrivacyPolicyScreen extends StatelessWidget {
                 'messages are — a separate encrypted copy is created for each member\'s device, and '
                 'we cannot read group message content any more than we can read a 1:1 chat. If an '
                 'admin invites someone who isn\'t already your contact, that person sees a request '
-                'they must accept before they\'re added or can see anything about the group.',
+                'they must accept before they\'re added or can see anything about the group. In an '
+                'announcement-only group, only admins can post, but every member\'s ability to read '
+                'and react is unaffected, and this stores no additional information beyond a normal '
+                'group.',
           ),
           _Section(
-            title: '8. Notifications',
+            title: '8. Communities',
+            body: 'A Community is a public, joinable group — different from a regular group in one '
+                'important way: its name, description, topic, member count, and any location you '
+                'gave it (country, state/region, district/city — every part optional) are visible to '
+                'every signed-in NWisp user, not only its members, so it can be found in the '
+                'Community tab. Its actual messages work exactly like a group\'s — end-to-end '
+                'encrypted per member, and never stored on any server. Joining or leaving updates '
+                'that public listing\'s member count. If you\'re removed and banned by a Community\'s '
+                'admin, that ban is recorded so you can\'t rejoin the same Community on your own.',
+          ),
+          _Section(
+            title: '9. Notifications',
             body: 'Push notifications are delivered through Firebase Cloud Messaging and only ever '
                 'contain a sender\'s username and a generic line like "Sent you a message" — never '
                 'the actual message text, photo, or voice content, since we don\'t have access to it '
@@ -103,77 +119,103 @@ class PrivacyPolicyScreen extends StatelessWidget {
                 'notification is sent for it at all.',
           ),
           _Section(
-            title: '9. Media (photos, videos, voice messages)',
+            title: '10. Media (photos, videos, voice messages)',
             body: 'Media is encrypted on your device with a random one-time key before upload. Only '
                 'the encrypted file is stored, briefly, on our media server (Supabase Storage) — '
                 'just long enough for the recipient to download and decrypt it — and it is deleted '
                 'afterward for 1:1 chats. Story media follows the same encrypted-upload approach and '
-                'is automatically removed 24 hours after posting.',
+                'is automatically removed 24 hours after posting. View-once media is additionally '
+                'marked so the recipient\'s app removes it after it has been opened once.',
           ),
           _Section(
-            title: '10. Screenshots and screen recording',
+            title: '11. Media vault and Intruder photo — entirely on your device',
+            body: 'The Media vault is a PIN-locked space for photos and videos that lives only on '
+                'your own device — nothing you move into it, and nothing about it, is ever sent to '
+                'us. If you turn on Intruder photo (off by default, in Settings > Security), the '
+                'front camera takes a photo after repeated wrong app-lock PINs and saves it straight '
+                'into that same on-device vault; the photo never leaves your phone, and we have no '
+                'access to your camera or to that image at any point. Turning the feature on is what '
+                'triggers your phone\'s own camera-permission prompt — we don\'t request camera access '
+                'for any other reason.',
+          ),
+          _Section(
+            title: '12. Chat themes',
+            body: 'A chat\'s wallpaper and bubble colour are a display preference saved only on your '
+                'own device. They are not visible to, or synced with, the other people in that chat, '
+                'and are not stored on our servers.',
+          ),
+          _Section(
+            title: '13. Screenshots and screen recording',
             body: 'Chat and group chat screens use Android\'s screenshot-blocking protection '
                 '(FLAG_SECURE) by default, the same mechanism Signal and WhatsApp use — this blocks '
                 'both screenshots and screen recording of those screens at the operating-system '
                 'level, and also hides chat content from the "recent apps" preview thumbnail.',
           ),
           _Section(
-            title: '11. How long we keep things',
+            title: '14. How long we keep things',
             body: '• Message content: only ever on your own device, for as long as you keep it or '
                 'until its auto-delete timer expires — never retained by us.\n'
                 '• In-transit relay data: deleted immediately once delivered, typically within '
                 'seconds.\n'
                 '• Account/profile data: kept while your account exists.\n'
+                '• A Community\'s public listing: kept while the Community has at least one member; '
+                'removed automatically once its last member leaves.\n'
                 '• Login-activity history: kept so a security-relevant record exists (see section '
                 '6), but hidden from your own view once you clear it; a security log entry is not '
                 'deleted outright the way a message is, so that evidence of a genuine unauthorized '
                 'login can\'t be erased by whoever caused it.\n'
-                '• You can request full account deletion at any time — see section 14.',
+                '• You can request full account deletion at any time — see section 17.',
           ),
           _Section(
-            title: '12. Who can see your information',
+            title: '15. Who can see your information',
             body: 'Only people you accept as contacts (or accept a group invite from) can message '
-                'you or see your presence info, and only if you\'ve chosen to make that visible in '
-                'Settings. We do not sell or share your data with advertisers or data brokers.',
+                'you directly, and only people you\'ve chosen to make presence visible to in Settings '
+                'can see it. Your profile photo, username, and the public listing of any Community '
+                'you create are visible more broadly, as described in sections 5 and 8. We do not '
+                'sell or share your data with advertisers or data brokers.',
           ),
           _Section(
-            title: '13. Your choices',
-            body: '• Change your email, username, or photo at any time in Account settings.\n'
-                '• Turn off last-seen and read-receipt visibility in Settings.\n'
+            title: '16. Your choices',
+            body: '• Change your email, username, or photo — or remove your photo entirely — at '
+                'any time in Account settings.\n'
+                '• Turn off last-seen and read-receipt visibility in Settings, or use Privacy checkup '
+                'to review and turn on every privacy setting at once.\n'
                 '• Set a shorter (or no) auto-delete duration, app-wide or per chat/group.\n'
-                '• Mute, archive, or pin any chat or group.\n'
-                '• Enable an app-lock PIN for extra on-device protection.\n'
+                '• Mute, archive, or pin any chat, group, or Community.\n'
+                '• Enable an app-lock PIN, and optionally Intruder photo, for extra on-device '
+                'protection.\n'
                 '• Clear a chat (removes it from your device only) or clear it for both sides.\n'
-                '• Block or report a contact.\n'
+                '• Block or report a contact, a group, or a Community.\n'
                 '• Delete your account entirely.',
           ),
           _Section(
-            title: '14. Deleting your account',
+            title: '17. Deleting your account',
             body: 'You can request full account deletion by contacting us at the email below. This '
-                'removes your account, profile, and Firestore data associated with it. Since message '
-                'content is never stored on our servers to begin with, there is no server-side '
-                'message history to delete — only what remains on your own and your contacts\' '
-                'devices, which is outside our control once delivered.',
+                'removes your account, profile, and Firestore data associated with it, including any '
+                'Community listing you own. Since message content is never stored on our servers to '
+                'begin with, there is no server-side message history to delete — only what remains '
+                'on your own and your contacts\' devices, which is outside our control once '
+                'delivered.',
           ),
           _Section(
-            title: '15. Where data is processed',
+            title: '18. Where data is processed',
             body: 'Account data and metadata are stored with Firebase (Google Cloud); the encrypted '
                 'message relay and media storage run on Supabase; login-location lookups use ipapi.co. '
                 'All three providers encrypt data in transit (TLS) and at rest on their own '
                 'infrastructure.',
           ),
           _Section(
-            title: '16. Children',
+            title: '19. Children',
             body: 'This app is not directed at children, and is not knowingly used to collect '
                 'information from children under the applicable age of consent in their country.',
           ),
           _Section(
-            title: '17. Changes to this policy',
+            title: '20. Changes to this policy',
             body: 'We\'ll update the date at the top of this page whenever this policy changes. '
                 'Continuing to use the app after a change means you accept the update.',
           ),
           _Section(
-            title: '18. Contact',
+            title: '21. Contact',
             body: 'Questions about this policy or your data can be sent to rinshan602@gmail.com.',
           ),
           const SizedBox(height: 8),
