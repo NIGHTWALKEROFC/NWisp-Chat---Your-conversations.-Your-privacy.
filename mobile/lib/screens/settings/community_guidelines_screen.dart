@@ -81,6 +81,27 @@ class CommunityGuidelinesScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _Rule(
+            title: 'Public Communities',
+            body: 'A Community is different from a group: its name, description, topic, and any '
+                'location you gave it are visible to every NWisp user, not just its members — so '
+                'these rules apply doubly there. If you create or run a Community:\n'
+                '• Its name, description, and rules text can\'t themselves contain anything that '
+                'breaks a rule above (a slur in the name, a scam disguised as a community, etc.).\n'
+                '• You\'re responsible for using "Remove and ban" on members who break these rules '
+                'inside it — a Community left unmoderated by its admins can be reported and '
+                'suspended as a whole, same as an account can.\n'
+                'Anyone can report a Community itself (not just a member) from its community page — '
+                'this goes through the same person-reviewed process as an account report.',
+          ),
+          _Rule(
+            title: 'Announcement-only groups',
+            body: 'A group where only admins can post is still fully covered by every rule above — '
+                'restricting who can send messages is not a way around moderation. Members who can\'t '
+                'post directly can still report the group or a specific announcement the same way '
+                'they would in any other group.',
+          ),
+          const SizedBox(height: 12),
+          _Rule(
             title: 'How this is enforced',
             body: 'Reports are reviewed by a real person, not automatically — there\'s no bot '
                 'silently reading your messages to check these rules, since NWisp is end-to-end '
