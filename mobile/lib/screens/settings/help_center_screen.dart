@@ -119,6 +119,50 @@ const _faqs = [
     'Yes, both are in Account settings. Email changes require your current password '
         'and a confirmation link sent to the new address.',
   ),
+  _FaqItem(
+    "What's a Community, and how is it different from a group?",
+    'A group is invisible unless you\'re a member of it. A Community, found in the Community tab, '
+        'is public — anyone using the app can find it, see its topic and optional location, and join '
+        'it directly. Once you\'re in one, messages work exactly like a group\'s: end-to-end '
+        'encrypted, and stored only on your own device.',
+  ),
+  _FaqItem(
+    "What's the difference between an Announcement-only group and a Community?",
+    'They can overlap, but they answer different questions. Announcement-only controls who can '
+        "POST inside a group you're already in — only admins can send, everyone else can react or "
+        'reply privately, and it shows in its own Announcements tab. A Community controls who can '
+        'FIND and JOIN a group in the first place — it\'s public, unlike a normal group.',
+  ),
+  _FaqItem(
+    "I removed my profile photo, but people I've messaged before still see the old one.",
+    "Give it a moment — other people's phones only re-check your photo every few minutes, not on "
+        'every message. If it\'s still showing after a while, ask them to reopen the chat, which '
+        'refreshes it immediately.',
+  ),
+  _FaqItem(
+    "Who can see my profile photo?",
+    'Anyone you share a chat, group, or Community with — not just your saved contacts. If you\'d '
+        "rather not have a public photo, you can remove it any time from Edit profile.",
+  ),
+  _FaqItem(
+    "What does "Privacy checkup" actually turn on?",
+    'It only touches privacy and security settings that lock things down further — things like app '
+        'lock timing, hiding read receipts and last seen, hiding notification content, and requiring '
+        'approval for new logins. It deliberately never touches auto-delete or auto-wipe, since those '
+        'remove your data rather than just protect it, so those stay a choice you make separately.',
+  ),
+  _FaqItem(
+    "Is Intruder photo safe to turn on — could it take a photo of ME by mistake?",
+    "It only ever triggers after several WRONG app-lock PINs in a row — entering your own correct "
+        'PIN never takes a photo. It\'s off by default, and "Test it now" in Settings > Security lets '
+        'you see exactly what it does before you rely on it. Some phones require a visible camera '
+        'preview to take a photo at all, so it may not work on every device.',
+  ),
+  _FaqItem(
+    "Can the other person see my chat theme or wallpaper?",
+    "No — a chat's colour and wallpaper are saved only on your own device as a personal display "
+        "preference. The other person's copy of the same chat looks however THEY set it, if anything.",
+  ),
 ];
 
 class HelpCenterScreen extends StatelessWidget {
