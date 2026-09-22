@@ -320,6 +320,17 @@ class MessageRelayService {
         );
         break;
       default:
+        // Feature: announcement-only groups. The relay can't read messages, so
+        // THIS phone is the one that enforces "only admins can post": a
+        // message from a non-admin in an announcement-only group is dropped
+        // here (after decrypting, so the encryption session stays in step)
+        // and never stored, shown or acknowledged. If the group can't be
+        // looked up right now (offline) mayPost throws, the row is kept, and
+        // it is simply retried later — nothing is wrongly accepted or lost.
+        final postGroupId = row['conversation_id'] as String;
+        if (postGroupId.startsWith(_groupIdPrefix) && !await GroupService.instance.mayPost(postGroupId, uid: senderUid)) {
+          break;
+        }
         final ttlHours = (row['ttl_hours'] as num?)?.toInt() ?? 0;
         final createdAt = DateTime.now();
         if (_mediaTypes.contains(messageType)) {
