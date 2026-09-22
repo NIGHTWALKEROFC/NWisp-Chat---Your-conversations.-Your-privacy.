@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../services/home_sections_service.dart';
 import '../../services/settings_service.dart';
 import 'paused_chats_screen.dart';
 
@@ -113,6 +114,31 @@ class _ChatsSettingsScreenState extends State<ChatsSettingsScreen> {
                     setState(() => _separateGroupsAndChats = v);
                     await SettingsService.setSeparateGroupsAndChats(v);
                   },
+                ),
+                // Feature: home sections (bottom bar). Both can be switched off
+                // to keep the home screen as clean as you like.
+                ValueListenableBuilder<bool>(
+                  valueListenable: HomeSectionsService.announcementsTab,
+                  builder: (context, on, _) => SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.campaign_outlined),
+                    title: const Text('Announcements section'),
+                    subtitle: const Text(
+                      'Keep announcement-only groups in their own tab, out of Chats. Off = they appear in Chats like any other group. '
+                      'You can also mute or exit any of them from that tab.',
+                    ),
+                    value: on,
+                    onChanged: (v) => HomeSectionsService.setAnnouncementsTab(v),
+                  ),
+                ),
+                ValueListenableBuilder<bool>(
+                  valueListenable: HomeSectionsService.communityTab,
+                  builder: (context, on, _) => SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.groups_2_outlined),
+                    title: const Text('Community section'),
+                    subtitle: const Text('Show the Community tab — find and join public communities near you or by topic. Off hides the tab — communities you joined then appear in Chats instead.'),
+                    value: on,
+                    onChanged: (v) => HomeSectionsService.setCommunityTab(v),
+                  ),
                 ),
                 ListTile(
                   leading: const Icon(Icons.timer_outlined),
