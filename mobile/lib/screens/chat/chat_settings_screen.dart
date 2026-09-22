@@ -13,6 +13,7 @@ import '../security/safety_number_screen.dart';
 import '../settings/chat_lock_setup_screen.dart';
 import '../settings/keyword_mute_screen.dart';
 import '../../widgets/mute_duration_sheet.dart';
+import '../../widgets/user_avatar.dart';
 import 'chat_media_browser_screen.dart';
 import 'chat_wallpaper_screen.dart';
 
@@ -609,10 +610,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           return ListView(
             children: [
               ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: scheme.primaryContainer,
-                  child: Text(widget.peerUsername.isNotEmpty ? widget.peerUsername[0].toUpperCase() : '?'),
-                ),
+                leading: UserAvatar(uid: widget.peerUid, name: widget.peerUsername),
                 title: Text(widget.peerUsername, style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
               const Divider(height: 24),
@@ -805,8 +803,9 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 ),
               ),
               ListTile(
-                leading: const Icon(Icons.wallpaper_outlined),
-                title: const Text('Chat wallpaper'),
+                leading: const Icon(Icons.palette_outlined),
+                title: const Text('Chat theme'),
+                subtitle: const Text('Wallpaper and bubble colour'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.push(
                   context,
