@@ -7,16 +7,18 @@ import '../services/auth_service.dart';
 import '../services/biometric_unlock_service.dart';
 import '../services/device_session_service.dart';
 import '../services/duress_pin_service.dart';
+import '../services/intruder_photo_service.dart';
 import '../services/presence_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/contact_developer_sheet.dart';
-import 'chat_list_screen.dart';
+import 'home_shell.dart';
 import 'decoy_home_screen.dart';
 import 'login_screen.dart';
 import 'onboarding_screen.dart';
 import 'reactivate_account_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'suspended_account_screen.dart';
+import 'vault/media_vault_screen.dart';
 import '../services/local_message_store.dart';
 import '../services/media_vault_service.dart';
 import '../services/scheduled_message_service.dart';
@@ -193,7 +195,7 @@ class _PostAuthGateState extends State<_PostAuthGate> {
       // rule, which blocks the owner from ever writing it away).
       return const SuspendedAccountScreen();
     }
-    return const _LockGate(child: ChatListScreen());
+    return const _LockGate(child: HomeShell());
   }
 }
 
@@ -246,6 +248,38 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
   void _onLockNowRequested() {
     if (!mounted || !_unlocked) return;
     _lockNow();
+  }
+
+  /// Feature: intruder photo. Right after a REAL unlock, clear the wrong-PIN
+  /// counters and — if the front camera caught someone while the phone was
+  /// locked — tell the owner, and offer to open the vault where the photo is.
+  Future<void> _showIntruderNotice() async {
+    final notice = await IntruderPhotoService.instance.onRealUnlock();
+    if (notice == null || !mounted) return;
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    final openVault = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 32),
+        title: const Text('Someone tried to get in'),
+        content: Text(
+          '${notice.wrongAttempts == 1 ? 'A wrong PIN was entered' : '${notice.wrongAttempts} wrong PINs were entered'} '
+          'while your app was locked. '
+          '${notice.photosSaved == 1 ? 'A photo was' : '${notice.photosSaved} photos were'} saved in your Media vault, marked "Intruder".',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Dismiss')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('See photo')),
+        ],
+      ),
+    );
+    if (openVault == true && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(settings: const RouteSettings(name: '/vault'), builder: (_) => const MediaVaultScreen()),
+      );
+    }
   }
 
   /// Starts or stops the shake detector to match the setting. Only ever
@@ -414,6 +448,7 @@ class _LockGateState extends State<_LockGate> with WidgetsBindingObserver {
               setState(() => _unlocked = true);
               _scheduleIdleTimer();
               _syncShake();
+              _showIntruderNotice();
             },
             onDuressUnlocked: () {
               setState(() {
@@ -504,6 +539,9 @@ class _PinGateScreenState extends State<_PinGateScreen> {
       widget.onDuressUnlocked();
       return;
     }
+    // Feature: intruder photo — counts this wrong PIN (does nothing at all
+    // unless the feature is switched on in Settings > Security).
+    unawaited(IntruderPhotoService.instance.onWrongPin());
     setState(() => _error = 'Incorrect PIN');
     _pinController.clear();
   }
