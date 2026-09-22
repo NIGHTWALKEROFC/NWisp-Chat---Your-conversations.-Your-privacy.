@@ -12,10 +12,12 @@ import '../services/chat_lock_service.dart';
 import '../services/chat_folder_service.dart';
 import '../services/conversation_service.dart';
 import '../services/group_service.dart';
+import '../services/home_sections_service.dart';
 import '../services/local_message_store.dart';
 import '../services/settings_service.dart';
 import '../services/signal_session_service.dart';
 import '../widgets/mute_duration_sheet.dart';
+import '../widgets/user_avatar.dart';
 import 'chat/chat_detail_screen.dart';
 import 'chat/scheduled_messages_screen.dart';
 import 'notes/note_to_self_screen.dart';
@@ -185,9 +187,32 @@ class _ChatListScreenState extends State<ChatListScreen> {
     if (mounted) setState(() => _peersWithChangedIdentity..clear()..addAll(changed));
   }
 
+  // Feature: home sections. Re-filter the list the moment the Announcements
+  // switch in Settings > Chats is flipped.
+  void _onSectionSettingChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Feature: home sections. Community groups live in the Community tab and
+  /// announcement-only groups in the Announcements tab while those sections
+  /// are switched on — they are kept out of Chats. Switch a section off and
+  /// its groups simply appear here again, like any other group.
+  bool _belongsToOtherSection(_ChatRow r) {
+    if (!r.isGroup) return false;
+    for (final d in _groupDocs) {
+      if (d.id != r.conversationId) continue;
+      final data = d.data();
+      if (data['isCommunity'] == true && HomeSectionsService.communityTab.value) return true;
+      if (data['onlyAdminsCanSend'] == true && HomeSectionsService.announcementsTab.value) return true;
+    }
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
+    HomeSectionsService.announcementsTab.addListener(_onSectionSettingChanged);
+    HomeSectionsService.communityTab.addListener(_onSectionSettingChanged);
     _loadHiddenIds();
     _manualUnreadSub = LocalMessageStore.watchManualUnread().listen((ids) {
       if (mounted) setState(() => _manualUnread = ids);
@@ -255,6 +280,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   @override
   void dispose() {
+    HomeSectionsService.announcementsTab.removeListener(_onSectionSettingChanged);
+    HomeSectionsService.communityTab.removeListener(_onSectionSettingChanged);
     _localSub.cancel();
     _convoSub.cancel();
     _groupsSub.cancel();
@@ -685,13 +712,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
           // feature is 1:1-only — see ChatFreezeService), so isGroup rows
           // never match this regardless of peerUid contents.
           final notFrozen = allRows.where((r) => r.isGroup || !_frozenPeerUids.contains(r.peerUid)).toList();
+          // The app-icon badge counts EVERY section's unread messages…
           _updateBadge(notFrozen);
-          final archivedCount = notFrozen.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
+          // …but this list only shows what belongs in Chats.
+          final visibleRows = notFrozen.where((r) => !_belongsToOtherSection(r)).toList();
+          final archivedCount = visibleRows.where((r) => r.archived && !_hiddenIds.contains(r.conversationId)).length;
           final unfiltered = _showHiddenOnly
-              ? notFrozen
+              ? visibleRows
                   .where((r) => _hiddenViewChatId != null ? r.conversationId == _hiddenViewChatId : _hiddenIds.contains(r.conversationId))
                   .toList()
-              : notFrozen.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
+              : visibleRows.where((r) => !_hiddenIds.contains(r.conversationId) && r.archived == _showArchived).toList();
           // Feature: chat folders/categories. Applied only in the normal
           // (not hidden, not archived) view — a folder is a filter over
           // the everyday chat list, not something that also needs to
@@ -1123,10 +1153,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       builder: (context, nameSnap) {
         final username = nameSnap.data ?? '…';
         return _withSwipeActions(scheme, row, ListTile(
-          leading: CircleAvatar(
-            backgroundColor: scheme.primaryContainer,
-            child: Text(username.isNotEmpty ? username[0].toUpperCase() : '?'),
-          ),
+          leading: UserAvatar(uid: row.peerUid, name: username),
           title: Text(username, style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
           subtitle: Text(
             row.lastText,
