@@ -40,6 +40,16 @@ class GroupService {
     required String name,
     String? avatarUrl,
     required List<String> memberUids,
+    // Feature: announcement-only group — only admins can post from day one.
+    // Same field the "Only admins can send messages" toggle in Group info
+    // flips later (see setOnlyAdminsCanSend).
+    bool onlyAdminsCanSend = false,
+    // Feature: Community — see CommunityService. A community is a normal
+    // group document plus these flags (its PUBLIC listing is a separate
+    // `communities/{groupId}` document).
+    bool isCommunity = false,
+    int? maxMembers,
+    String description = '',
   }) async {
     final myUid = _myUid;
     final members = {myUid, ...memberUids}.toList();
@@ -55,7 +65,11 @@ class GroupService {
       'mutedBy': <String>[],
       'archivedBy': <String>[],
       'pinnedBy': <String>[],
-      'description': '',
+      'description': description.trim(),
+      'onlyAdminsCanSend': onlyAdminsCanSend,
+      if (isCommunity) 'isCommunity': true,
+      if (isCommunity && maxMembers != null) 'maxMembers': maxMembers,
+      if (isCommunity) 'bannedUids': <String>[],
     });
     await LocalMessageStore.upsertGroupMeta(id: groupId, name: cleanName, avatarUrl: avatarUrl, memberUids: members);
   }
@@ -65,9 +79,24 @@ class GroupService {
   Stream<QuerySnapshot<Map<String, dynamic>>> myGroupsStream() =>
       _db.collection('groups').where('members', arrayContains: _myUid).snapshots();
 
-  Future<void> renameGroup(String groupId, String name) => _ref(groupId).update({'name': name.trim()});
+  /// Feature: Community. If this group is a community, mirror a changed
+  /// name / photo / description into its PUBLIC listing too. Fire-and-forget
+  /// on purpose (never awaited, errors swallowed): for a normal group there
+  /// is no listing, so the write is simply rejected and nothing happens —
+  /// and an offline write must never hold up the rename itself.
+  void _mirrorToListing(String groupId, Map<String, dynamic> fields) {
+    _db.collection('communities').doc(groupId).update(fields).catchError((_) {});
+  }
 
-  Future<void> updateAvatar(String groupId, String? avatarUrl) => _ref(groupId).update({'avatarUrl': avatarUrl});
+  Future<void> renameGroup(String groupId, String name) async {
+    await _ref(groupId).update({'name': name.trim()});
+    _mirrorToListing(groupId, {'name': name.trim(), 'nameLower': name.trim().toLowerCase()});
+  }
+
+  Future<void> updateAvatar(String groupId, String? avatarUrl) async {
+    await _ref(groupId).update({'avatarUrl': avatarUrl});
+    _mirrorToListing(groupId, {'avatarUrl': avatarUrl});
+  }
 
   Future<void> setChatTtlHours(String groupId, int? hours) => _ref(groupId).update({'chatTtlHours': hours});
 
@@ -75,8 +104,10 @@ class GroupService {
   /// only, enforced by firestore.rules' existing isGroupAdmin() check on
   /// this same groups/{groupId} document (no rules change needed — that
   /// check already covers ANY field on this doc, this is just one more).
-  Future<void> setOnlyAdminsCanSend(String groupId, bool value) =>
-      _ref(groupId).update({'onlyAdminsCanSend': value});
+  Future<void> setOnlyAdminsCanSend(String groupId, bool value) async {
+    await _ref(groupId).update({'onlyAdminsCanSend': value});
+    _mirrorToListing(groupId, {'onlyAdminsCanSend': value});
+  }
 
   /// Group security settings added 2026-09-10 — same admin-only pattern
   /// and same "no rules change needed" reasoning as setOnlyAdminsCanSend
@@ -111,6 +142,29 @@ class GroupService {
   Future<bool> isReadReceiptsEnabled(String groupId) async {
     final doc = await _ref(groupId).get();
     return (doc.data()?['readReceiptsEnabled'] as bool?) ?? true;
+  }
+
+  /// Feature: announcement-only groups. Is [uid] (default: me) allowed to
+  /// POST a message into [groupId] right now? True for everyone in a normal
+  /// group; in an announcement-only group (`onlyAdminsCanSend`) true only
+  /// for admins.
+  ///
+  /// Used on BOTH ends: the sender's own send path refuses early, and — the
+  /// part that actually matters, because the relay is zero-knowledge and can't
+  /// judge anything itself — every RECEIVING phone checks it before it
+  /// stores a message from someone else (see MessageRelayService._handleRow).
+  /// A group that no longer exists reads as "allowed" (nothing to enforce).
+  ///
+  /// Throws if the group doc can't be read at all (e.g. offline with nothing
+  /// cached) — the receive side WANTS that, so the relay row is kept and
+  /// retried instead of being wrongly accepted or wrongly thrown away.
+  Future<bool> mayPost(String groupId, {String? uid}) async {
+    final data = (await _ref(groupId).get()).data();
+    if (data == null) return true;
+    final restricted = (data['onlyAdminsCanSend'] as bool?) ?? false;
+    if (!restricted) return true;
+    final who = uid ?? _myUid;
+    return List<String>.from(data['admins'] ?? const []).contains(who);
   }
 
   /// Mute/archive, same per-person model as ConversationService's 1:1
@@ -179,8 +233,10 @@ class GroupService {
   /// Admin-only, like renameGroup/updateAvatar — a group's description is
   /// shared context for the whole group, not personal preference like
   /// mute/archive above.
-  Future<void> updateDescription(String groupId, String description) =>
-      _ref(groupId).update({'description': description.trim()});
+  Future<void> updateDescription(String groupId, String description) async {
+    await _ref(groupId).update({'description': description.trim()});
+    _mirrorToListing(groupId, {'description': description.trim()});
+  }
 
   Future<void> addMembers(String groupId, List<String> uids) =>
       _ref(groupId).update({'members': FieldValue.arrayUnion(uids)});
@@ -261,6 +317,23 @@ class GroupService {
       final members = List<String>.from(data['members'] ?? [])..remove(uid);
       final admins = List<String>.from(data['admins'] ?? [])..remove(uid);
       tx.update(ref, {'members': members, 'admins': admins});
+    });
+  }
+
+  /// Feature: Community moderation — remove someone AND stop them from
+  /// joining this community again by themselves. Admin-only (firestore.rules
+  /// already limits every write to a group document to its admins).
+  Future<void> banMember(String groupId, String uid) {
+    return _db.runTransaction((tx) async {
+      final ref = _ref(groupId);
+      final snap = await tx.get(ref);
+      final data = snap.data();
+      if (data == null) return;
+      final members = List<String>.from(data['members'] ?? [])..remove(uid);
+      final admins = List<String>.from(data['admins'] ?? [])..remove(uid);
+      final banned = List<String>.from(data['bannedUids'] ?? []);
+      if (!banned.contains(uid)) banned.add(uid);
+      tx.update(ref, {'members': members, 'admins': admins, 'bannedUids': banned});
     });
   }
 
