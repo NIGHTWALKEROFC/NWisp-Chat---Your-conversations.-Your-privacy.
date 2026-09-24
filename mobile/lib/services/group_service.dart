@@ -1,9 +1,9 @@
-
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:uuid/uuid.dart';
 import '../models/group.dart';
+import 'auth_service.dart';
 import 'group_message_relay_service.dart';
 import 'local_message_store.dart';
 
@@ -12,6 +12,8 @@ import 'local_message_store.dart';
 /// MESSAGE content never comes near this class or Firestore at all; that's
 /// GroupMessageRelayService's job, fanning encrypted copies through
 /// Supabase `message_relay` exactly like 1:1 messages.
+enum InviteOutcome { addedDirectly, requestSent, blocked }
+
 class GroupService {
   GroupService._();
   static final instance = GroupService._();
@@ -304,6 +306,37 @@ class GroupService {
 
   Future<void> declineGroupInvite(String requestId) =>
       _groupInviteRequestsRef.doc(requestId).update({'status': 'declined'});
+
+  /// Feature: "Who can add me" — the one place that actually enforces a
+  /// person's `whoCanInviteMe` choice (see AuthService.updateWhoCanInviteMe
+  /// for what each value means), used by BOTH create_group_screen.dart (new
+  /// group) and group_info_screen.dart (adding to an existing group) so
+  /// there is exactly one code path to get right instead of two.
+  ///
+  /// Honest limit, same as elsewhere in this file: this is enforced by the
+  /// app's own UI reading the target's public preference before deciding
+  /// what to do, not by a firestore.rules check server-side — a modified
+  /// client could still attempt a direct write. That matches how every
+  /// other social/privacy choice in this app (blocking, read-receipt
+  /// hiding, etc.) already works: a real, meaningful default for the real
+  /// app, not a cryptographic guarantee.
+  Future<InviteOutcome> addOrInviteMember({
+    required String groupId,
+    required String groupName,
+    String? groupAvatarUrl,
+    required String uid,
+    required String username,
+    required bool isContact,
+  }) async {
+    final pref = await AuthService().whoCanInviteMeFor(uid);
+    if (pref == 'nobody') return InviteOutcome.blocked;
+    if (pref == 'requests' || !isContact) {
+      await inviteToGroup(groupId: groupId, groupName: groupName, groupAvatarUrl: groupAvatarUrl, toUid: uid, toUsername: username);
+      return InviteOutcome.requestSent;
+    }
+    await addMembers(groupId, [uid]);
+    return InviteOutcome.addedDirectly;
+  }
 
   /// Also strips the removed member from `admins` if they were one — a
   /// removed member has no business staying an admin of a group they're
