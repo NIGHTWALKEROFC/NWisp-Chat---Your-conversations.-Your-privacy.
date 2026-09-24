@@ -145,7 +145,7 @@ const _faqs = [
         "rather not have a public photo, you can remove it any time from Edit profile.",
   ),
   _FaqItem(
-    "What does "Privacy checkup" actually turn on?",
+    'What does "Privacy checkup" actually turn on?',
     'It only touches privacy and security settings that lock things down further — things like app '
         'lock timing, hiding read receipts and last seen, hiding notification content, and requiring '
         'approval for new logins. It deliberately never touches auto-delete or auto-wipe, since those '
