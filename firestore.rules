@@ -125,6 +125,18 @@ service cloud.firestore {
           allow update, delete: if false; // append-only audit log
         }
 
+        // Feature: multiple devices (opt-in, default OFF — see
+        // AccountSecurityScreen's "Multiple devices" toggle). One doc per
+        // device currently allowed to be signed in to the account. Simple
+        // owner-only access, same as the parent session doc itself — every
+        // device acting here has already proven the account password via
+        // Firebase Auth before this point (same honest limit already noted
+        // on loginApprovals above: a deviceId is a self-generated id this
+        // app trusts, not a hardware-attested one).
+        match /devices/{deviceId} {
+          allow read, write: if isOwner(uid);
+        }
+
         // Feature: new-login accept/deny flow (opt-in, default OFF — see
         // AccountSecurityScreen's toggle). Both the NEW device (creating
         // the request, watching its outcome) and the OLD/active device
