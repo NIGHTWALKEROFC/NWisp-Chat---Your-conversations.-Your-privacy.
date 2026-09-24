@@ -250,7 +250,50 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       ),
     );
     if (toAdd == null || toAdd.isEmpty) return;
-    await GroupService.instance.addMembers(widget.groupId, toAdd.toList());
+
+    // Feature: "Who can add me" — each selected contact may have chosen to
+    // require a request instead of a direct add, or to disallow it
+    // entirely; addOrInviteMember checks that per person, so one tap here
+    // can turn into a mix of instant-adds, sent requests, and (rarely)
+    // people who can't be added at all.
+    var added = 0;
+    var requested = 0;
+    var blocked = 0;
+    for (final uid in toAdd) {
+      final username = (candidates.firstWhere((d) => d.id == uid).data()['username'] as String?) ?? 'Unknown';
+      try {
+        final outcome = await GroupService.instance.addOrInviteMember(
+          groupId: widget.groupId,
+          groupName: group.name,
+          groupAvatarUrl: group.avatarUrl,
+          uid: uid,
+          username: username,
+          isContact: true,
+        );
+        switch (outcome) {
+          case InviteOutcome.addedDirectly:
+            added++;
+            break;
+          case InviteOutcome.requestSent:
+            requested++;
+            break;
+          case InviteOutcome.blocked:
+            blocked++;
+            break;
+        }
+      } catch (_) {
+        blocked++;
+      }
+    }
+    if (!mounted) return;
+    final parts = <String>[
+      if (added > 0) '$added added',
+      if (requested > 0) '$requested asked first (they need to accept)',
+      if (blocked > 0) "$blocked couldn't be added (they don't accept group invites)",
+    ];
+    if (parts.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(parts.join(' · '))));
+    }
   }
 
   /// For anyone who ISN'T already a contact — see GroupService.
@@ -307,14 +350,24 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                         trailing: FilledButton(
                           onPressed: () async {
                             try {
-                              await GroupService.instance.inviteToGroup(
+                              // Feature: "Who can add me" — a person set to
+                              // "nobody" can't even be sent a request.
+                              final outcome = await GroupService.instance.addOrInviteMember(
                                 groupId: widget.groupId,
                                 groupName: group.name,
                                 groupAvatarUrl: group.avatarUrl,
-                                toUid: uid,
-                                toUsername: username,
+                                uid: uid,
+                                username: username,
+                                isContact: false,
                               );
-                              if (sheetContext.mounted) Navigator.pop(sheetContext, true);
+                              if (!sheetContext.mounted) return;
+                              if (outcome == InviteOutcome.blocked) {
+                                ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                  SnackBar(content: Text('$username doesn\'t accept group invites.')),
+                                );
+                                return;
+                              }
+                              Navigator.pop(sheetContext, true);
                             } catch (e) {
                               if (sheetContext.mounted) {
                                 ScaffoldMessenger.of(sheetContext).showSnackBar(
