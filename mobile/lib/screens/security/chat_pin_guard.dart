@@ -1,7 +1,9 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
 import '../../services/chat_freeze_service.dart';
 import '../../services/chat_lock_service.dart';
+import '../../services/device_session_service.dart';
 import 'pin_screen.dart';
 
 /// Call this before navigating into ANY chat (1:1 or group). Returns true
@@ -18,6 +20,15 @@ import 'pin_screen.dart';
 /// e.g. a deep link — that might reach the chat without having gone
 /// through one of the above first).
 Future<bool> requireChatPinIfLocked(BuildContext context, String conversationId) async {
+  // Feature: multiple devices (off by default) — checked first, here,
+  // rather than duplicated at every call site: canOpenChat already routes
+  // through this function for its own callers, and the few places that
+  // call this directly (ChatListScreen, the Community screens) get the
+  // same coverage for free. On the overwhelming majority of accounts
+  // (multi-device never turned on) this check is a single fast read that
+  // always says yes and changes nothing.
+  if (!await requirePrimaryDeviceForChat(context)) return false;
+  if (!context.mounted) return false;
   if (!await ChatLockService.isLocked(conversationId)) return true;
 
   if (!await AppLockService.isEnabled()) {
@@ -43,6 +54,40 @@ Future<bool> requireChatPinIfLocked(BuildContext context, String conversationId)
   if (!context.mounted) return false;
   final result = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const PinScreen(mode: PinScreenMode.verify)));
   return result == true;
+}
+
+/// Feature: multiple devices (off by default). Call this alongside
+/// [requireChatPinIfLocked] before navigating into ANY chat. On an account
+/// that never turned Multiple devices on, or on the one device that holds
+/// the account's actual Signal identity, this returns true immediately —
+/// nothing changes for the overwhelming majority of people. On a SECOND
+/// signed-in device that isn't the primary one, it explains — honestly,
+/// not as a vague "coming soon" — why this specific device can't open
+/// chats: it was never given the private key new messages are encrypted
+/// against, and has no local message history either, so there's nothing
+/// here it's able to decrypt or show. Offers a direct path to Account
+/// security to either make this device primary or manage devices.
+Future<bool> requirePrimaryDeviceForChat(BuildContext context) async {
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  if (uid == null) return true;
+  if (await DeviceSessionService.instance.isPrimaryDevice(uid)) return true;
+  if (!context.mounted) return false;
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text("Messaging isn't available on this device"),
+      content: const Text(
+        'Your messages are end-to-end encrypted to one device at a time — this one isn\'t currently it, so it has no way to '
+        'decrypt chats. You can still use this device for contacts, groups, Communities, and settings.\n\n'
+        'Go to Settings > Account security > Multiple devices to make this your primary device instead, or to manage your '
+        'other devices.',
+      ),
+      actions: [
+        FilledButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('OK')),
+      ],
+    ),
+  );
+  return false;
 }
 
 /// BUGFIX (2026-09-11): hidden chats and paused chats were only ever kept
