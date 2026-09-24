@@ -477,6 +477,35 @@ class AuthService {
     await _db.collection('users').doc(uid).update({'photoUrl': photoUrl});
   }
 
+  /// Feature: "Who can add me" — controls whether OTHER people can put you
+  /// straight into a group (no confirmation) or must always send you a
+  /// request first. Lives on the PUBLIC `users/{uid}` doc (like username or
+  /// photoUrl) rather than the owner-only private profile, because whoever
+  /// is about to add someone has to be able to read their choice before
+  /// deciding whether to add directly or send a request — see
+  /// GroupService.addOrInviteMember, which is what actually enforces this.
+  ///
+  /// One of: 'contacts' (default — unchanged from the app's original
+  /// behavior: your contacts can add you directly, anyone else must
+  /// request), 'requests' (nobody can add you directly, not even
+  /// contacts — everyone must send a request you accept), or 'nobody' (no
+  /// one can add or request to add you to a new group at all).
+  ///
+  /// Communities are unaffected either way: nobody "adds" you to a
+  /// Community — you always find and join one yourself from the Community
+  /// tab, so there is nothing here for this setting to restrict.
+  Future<void> updateWhoCanInviteMe(String value) async {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    assert(['contacts', 'requests', 'nobody'].contains(value));
+    await _db.collection('users').doc(uid).update({'whoCanInviteMe': value});
+  }
+
+  Future<String> whoCanInviteMeFor(String uid) async {
+    final doc = await _db.collection('users').doc(uid).get();
+    return (doc.data()?['whoCanInviteMe'] as String?) ?? 'contacts';
+  }
+
   Future<void> updateUsername(String newUsername) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
