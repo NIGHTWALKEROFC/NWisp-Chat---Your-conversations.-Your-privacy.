@@ -276,6 +276,34 @@ void _setUpMessagingLifecycle() {
       );
     });
 
+    // Feature: multiple devices (off by default) — the counterpart to the
+    // eviction watcher above. Fires only if THIS specific device is
+    // deliberately removed (by itself, or from another of the person's own
+    // devices in Account security > Multiple devices) — never just because
+    // another device is also signed in, which is the whole point of the
+    // feature being on. A no-op subscription on any account that hasn't
+    // turned this on.
+    DeviceSessionService.instance.watchForRevocation(user.uid, () async {
+      navigatorKey.currentState?.popUntil((route) => route.isFirst);
+      await AuthService().logout();
+      final context = navigatorKey.currentContext;
+      if (context == null) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Device removed'),
+          content: const Text(
+            'This device was removed from your account from another signed-in device. If this wasn\'t you, change your '
+            'password right away from Account Security after signing back in.',
+          ),
+          actions: [
+            FilledButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('OK')),
+          ],
+        ),
+      );
+    });
+
     _watchForIncomingLoginApprovals(user.uid);
   });
 }
