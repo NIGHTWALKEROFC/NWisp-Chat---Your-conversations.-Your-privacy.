@@ -78,6 +78,25 @@ class SignalSessionService {
   /// a different account signs in on this device (see SessionService).
   Future<void> wipe() => _store.wipeAll();
 
+  /// Feature: multiple devices — "Make this my primary device" (see
+  /// DeviceSessionService.makeThisDevicePrimary, which this is always
+  /// called alongside). Generates a brand-new identity key pair for THIS
+  /// device and republishes it as the account's bundle, exactly what
+  /// [install] would do on a fresh reinstall with no existing identity.
+  ///
+  /// This is not a lightweight switch: it orphans whatever identity key
+  /// this account's contacts currently have pinned for it, so every one of
+  /// their apps will show the same "identity changed" warning they'd see
+  /// after a reinstall, and existing Double Ratchet sessions with them
+  /// have to be re-established from scratch on next contact. That's the
+  /// correct, expected behavior for a real key change, not a bug —
+  /// silently keeping the old key "working" across two different physical
+  /// devices is what would actually be unsafe.
+  Future<void> resetIdentityOnThisDevice() async {
+    await wipe();
+    await install();
+  }
+
   Future<void> _publishBundle(
     IdentityKeyPair identityKeyPair,
     int registrationId,
