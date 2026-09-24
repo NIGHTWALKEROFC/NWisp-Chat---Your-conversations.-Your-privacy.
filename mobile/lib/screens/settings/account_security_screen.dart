@@ -4,9 +4,12 @@ import '../../services/auth_service.dart';
 import '../../services/device_session_service.dart';
 import '../../services/moderation_service.dart';
 import 'forgot_password_screen.dart';
+import 'manage_devices_screen.dart';
 
 class AccountSecurityScreen extends StatelessWidget {
   const AccountSecurityScreen({super.key});
+
+  static const List<int> _maxDeviceOptions = [1, 2, 3, 4, 5];
 
   String _timeAgo(DateTime? time) {
     if (time == null) return 'just now';
@@ -218,6 +221,73 @@ class AccountSecurityScreen extends StatelessWidget {
                       onChanged: (v) => DeviceSessionService.instance.setRequireLoginApproval(uid, v),
                     ),
                   ),
+                  // Feature: multiple devices — off by default. See
+                  // DeviceSessionService's "Multiple devices" section for
+                  // exactly what turning this on does and does not do
+                  // (only one device at a time can open chats).
+                  Builder(builder: (context) {
+                    final multiOn = (sessionData?['multiDeviceEnabled'] as bool?) ?? false;
+                    final maxDevices = ((sessionData?['maxDevices'] as num?)?.toInt() ?? DeviceSessionService.defaultMaxDevices)
+                        .clamp(DeviceSessionService.minDevices, DeviceSessionService.maxDevicesLimit);
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SwitchListTile.adaptive(
+                            secondary: const Icon(Icons.devices_other_outlined),
+                            title: const Text('Multiple devices'),
+                            subtitle: Text(
+                              multiOn
+                                  ? 'On — up to $maxDevices devices can be signed in at once. Only your primary device opens chats.'
+                                  : 'Off — one device at a time, exactly like today. A new sign-in signs this one out.',
+                            ),
+                            value: multiOn,
+                            onChanged: (v) => DeviceSessionService.instance.setMultiDeviceEnabled(uid, v),
+                          ),
+                          if (multiOn) ...[
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                              child: Row(
+                                children: [
+                                  const Text('Device limit', style: TextStyle(fontWeight: FontWeight.w600)),
+                                  const Spacer(),
+                                  DropdownButton<int>(
+                                    value: maxDevices,
+                                    items: [
+                                      for (final n in _maxDeviceOptions) DropdownMenuItem(value: n, child: Text('$n')),
+                                    ],
+                                    onChanged: (n) {
+                                      if (n != null) DeviceSessionService.instance.setMaxDevices(uid, n);
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                              child: Text(
+                                "Only your primary device can send and receive messages — it holds the encryption key that "
+                                "makes that possible. Other signed-in devices can manage contacts, groups, Communities, and "
+                                "settings, but their chat screens stay blocked with a clear explanation.",
+                                style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            ListTile(
+                              leading: const Icon(Icons.devices_outlined),
+                              title: const Text('Manage devices'),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (_) => ManageDevicesScreen(uid: uid)),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 8, 4),
                     child: Row(
