@@ -24,6 +24,7 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
   bool _lastSeenVisible = true;
   bool _readReceiptsEnabled = true;
   bool _hideRecentsPreview = true;
+  String _whoCanInviteMe = 'contacts';
   bool _loading = true;
 
   @override
@@ -43,6 +44,68 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
       _readReceiptsEnabled = (privateData['readReceiptsEnabled'] as bool?) ?? true;
       _loading = false;
     });
+    final uid = _authService.currentUserId;
+    if (uid != null) {
+      final pref = await _authService.whoCanInviteMeFor(uid);
+      if (mounted) setState(() => _whoCanInviteMe = pref);
+    }
+  }
+
+  static const Map<String, String> _whoCanInviteLabels = {
+    'contacts': 'My contacts',
+    'requests': 'Nobody — always ask first',
+    'nobody': "Nobody — can't be added at all",
+  };
+  static const Map<String, String> _whoCanInviteDescriptions = {
+    'contacts': 'Your contacts can add you to a group directly. Anyone else has to send a request you accept first.',
+    'requests': "Nobody can add you directly, not even contacts — everyone must send a request you accept first.",
+    'nobody': "You can't be added or invited to any new group. Doesn't affect Communities, which you always join yourself.",
+  };
+
+  Future<void> _pickWhoCanInviteMe() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('Who can add me to groups'),
+        children: [
+          for (final key in _whoCanInviteLabels.keys)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, key),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    _whoCanInviteMe == key ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                    size: 18,
+                    color: _whoCanInviteMe == key ? Theme.of(dialogContext).colorScheme.primary : null,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_whoCanInviteLabels[key]!),
+                        Text(
+                          _whoCanInviteDescriptions[key]!,
+                          style: TextStyle(fontSize: 11.5, color: Theme.of(dialogContext).colorScheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (choice == null || choice == _whoCanInviteMe) return;
+    setState(() => _whoCanInviteMe = choice);
+    try {
+      await _authService.updateWhoCanInviteMe(choice);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't save that — check your connection and try again.")));
+    }
   }
 
   @override
@@ -101,6 +164,13 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                     await SettingsService.setHideRecentsPreview(v);
                     await ScreenshotGuardService.setRecentsPreviewHidden(v);
                   },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.group_add_outlined),
+                  title: const Text('Who can add me to groups'),
+                  subtitle: Text(_whoCanInviteLabels[_whoCanInviteMe]!),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _pickWhoCanInviteMe,
                 ),
                 ListTile(
                   leading: const Icon(Icons.block_outlined),
