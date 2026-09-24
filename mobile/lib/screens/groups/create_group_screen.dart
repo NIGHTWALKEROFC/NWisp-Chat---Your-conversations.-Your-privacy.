@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/group_service.dart';
 import '../../services/media_service.dart';
@@ -55,6 +56,27 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     }
     setState(() => _creating = true);
     try {
+      // Feature: "Who can add me" — a selected contact may require a
+      // request instead of being added straight into the new group, or
+      // may not accept group invites at all. Check everyone BEFORE
+      // creating the group, so the group starts with only the people who
+      // can genuinely be added directly.
+      final direct = <String>[];
+      final needsInvite = <String, String>{}; // uid -> username
+      final blocked = <String>[];
+      final contactDocs = (await _contactService.contactsStream().first).docs;
+      for (final uid in _selectedUids) {
+        final username = contactDocs.firstWhere((d) => d.id == uid, orElse: () => contactDocs.first).data()['username'] as String? ?? 'Unknown';
+        final pref = await AuthService().whoCanInviteMeFor(uid);
+        if (pref == 'nobody') {
+          blocked.add(username);
+        } else if (pref == 'requests') {
+          needsInvite[uid] = username;
+        } else {
+          direct.add(uid);
+        }
+      }
+
       final groupId = GroupService.instance.newGroupId();
       String? avatarUrl;
       if (_avatarFile != null) {
@@ -64,10 +86,28 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
         groupId: groupId,
         name: name,
         avatarUrl: avatarUrl,
-        memberUids: _selectedUids.toList(),
+        memberUids: direct,
         onlyAdminsCanSend: _announcementOnly,
       );
+      for (final entry in needsInvite.entries) {
+        try {
+          await GroupService.instance.inviteToGroup(
+            groupId: groupId,
+            groupName: name,
+            groupAvatarUrl: avatarUrl,
+            toUid: entry.key,
+            toUsername: entry.value,
+          );
+        } catch (_) {}
+      }
       if (!mounted) return;
+      if (needsInvite.isNotEmpty || blocked.isNotEmpty) {
+        final parts = <String>[
+          if (needsInvite.isNotEmpty) '${needsInvite.length} were asked first (they need to accept)',
+          if (blocked.isNotEmpty) "${blocked.join(', ')} couldn't be added — they don't accept group invites",
+        ];
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(parts.join(' · '))));
+      }
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: groupId)));
     } catch (e) {
       if (!mounted) return;
