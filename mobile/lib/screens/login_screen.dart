@@ -8,6 +8,7 @@ import '../services/settings_service.dart';
 import 'register_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'settings/help_center_screen.dart';
+import 'settings/manage_devices_screen.dart';
 
 enum _ApprovalOutcome { accepted, denied, timedOut, cancelled }
 
@@ -77,8 +78,9 @@ class _LoginScreenState extends State<LoginScreen> {
     var passwordAccepted = false;
     var approved = false;
     var finished = false;
+    String? uid;
     try {
-      final uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
+      uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
       passwordAccepted = true;
 
       // BUGFIX: was DeviceSessionService.instance.isLoginApprovalRequired(uid)
@@ -110,6 +112,33 @@ class _LoginScreenState extends State<LoginScreen> {
       finished = true;
       await SettingsService.setStayLoggedIn(_stayLoggedIn);
       // AuthGate's authStateChanges listener takes it from here.
+    } on DeviceLimitReachedException catch (e) {
+      // Feature: multiple devices — the password already checked out and
+      // this device is genuinely signed in to Firebase Auth at this point,
+      // just not yet claimed as active. Let the person free up a slot
+      // right here instead of failing the whole login.
+      if (mounted) {
+        final freed = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(builder: (_) => ManageDevicesScreen(uid: uid!, blockingLimit: e.limit)),
+        );
+        if (freed == true) {
+          try {
+            await _authService.finishLogin(uid!);
+            finished = true;
+            await SettingsService.setStayLoggedIn(_stayLoggedIn);
+          } catch (_) {
+            // Falls through to the abort/error handling below, same as any
+            // other post-password failure.
+          }
+        }
+      }
+      if (!finished) {
+        try {
+          await _authService.abortLogin();
+        } catch (_) {}
+        if (mounted) setState(() => _error = "Couldn't finish signing in — try again.");
+      }
     } catch (e) {
       debugPrint('Login failed (passwordAccepted=$passwordAccepted, approved=$approved): $e');
       // Feature: failed-login lockout — only counts as a "failure" for
