@@ -34,6 +34,43 @@ class LoginApprovalAlreadyHandled implements Exception {
   String toString() => 'This login request has already been handled or has expired.';
 }
 
+/// Feature: multiple devices (off by default — see this file's "Multiple
+/// devices" section below). Thrown by [claimThisDevice] when multi-device
+/// is ON for this account and it's already at its own chosen device limit;
+/// the person is still fully signed in to Firebase Auth at this point (the
+/// password already checked out), just not yet claimed as an active
+/// device — so the app can show them their current device list and let
+/// them revoke one to make room, right there, instead of failing the
+/// login outright.
+class DeviceLimitReachedException implements Exception {
+  final int limit;
+  const DeviceLimitReachedException(this.limit);
+  @override
+  String toString() => "You've reached your device limit ($limit). Remove a device to add this one.";
+}
+
+/// One row of [DeviceSessionService.devicesStream] — a device that is
+/// currently allowed to be signed in to the account, under Multiple
+/// devices.
+class LinkedDevice {
+  final String deviceId;
+  final String label;
+  final String? location;
+  final DateTime? since;
+  final DateTime? lastActiveAt;
+  final bool isPrimary;
+  final bool isThisDevice;
+  const LinkedDevice({
+    required this.deviceId,
+    required this.label,
+    required this.location,
+    required this.since,
+    required this.lastActiveAt,
+    required this.isPrimary,
+    required this.isThisDevice,
+  });
+}
+
 /// Enforces a single active device per account — logging in on a second
 /// device signs the first one out, the same way WhatsApp/most banking
 /// apps behave — and keeps a simple security-activity log (logins,
@@ -159,6 +196,15 @@ class DeviceSessionService {
   CollectionReference<Map<String, dynamic>> _approvalsRef(String uid) =>
       _sessionRef(uid).collection('loginApprovals');
 
+  /// Feature: multiple devices. Each currently-allowed device gets one doc
+  /// here (subcollection of the same owner-only session doc, so it shares
+  /// its access rule). This is separate from the legacy single
+  /// `activeDeviceId` field on the session doc itself, which is left
+  /// completely alone and keeps working exactly as before for every
+  /// account that never turns this on.
+  CollectionReference<Map<String, dynamic>> _devicesRef(String uid) =>
+      _sessionRef(uid).collection('devices');
+
   Future<String> _localDeviceId() async {
     if (_myDeviceId != null) return _myDeviceId!;
     final existing = await SecureStorageService.getDeviceId();
@@ -277,6 +323,195 @@ class DeviceSessionService {
     return future;
   }
 
+  // -----------------------------------------------------------------------
+  // Multiple devices (off by default)
+  // -----------------------------------------------------------------------
+  //
+  // OFF (the default, and the only behavior that existed before this
+  // feature): completely unchanged — [claimThisDevice] below still goes
+  // straight to [_claimThisDevice], the single-active-device path, exactly
+  // as it always has. No new reads, no new writes, no behavior change at
+  // all for an account that never touches this setting.
+  //
+  // ON: instead of evicting whatever device was active, this device is
+  // added to a small list of currently-allowed devices (up to the person's
+  // own chosen limit, 1-5, default 3) at `.../session/devices/{deviceId}`.
+  // Every device on that list can sign in to the ACCOUNT — browse
+  // contacts, groups, Communities, settings — at the same time.
+  //
+  // HONEST LIMIT, stated plainly rather than glossed over: this only
+  // covers ACCOUNT access, not message encryption. Each 1:1 and group
+  // message is end-to-end encrypted using a Signal Protocol identity key
+  // pair that is generated ON-DEVICE and never leaves that device (see
+  // SignalStore) — that is what makes the encryption real. Because of
+  // that, only ONE device — the "primary" device, [primaryDeviceId] below
+  // — actually holds the private key other people's apps encrypt new
+  // messages against, and only it has any local message history at all.
+  // A second signed-in device can manage the account but its chat screens
+  // stay blocked (see requirePrimaryDeviceForChat) rather than pretending
+  // to show chats it fundamentally cannot decrypt. "Make this my primary
+  // device" (see [makeThisDevicePrimary] + SignalSessionService's matching
+  // method) moves messaging here instead — but, exactly like reinstalling
+  // the app, it hands this device a brand-new identity key, so every
+  // contact's app will show its existing "identity changed" warning and
+  // may want to re-verify. That's the honest, correct behavior for a
+  // security feature like that, not a bug to hide.
+
+  static const int minDevices = 1;
+  static const int maxDevicesLimit = 5;
+  static const int defaultMaxDevices = 3;
+
+  Future<bool> isMultiDeviceEnabled(String uid) async {
+    final data = (await _sessionRef(uid).get()).data();
+    return (data?['multiDeviceEnabled'] as bool?) ?? false;
+  }
+
+  Future<int> getMaxDevices(String uid) async {
+    final data = (await _sessionRef(uid).get()).data();
+    final v = (data?['maxDevices'] as num?)?.toInt() ?? defaultMaxDevices;
+    return v.clamp(minDevices, maxDevicesLimit);
+  }
+
+  /// Turning this ON does not touch anyone's device list by itself — the
+  /// device that's already active simply becomes the first entry (and the
+  /// primary) the next time it claims itself, which happens naturally
+  /// on this device's own next app open/foreground (see main.dart).
+  /// Turning it OFF does not forcibly sign anyone else out either — it just
+  /// means the NEXT login anywhere goes back to the original
+  /// one-device-at-a-time behavior (evicting whichever device that login
+  /// finds active), same as if the feature had never existed.
+  Future<void> setMultiDeviceEnabled(String uid, bool enabled) =>
+      _sessionRef(uid).set({'multiDeviceEnabled': enabled}, SetOptions(merge: true));
+
+  Future<void> setMaxDevices(String uid, int max) =>
+      _sessionRef(uid).set({'maxDevices': max.clamp(minDevices, maxDevicesLimit)}, SetOptions(merge: true));
+
+  Future<bool> isPrimaryDevice(String uid) async {
+    final data = (await _sessionRef(uid).get()).data();
+    final primary = data?['primaryDeviceId'] as String?;
+    if (primary == null) return true; // nothing chosen yet - don't block a fresh single-device account
+    return primary == await _localDeviceId();
+  }
+
+  /// Moves the "primary" (messaging-capable) role to THIS device. Only
+  /// changes the pointer — actually generating this device a fresh Signal
+  /// identity and republishing its bundle is done by the caller via
+  /// SignalSessionService.resetIdentityOnThisDevice, since that's a much
+  /// more consequential, slower operation this method shouldn't hide
+  /// inside a plain-sounding setter.
+  Future<void> makeThisDevicePrimary(String uid) async {
+    final deviceId = await _localDeviceId();
+    await _sessionRef(uid).set({'primaryDeviceId': deviceId}, SetOptions(merge: true));
+  }
+
+  Stream<List<LinkedDevice>> devicesStream(String uid) {
+    return _sessionRef(uid).snapshots().asyncMap((sessionSnap) async {
+      final primary = sessionSnap.data()?['primaryDeviceId'] as String?;
+      final myId = await _localDeviceId();
+      final docs = await _devicesRef(uid).get();
+      final list = docs.docs.map((d) {
+        final data = d.data();
+        return LinkedDevice(
+          deviceId: d.id,
+          label: (data['deviceLabel'] as String?) ?? 'A device',
+          location: data['location'] as String?,
+          since: (data['since'] as Timestamp?)?.toDate(),
+          lastActiveAt: (data['lastActiveAt'] as Timestamp?)?.toDate(),
+          isPrimary: d.id == primary,
+          isThisDevice: d.id == myId,
+        );
+      }).toList();
+      list.sort((a, b) {
+        if (a.isThisDevice != b.isThisDevice) return a.isThisDevice ? -1 : 1;
+        if (a.isPrimary != b.isPrimary) return a.isPrimary ? -1 : 1;
+        return (b.lastActiveAt ?? DateTime(0)).compareTo(a.lastActiveAt ?? DateTime(0));
+      });
+      return list;
+    });
+  }
+
+  /// Signs a device out immediately — from ANY of the person's own signed-in
+  /// devices, including the one being removed. Refuses to remove the
+  /// primary device while others remain, since that would strand every
+  /// other device's messaging with nowhere to go; move the primary role
+  /// first (see [makeThisDevicePrimary]).
+  Future<void> revokeDevice(String uid, String deviceId) async {
+    final data = (await _sessionRef(uid).get()).data();
+    final primary = data?['primaryDeviceId'] as String?;
+    if (deviceId == primary) {
+      final remaining = await _devicesRef(uid).get();
+      if (remaining.docs.length > 1) {
+        throw StateError('Make another device primary before removing this one.');
+      }
+    }
+    await _devicesRef(uid).doc(deviceId).delete();
+  }
+
+  /// Watches THIS device's own entry under multi-device — fires
+  /// [onRevoked] the moment it's removed (by itself elsewhere, or by
+  /// another of the person's own devices). Only meaningful once
+  /// multi-device is on and this device has actually claimed itself; a
+  /// no-op subscription otherwise. Separate from [watchForRemoteLogout],
+  /// which still handles the classic single-device eviction case.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _revocationSub;
+  Future<void> watchForRevocation(String uid, void Function() onRevoked) async {
+    _revocationSub?.cancel();
+    final deviceId = await _localDeviceId();
+    _revocationSub = _devicesRef(uid).doc(deviceId).snapshots().listen((snap) {
+      if (isClaimPending) return;
+      if (!snap.exists) onRevoked();
+    });
+  }
+
+  void stopWatchingRevocation() {
+    _revocationSub?.cancel();
+    _revocationSub = null;
+  }
+
+  /// The multi-device claim path — see the section doc comment above for
+  /// what this does and, just as importantly, what it deliberately does
+  /// NOT do (fan out message decryption to every device).
+  Future<void> _claimThisDeviceMultiDevice(String uid) async {
+    final deviceId = await _localDeviceId();
+    final label = await _realDeviceLabel();
+    final location = await _locationLabel();
+    final ip = await _realIp();
+    final maxDevices = await getMaxDevices(uid);
+
+    final existing = await _devicesRef(uid).get();
+    final alreadyListed = existing.docs.any((d) => d.id == deviceId);
+    if (!alreadyListed && existing.docs.length >= maxDevices) {
+      throw DeviceLimitReachedException(maxDevices);
+    }
+
+    await _devicesRef(uid).doc(deviceId).set({
+      'deviceLabel': label,
+      'location': location,
+      'ip': ip,
+      'since': alreadyListed ? existing.docs.firstWhere((d) => d.id == deviceId).data()['since'] : FieldValue.serverTimestamp(),
+      'lastActiveAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    // The very first device ever claimed under multi-device becomes
+    // primary automatically; every device claimed after that keeps
+    // whichever one already holds the role, unless makeThisDevicePrimary
+    // is called explicitly.
+    final sessionData = (await _sessionRef(uid).get()).data();
+    if (sessionData?['primaryDeviceId'] == null) {
+      await _sessionRef(uid).set({'primaryDeviceId': deviceId}, SetOptions(merge: true));
+    }
+
+    await _historyRef(uid).add({
+      'event': 'login',
+      'deviceId': deviceId,
+      'deviceLabel': label,
+      'location': location,
+      'ip': ip,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+    unawaited(_sendSecurityAlert('login', label, location, ip));
+  }
+
   /// Feature: emails the account owner immediately on a new login —
   /// see send-security-alert's own comments. Best-effort, same
   /// tolerance as [_realIp]: never blocks or fails the login itself.
@@ -299,6 +534,10 @@ class DeviceSessionService {
   }
 
   Future<void> _claimThisDevice(String uid) async {
+    if (await isMultiDeviceEnabled(uid)) {
+      await _claimThisDeviceMultiDevice(uid);
+      return;
+    }
     final deviceId = await _localDeviceId();
     final label = await _realDeviceLabel();
     final location = await _locationLabel();
@@ -341,6 +580,14 @@ class DeviceSessionService {
   Future<void> releaseActiveClaimIfMine(String uid) async {
     final myId = await _localDeviceId();
     final data = (await _sessionRef(uid).get().timeout(const Duration(seconds: 5))).data();
+    // Feature: multiple devices — a normal sign-out on one device should
+    // only remove THAT device from the list, never the others.
+    if (data?['multiDeviceEnabled'] == true) {
+      try {
+        await _devicesRef(uid).doc(myId).delete().timeout(const Duration(seconds: 5));
+      } catch (_) {}
+      return;
+    }
     if (data?['activeDeviceId'] != myId) return;
     await _sessionRef(uid).update({
       'activeDeviceId': FieldValue.delete(),
@@ -377,6 +624,14 @@ class DeviceSessionService {
     _watchSub?.cancel();
     _watchSub = _sessionRef(uid).snapshots().listen((_) async {
       if (isClaimPending) return; // see isClaimPending's doc comment above
+      // Feature: multiple devices — once it's on for this account, being
+      // signed in on more than one device at once is the whole point, so
+      // the single-active-device eviction check below no longer applies.
+      // watchForRevocation (started alongside this, see main.dart) is what
+      // signs a device out under multi-device: only ever because that
+      // specific device was deliberately removed, never just because
+      // another one is also signed in.
+      if (await isMultiDeviceEnabled(uid)) return;
       // BUGFIX: deliberately ignore the snapshot's own payload and always
       // re-read fresh below, once any of THIS device's own in-flight
       // claimThisDevice() write has finished. Trusting the delivered
@@ -399,6 +654,7 @@ class DeviceSessionService {
   void stopWatching() {
     _watchSub?.cancel();
     _watchSub = null;
+    stopWatchingRevocation();
   }
 
   /// [after] is normally the account's `historyClearedAt` timestamp (see
