@@ -39,6 +39,12 @@ export async function sendEmail(opts: { to: string; subject: string; html: strin
       tls: true,
       auth: { username: GMAIL_ADDRESS, password: GMAIL_APP_PASSWORD },
     },
+    // Fixes stray "=20" (and similar =XX escapes) showing up at line
+    // breaks in the received email: denomailer quoted-printable-encodes
+    // the body, and without this flag it doesn't correctly encode line
+    // breaks, so some mail clients render the raw escape codes instead of
+    // decoding them. This forces line breaks to be encoded properly.
+    debug: { encodeLB: true },
   });
   try {
     await client.send({
