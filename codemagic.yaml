@@ -8,6 +8,13 @@ workflows:
         PACKAGE_NAME: "com.nightwalker.securechat"
         SUPABASE_URL: "https://bgbmrtwbndoewwwjxnxa.supabase.co"
         SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJnYm1ydHdibmRvZXd3d2p4bnhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyODE5OTUsImV4cCI6MjEwMTg1Nzk5NX0.xa0VJg9di1Tm-p6ZmuJSri2kPbsRS1SxoWq4lmJ0CzU"
+        # Cloudflare Turnstile PUBLIC site key (see mobile/lib/widgets/turnstile_captcha.dart).
+        # Safe to keep here in plain text — only the SECRET key (kept in
+        # Supabase Edge Function secrets, never here) matters for security.
+        # Replace with your own site key from the Cloudflare dashboard —
+        # until you do, the app falls back to Cloudflare's "always passes"
+        # test key, so CAPTCHA is NOT actually protecting anything yet.
+        TURNSTILE_SITE_KEY: "0x4AAAAAAFCxWd56M8J50PRe"
     scripts:
       - name: Get Flutter packages
         script: |
@@ -18,7 +25,8 @@ workflows:
           cd mobile
           flutter build apk --release \
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
-            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
+            --dart-define=TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY
     artifacts:
       - mobile/build/**/outputs/**/*.apk
     publishing:
