@@ -55,6 +55,10 @@ dependencies:
   # Feature: Intruder photo (see IntruderPhotoService) — takes a silent
   # front-camera photo after wrong app-lock PINs.
   camera: ^0.11.0
+  # Feature: CAPTCHA (Cloudflare Turnstile) on signup + password reset —
+  # loads Cloudflare's Turnstile widget inside a small WebView (see
+  # TurnstileCaptcha in lib/widgets/turnstile_captcha.dart).
+  webview_flutter: ^4.10.0
 
 dev_dependencies:
   flutter_test:
