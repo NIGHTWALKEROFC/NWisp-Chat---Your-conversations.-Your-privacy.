@@ -6,6 +6,8 @@
 //
 // Deliberately public (no Authorization header) since there's no
 // signed-in user yet at this point — abuse is controlled instead by:
+//   - a Cloudflare Turnstile CAPTCHA the app must solve first (see
+//     _shared/turnstile.ts and mobile/lib/widgets/turnstile_captcha.dart)
 //   - a 60-second cooldown between sends to the same email
 //   - a max of 5 sends per email per hour
 // both enforced against the `email_otps` row itself, so it doesn't need
@@ -13,6 +15,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendEmail, otpEmailHtml, otpEmailText } from "../_shared/email.ts";
+import { verifyTurnstileToken, clientIpFor } from "../_shared/turnstile.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -40,11 +43,21 @@ async function hashCode(code: string, email: string): Promise<string> {
 
 Deno.serve(async (req) => {
   try {
-    const { email: rawEmail } = await req.json();
+    const { email: rawEmail, turnstileToken } = await req.json();
     if (typeof rawEmail !== "string" || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(rawEmail)) {
       return new Response(JSON.stringify({ error: "Enter a valid email address." }), { status: 400 });
     }
     const email = rawEmail.trim().toLowerCase();
+
+    // CAPTCHA check first — cheapest way to turn away scripted abuse
+    // before it touches anything else below.
+    const captchaOk = await verifyTurnstileToken(turnstileToken, clientIpFor(req));
+    if (!captchaOk) {
+      return new Response(
+        JSON.stringify({ error: "Security check failed. Please try again." }),
+        { status: 400 },
+      );
+    }
 
     const { data: existing } = await supabase
       .from("email_otps")
