@@ -13,6 +13,7 @@ import 'local_media_files.dart';
 import 'local_message_store.dart';
 import 'media_service.dart';
 import 'signal_session_service.dart';
+import 'traffic_camouflage_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
 
 class BlockedException implements Exception {
@@ -126,6 +127,37 @@ class MessageRelayService {
   /// The characters are from a Unicode private-use block, so ordinary typed
   /// text will never start with them.
   static const _forwardMarker = '\u{E0F1}NWFWD1\u{E0F1}';
+
+  /// Feature: traffic pattern camouflage. See TrafficCamouflageService's
+  /// own doc comment for the full picture — these three are the
+  /// mechanics: [_padPayload]/[_unpadPayload] pad a text payload out to
+  /// one of [_paddingBuckets] bytes (inside the end-to-end-encrypted
+  /// content, so only the real recipient ever sees the unpadded text or
+  /// even that padding happened at all), and [_decoyMarker] is what a
+  /// decoy message's plaintext starts with so the receiving device can
+  /// recognize and silently discard it (see [_handleRow]'s text branch).
+  /// Both markers use Unicode private-use characters, same as
+  /// [_forwardMarker] above — ordinary typed text will never start with
+  /// either.
+  static const _paddingMarker = '\u{E0F2}';
+  static const _decoyMarker = '\u{E0F3}NWDECOY\u{E0F3}';
+  static const List<int> _paddingBuckets = [64, 128, 256, 512, 1024, 2048, 4096, 8192];
+
+  static String _padPayload(String payload) {
+    final withMarker = '$payload$_paddingMarker';
+    final baseLen = utf8.encode(withMarker).length;
+    final bucket = _paddingBuckets.firstWhere((b) => b >= baseLen, orElse: () => -1);
+    // Longer than the biggest bucket (a long message) — left unpadded
+    // rather than truncating real content; only its length beyond the
+    // top bucket is ever revealed, same as before this feature existed.
+    if (bucket == -1) return payload;
+    return withMarker + ('0' * (bucket - baseLen));
+  }
+
+  static String _unpadPayload(String payload) {
+    final idx = payload.indexOf(_paddingMarker);
+    return idx == -1 ? payload : payload.substring(0, idx);
+  }
 
   /// A safe accessor instead of a bare `!` null-check — a null session here
   /// (e.g. an expired/revoked token) now surfaces as a clear, catchable
@@ -337,27 +369,38 @@ class MessageRelayService {
           await _receiveMediaMessage(row: row, senderUid: senderUid, payload: payload, createdAt: createdAt, ttlHours: ttlHours);
         } else {
           // Feature: permission-gated forwarding — see [_forwardMarker].
-          var incomingText = payload;
+          // Feature: traffic pattern camouflage — see [_decoyMarker]. A
+          // decoy is unwrapped exactly like a real message (padding
+          // stripped the same way, so its ciphertext was byte-for-byte
+          // the same shape as a real padded message to anyone who
+          // couldn't decrypt it) but is never actually stored or shown
+          // once this device CAN read it. The receipt below still gets
+          // sent for it regardless — see [sendDecoyMessage]'s own note
+          // on why that matters for the camouflage to actually work.
+          var incomingText = _unpadPayload(payload);
+          final isDecoy = messageType == 'text' && incomingText.startsWith(_decoyMarker);
           var incomingForwarded = false;
-          if (messageType == 'text' && payload.startsWith(_forwardMarker)) {
-            incomingText = payload.substring(_forwardMarker.length);
+          if (!isDecoy && messageType == 'text' && incomingText.startsWith(_forwardMarker)) {
+            incomingText = incomingText.substring(_forwardMarker.length);
             incomingForwarded = true;
           }
-          await LocalMessageStore.insert(
-            id: row['client_id'] as String,
-            conversationId: row['conversation_id'] as String,
-            peerUid: senderUid,
-            senderUid: senderUid,
-            isMine: false,
-            text: incomingText,
-            messageType: messageType,
-            mediaPath: null,
-            replyToId: row['reply_to_id'] as String?,
-            status: 'delivered',
-            createdAt: createdAt,
-            expiresAt: _expiryFor(createdAt, ttlHours),
-            isForwarded: incomingForwarded,
-          );
+          if (!isDecoy) {
+            await LocalMessageStore.insert(
+              id: row['client_id'] as String,
+              conversationId: row['conversation_id'] as String,
+              peerUid: senderUid,
+              senderUid: senderUid,
+              isMine: false,
+              text: incomingText,
+              messageType: messageType,
+              mediaPath: null,
+              replyToId: row['reply_to_id'] as String?,
+              status: 'delivered',
+              createdAt: createdAt,
+              expiresAt: _expiryFor(createdAt, ttlHours),
+              isForwarded: incomingForwarded,
+            );
+          }
         }
         await _sendReceipt(
           conversationId: row['conversation_id'] as String,
@@ -538,7 +581,14 @@ class MessageRelayService {
     // A forwarded text message travels as marker + text (see
     // [_forwardMarker]); an ordinary message is sent exactly as before.
     final payload = (isForwarded && messageType == 'text') ? '$_forwardMarker$text' : text;
-    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, payload);
+    // Feature: traffic pattern camouflage — padding only applies to text,
+    // and only when this specific chat has it on (global default or a
+    // per-chat override — see TrafficCamouflageService). Padding happens
+    // BEFORE encryption, so it's invisible in the ciphertext's length
+    // beyond which fixed bucket it landed in.
+    final shouldPad = messageType == 'text' && await TrafficCamouflageService.instance.isEffectiveEnabledForChat(conversationId);
+    final outgoingPayload = shouldPad ? _padPayload(payload) : payload;
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, outgoingPayload);
 
     try {
       await insertMessageRelayRow({
@@ -587,6 +637,37 @@ class MessageRelayService {
       isForwarded: isForwarded && messageType == 'text',
     );
     return clientId;
+  }
+
+  /// Feature: traffic pattern camouflage. Called by
+  /// TrafficCamouflageService's decoy scheduler, never directly by any
+  /// screen. Sent with messageType 'text' — deliberately IDENTICAL at the
+  /// relay-row level to a real text message (same columns, same
+  /// message_type value, and padded to the same bucket sizes — see
+  /// [_padPayload]) so nothing about the row itself marks it as a decoy
+  /// to anyone who can see `message_relay` but not decrypt it. The only
+  /// thing that does mark it is the [_decoyMarker] prefix inside the
+  /// encrypted plaintext, which only the real recipient's device can
+  /// ever read (see [_handleRow]'s text branch for the matching check).
+  ///
+  /// Deliberately does NOT call LocalMessageStore.insert on this
+  /// (sending) side either — a decoy must never appear in the sender's
+  /// own chat UI any more than the recipient's.
+  static Future<void> sendDecoyMessage({required String conversationId, required String recipientUid}) async {
+    if (FirebaseAuth.instance.currentUser == null) return;
+    final (ciphertext, nonce) = await SignalSessionService.instance.encryptForPeer(recipientUid, _padPayload(_decoyMarker));
+    await insertMessageRelayRow({
+      'conversation_id': conversationId,
+      'sender_uid': _myUid,
+      'recipient_uid': recipientUid,
+      'ciphertext': ciphertext,
+      'nonce': nonce,
+      'message_type': 'text',
+      'media_path': null,
+      'reply_to_id': null,
+      'client_id': _uuid.v4(),
+      'ttl_hours': 0,
+    });
   }
 
   /// Feature: permission-gated message forwarding — forwards ONE text
