@@ -93,10 +93,17 @@ class AuthService {
   /// DeviceSessionService._localDeviceId) so the server's abuse
   /// throttle can key on device as well as IP — see send-signup-otp's
   /// own comments for why that matters (switching WiFi alone no longer
-  /// resets a block).
-  Future<void> sendSignupOtp(String email) async {
+  /// resets a block). [turnstileToken] is the Cloudflare Turnstile
+  /// CAPTCHA token fetched right before this call (see
+  /// widgets/turnstile_captcha.dart) — the server rejects the request
+  /// without a valid one.
+  Future<void> sendSignupOtp(String email, {required String turnstileToken}) async {
     final deviceId = await DeviceSessionService.instance.localDeviceId();
-    await _postFunction('send-signup-otp', {'email': email, 'deviceId': deviceId});
+    await _postFunction('send-signup-otp', {
+      'email': email,
+      'deviceId': deviceId,
+      'turnstileToken': turnstileToken,
+    });
   }
 
   /// Step 2 — checks [code] against what was emailed for [email]. Throws
@@ -135,12 +142,20 @@ class AuthService {
   /// [method] is what the person picked on the Reset password screen:
   /// 'otp' (a 6-digit code) or 'email' (a link). The screen now ALWAYS asks —
   /// nothing is decided for them — so this is passed on every call. When it's
-  /// omitted the server falls back to emailing the link.
-  Future<Map<String, dynamic>> requestPasswordReset(String identifier, {String? method}) async {
+  /// omitted the server falls back to emailing the link. [turnstileToken] is
+  /// the Cloudflare Turnstile CAPTCHA token fetched right before this call
+  /// (see widgets/turnstile_captcha.dart) — the server rejects the request
+  /// without a valid one.
+  Future<Map<String, dynamic>> requestPasswordReset(
+    String identifier, {
+    String? method,
+    required String turnstileToken,
+  }) async {
     final deviceId = await DeviceSessionService.instance.localDeviceId();
     return _postFunction('send-password-reset', {
       'identifier': identifier,
       'deviceId': deviceId,
+      'turnstileToken': turnstileToken,
       if (method != null) 'method': method,
     });
   }
