@@ -1,12 +1,15 @@
 // Sends the person a way to reset their password — either a 6-DIGIT CODE or an
 // emailed LINK — depending on what they chose on the Reset password screen.
 //
-//   POST { identifier, deviceId?, method? }
-//     identifier : an email address OR a username
-//     deviceId   : this phone's persisted id (used for abuse throttling)
-//     method     : 'otp'   -> email a 6-digit code (finish in the app)
-//                  'email' -> email a "Reset your password" button/link
-//                  omitted -> 'email'
+//   POST { identifier, deviceId?, method?, turnstileToken }
+//     identifier    : an email address OR a username
+//     deviceId      : this phone's persisted id (used for abuse throttling)
+//     method        : 'otp'   -> email a 6-digit code (finish in the app)
+//                      'email' -> email a "Reset your password" button/link
+//                      omitted -> 'email'
+//     turnstileToken: Cloudflare Turnstile CAPTCHA token from the app (see
+//                      mobile/lib/widgets/turnstile_captcha.dart) — checked
+//                      before anything else below.
 //   -> 200 { mode: 'otp' | 'email', message }
 //
 // The app ALWAYS asks which method the person wants, so `method` is normally
@@ -17,8 +20,9 @@
 // AuthService.requestPasswordReset): if nothing matches the identifier this
 // says so outright instead of a vague "if an account exists...". That makes it
 // possible to discover which emails/usernames are registered, so it's paired
-// with abuse throttling (per network AND per device, escalating 1 hour then 1
-// day — see _shared/abuse_throttle.ts) and a per-address cooldown.
+// with a CAPTCHA (below), abuse throttling (per network AND per device,
+// escalating 1 hour then 1 day — see _shared/abuse_throttle.ts) and a
+// per-address cooldown.
 //
 // Public / unauthenticated (nobody is signed in at "forgot password").
 // Deployed with verify_jwt = false (see supabase/config.toml).
@@ -27,12 +31,14 @@
 // Everything this function needs is inlined below, so it deploys from the
 // Supabase dashboard editor (which only bundles this one file and can't find
 // "../_shared/..." imports) as well as from the CLI. The helper sections are
-// copies of supabase/functions/_shared/{firebase_admin,email,abuse_throttle}.ts
+// copies of supabase/functions/_shared/{firebase_admin,email,abuse_throttle,turnstile}.ts
 // — if you ever change those, this file does NOT pick the change up.
 //
-// Secrets it reads (all already used by your other functions):
+// Secrets it reads (all already used by your other functions, plus the new
+// Turnstile one):
 //   FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT_EMAIL, FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY,
-//   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD (+ optional EMAIL_FROM_NAME)
+//   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD (+ optional EMAIL_FROM_NAME),
+//   CF_TURNSTILE_SECRET_KEY
 //
 // Deploy with "Verify JWT" OFF (it is called before anyone is signed in).
 
@@ -146,6 +152,10 @@ async function sendEmail(opts: { to: string; subject: string; html: string; text
       tls: true,
       auth: { username: GMAIL_ADDRESS, password: GMAIL_APP_PASSWORD },
     },
+    // Fixes stray "=20" (and similar =XX escapes) showing up at line
+    // breaks in the received email — see _shared/email.ts's copy of this
+    // same comment for the full explanation.
+    debug: { encodeLB: true },
   });
   try {
     await client.send({
@@ -229,6 +239,35 @@ function resetPasswordEmailHtml(link: string): string {
 
 function resetPasswordEmailText(link: string): string {
   return `Reset your NWisp password\n\nWe got a request to reset the password for your NWisp account. Open this link to choose a new one (expires in 1 hour, single use):\n\n${link}\n\nIf you didn't request this, you can ignore this email.`;
+}
+
+// ==========================================================================
+// Turnstile CAPTCHA verification (from _shared/turnstile.ts)
+// ==========================================================================
+const TURNSTILE_SECRET_KEY = Deno.env.get("CF_TURNSTILE_SECRET_KEY")!;
+const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+async function verifyTurnstileToken(token: unknown, remoteIp: string | null): Promise<boolean> {
+  if (typeof token !== "string" || token.length === 0 || token.length > 2048) {
+    return false;
+  }
+  try {
+    const body = new URLSearchParams();
+    body.set("secret", TURNSTILE_SECRET_KEY);
+    body.set("response", token);
+    if (remoteIp) body.set("remoteip", remoteIp);
+
+    const res = await fetch(TURNSTILE_VERIFY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.success === true;
+  } catch (_err) {
+    return false;
+  }
 }
 
 // ==========================================================================
@@ -361,20 +400,26 @@ Deno.serve(async (req) => {
     }
     const method = body?.method === "otp" ? "otp" : "email";
 
-    // 1. Network + device throttle.
+    // 1. CAPTCHA check — before anything else touches the database.
+    const captchaOk = await verifyTurnstileToken(body?.turnstileToken, clientIp(req));
+    if (!captchaOk) {
+      return reply({ error: "Security check failed. Please try again." }, 400);
+    }
+
+    // 2. Network + device throttle.
     const wait = await bumpThrottle(supabase, subjectsFor(req, body?.deviceId), "password_reset", THROTTLE);
     if (wait !== null) {
       return reply({ error: `Too many reset requests. Please try again in ${describeWait(wait)}.` }, 429);
     }
 
-    // 2. Who is this?
+    // 3. Who is this?
     const account = await resolveAccount(identifier).catch(() => null);
     if (!account) {
       return reply({ error: "No account found with that email or username." }, 400);
     }
     const email = account.email;
 
-    // 3. Per-address cooldown + hourly cap (counted from the request log).
+    // 4. Per-address cooldown + hourly cap (counted from the request log).
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { data: recent } = await supabase
       .from("password_reset_requests")
@@ -397,7 +442,7 @@ Deno.serve(async (req) => {
     }
     await supabase.from("password_reset_requests").insert({ email, requested_at: new Date().toISOString() });
 
-    // 4a. A 6-digit code.
+    // 5a. A 6-digit code.
     if (method === "otp") {
       const code = randomCode();
       const { error } = await supabase.from("password_reset_otps").upsert({
@@ -417,7 +462,7 @@ Deno.serve(async (req) => {
       return reply({ mode: "otp", message: "We've emailed you a 6-digit code.", expiresInSeconds: CODE_TTL_SECONDS });
     }
 
-    // 4b. The emailed link (the original flow).
+    // 5b. The emailed link (the original flow).
     const link = await generatePasswordResetLink(email);
     await sendEmail({
       to: email,
