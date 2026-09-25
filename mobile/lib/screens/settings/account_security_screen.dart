@@ -5,6 +5,7 @@ import '../../services/device_session_service.dart';
 import '../../services/moderation_service.dart';
 import 'forgot_password_screen.dart';
 import 'manage_devices_screen.dart';
+import 'totp_setup_screen.dart';
 
 class AccountSecurityScreen extends StatelessWidget {
   const AccountSecurityScreen({super.key});
@@ -336,6 +337,16 @@ class AccountSecurityScreen extends StatelessWidget {
             },
           ),
           const Divider(height: 32),
+          ListTile(
+            leading: const Icon(Icons.verified_user_outlined),
+            title: const Text('Two-factor authentication'),
+            subtitle: const Text('Require a code from an authenticator app when signing in'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const TotpSetupScreen()),
+            ),
+          ),
           ListTile(
             leading: const Icon(Icons.lock_reset_outlined),
             title: const Text('Not sure this was you?'),
