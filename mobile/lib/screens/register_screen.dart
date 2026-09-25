@@ -5,6 +5,7 @@ import '../services/auth_service.dart';
 import '../widgets/breach_warning_dialog.dart';
 import '../widgets/otp_code_field.dart';
 import '../widgets/strong_password_fields.dart';
+import '../widgets/turnstile_captcha.dart';
 import 'settings/privacy_policy_screen.dart';
 import 'settings/terms_screen.dart';
 
@@ -219,8 +220,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _error = null;
       _otpError = null;
     });
+    // CAPTCHA first — solved token is required by send-signup-otp.
+    final turnstileToken = await TurnstileCaptcha.requestToken(context);
+    if (turnstileToken == null) {
+      if (!mounted) return;
+      setState(() => _sendingOtp = false);
+      return;
+    }
     try {
-      await _authService.sendSignupOtp(_emailController.text.trim());
+      await _authService.sendSignupOtp(_emailController.text.trim(), turnstileToken: turnstileToken);
       if (!mounted) return;
       _otpCode = '';
       _otpStatus = OtpFieldStatus.idle;
@@ -245,8 +253,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _sendingOtp = true;
       _otpError = null;
     });
+    final turnstileToken = await TurnstileCaptcha.requestToken(context);
+    if (turnstileToken == null) {
+      if (!mounted) return;
+      setState(() => _sendingOtp = false);
+      return;
+    }
     try {
-      await _authService.sendSignupOtp(_emailController.text.trim());
+      await _authService.sendSignupOtp(_emailController.text.trim(), turnstileToken: turnstileToken);
       if (!mounted) return;
       _otpCode = '';
       _otpStatus = OtpFieldStatus.idle;
