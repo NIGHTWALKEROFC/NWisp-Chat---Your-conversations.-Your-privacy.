@@ -416,6 +416,83 @@ class AuthService {
     return cred;
   }
 
+  // ---------------------------------------------------------------------
+  // Feature: TOTP two-factor authentication + one-time backup codes.
+  // Five Edge Functions back this (see supabase/functions/totp-*), all
+  // authenticated with this device's Firebase ID token — see each
+  // function's own comments for exactly what it checks and why.
+  // ---------------------------------------------------------------------
+
+  /// Step 1 of turning 2FA on: generates a brand-new secret server-side
+  /// and returns the QR data for it. Throws if 2FA is already on for
+  /// this account (see totp-enroll-start's own comment for why that's
+  /// blocked rather than allowed).
+  Future<Map<String, dynamic>> totpEnrollStart() => _postFunction('totp-enroll-start', {}, includeIdToken: true);
+
+  /// Step 2: call once the person has typed the 6-digit code their
+  /// authenticator app shows for the secret [totpEnrollStart] just gave
+  /// them. On success, 2FA is live from this point on, and the returned
+  /// list is the 10 backup codes — shown to the person exactly once, so
+  /// the caller should immediately push a screen displaying them (see
+  /// TotpBackupCodesScreen).
+  Future<List<String>> totpEnrollConfirm(String code) async {
+    final data = await _postFunction('totp-enroll-confirm', {'code': code}, includeIdToken: true);
+    return List<String>.from(data['backupCodes'] as List);
+  }
+
+  /// Login-time check — call after [beginEmailLogin] succeeds and
+  /// [isTotpEnabled] says this account has 2FA on, BEFORE calling
+  /// [finishLogin] (same slot in the flow as the login-approval wait —
+  /// see LoginScreen._login). Pass exactly one of [code] or [backupCode].
+  /// Throws with a friendly message on a wrong/locked-out code.
+  Future<void> totpVerifyLogin({String? code, String? backupCode}) => _postFunction(
+        'totp-verify-login',
+        {if (code != null) 'code': code, if (backupCode != null) 'backupCode': backupCode},
+        includeIdToken: true,
+      );
+
+  /// Turns 2FA off. Requires a valid current code or backup code — see
+  /// totp-disable's own comment for why being signed in alone isn't
+  /// enough. Caller is responsible for also setting [setTotpEnabledFlag]
+  /// to false afterwards (mirrors how enroll/confirm sets it to true).
+  Future<void> totpDisable({String? code, String? backupCode}) => _postFunction(
+        'totp-disable',
+        {if (code != null) 'code': code, if (backupCode != null) 'backupCode': backupCode},
+        includeIdToken: true,
+      );
+
+  /// Invalidates every existing backup code and issues 10 fresh ones.
+  /// Same current-code requirement as [totpDisable].
+  Future<List<String>> totpRegenerateBackupCodes({String? code, String? backupCode}) async {
+    final data = await _postFunction(
+      'totp-regenerate-backup-codes',
+      {if (code != null) 'code': code, if (backupCode != null) 'backupCode': backupCode},
+      includeIdToken: true,
+    );
+    return List<String>.from(data['backupCodes'] as List);
+  }
+
+  /// Whether [uid] currently has 2FA turned on — read from this app's own
+  /// Firestore private profile doc (NOT from Supabase directly), so
+  /// LoginScreen can check it right after password verification without
+  /// an extra Edge Function round trip. Kept in sync by
+  /// [setTotpEnabledFlag], called right after enroll-confirm succeeds and
+  /// right after disable succeeds.
+  ///
+  /// Same honest limitation as DeviceSessionService.isLoginApprovalRequired:
+  /// this flag lives in a doc the account owner can write to directly, so
+  /// it stops the app's own login flow from skipping the check — it is
+  /// not a defense against someone bypassing the app entirely and talking
+  /// to Firestore/Supabase directly. The actual secret and backup codes
+  /// never leave Supabase, so that path still can't get past a real code.
+  Future<bool> isTotpEnabled(String uid) async {
+    final snap = await _privateProfileRef(uid).get();
+    return (snap.data()?['totpEnabled'] as bool?) ?? false;
+  }
+
+  Future<void> setTotpEnabledFlag(String uid, bool enabled) =>
+      _privateProfileRef(uid).set({'totpEnabled': enabled}, SetOptions(merge: true));
+
   Future<void> logout() async {
     // BUGFIX: without this, this device's FCM token stayed in the account's
     // fcmTokens list after logout — so if someone logged into a DIFFERENT
