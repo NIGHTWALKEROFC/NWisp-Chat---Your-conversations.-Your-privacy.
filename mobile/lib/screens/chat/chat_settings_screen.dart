@@ -7,6 +7,7 @@ import '../../services/chat_lock_service.dart';
 import '../../services/inactivity_wipe_service.dart';
 import '../../services/message_relay_service.dart';
 import '../../services/moderation_service.dart';
+import '../../services/traffic_camouflage_service.dart';
 import '../report_user_screen.dart';
 import '../security/pin_screen.dart';
 import '../security/safety_number_screen.dart';
@@ -478,6 +479,66 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
     return '$days day${days == 1 ? '' : 's'}';
   }
 
+  // Feature: traffic pattern camouflage — per-chat override. Same
+  // three-state pattern as _ttlLabel/_openTtlPicker below: null follows
+  // Settings > Privacy's global toggle, true/false pins this one chat
+  // regardless of that global setting.
+  String _camouflageLabel(bool? override) {
+    if (override == null) return 'Use app default (${TrafficCamouflageService.instance.globalEnabled ? 'on' : 'off'})';
+    return override ? 'Always on for this chat' : 'Always off for this chat';
+  }
+
+  Future<void> _openCamouflagePicker(bool? current) async {
+    await showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Traffic pattern camouflage', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              ),
+            ),
+            RadioListTile<bool?>(
+              value: null,
+              groupValue: current,
+              title: const Text('Use app default'),
+              subtitle: Text("Follows your Settings > Privacy value (currently ${TrafficCamouflageService.instance.globalEnabled ? 'on' : 'off'})"),
+              onChanged: (value) async {
+                await TrafficCamouflageService.instance.setChatOverride(widget.conversationId, null);
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+              },
+            ),
+            RadioListTile<bool?>(
+              value: true,
+              groupValue: current,
+              title: const Text('Always on for this chat'),
+              onChanged: (value) async {
+                await TrafficCamouflageService.instance.setChatOverride(widget.conversationId, true);
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+              },
+            ),
+            RadioListTile<bool?>(
+              value: false,
+              groupValue: current,
+              title: const Text('Always off for this chat'),
+              onChanged: (value) async {
+                await TrafficCamouflageService.instance.setChatOverride(widget.conversationId, false);
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
   void _openTtlPicker(int? current) {
     showModalBottomSheet(
       context: context,
@@ -606,6 +667,7 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
           final archived = _conversationService.isArchivedByMe(data);
           final chatTtl = (data['chatTtlHours'] as num?)?.toInt();
           final ephemeralViewEnabled = data['ephemeralViewEnabled'] == true;
+          final camouflageOverride = data['trafficCamouflageOverride'] as bool?;
 
           return ListView(
             children: [
@@ -792,6 +854,13 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
                 subtitle: Text(_ttlLabel(chatTtl)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _openTtlPicker(chatTtl),
+              ),
+              ListTile(
+                leading: const Icon(Icons.shuffle_outlined),
+                title: const Text('Traffic pattern camouflage'),
+                subtitle: Text(_camouflageLabel(camouflageOverride)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openCamouflagePicker(camouflageOverride),
               ),
               ListTile(
                 leading: const Icon(Icons.perm_media_outlined),
