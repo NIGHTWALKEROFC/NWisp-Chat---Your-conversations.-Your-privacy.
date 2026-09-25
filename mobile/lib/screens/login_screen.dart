@@ -9,6 +9,7 @@ import 'register_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'settings/help_center_screen.dart';
 import 'settings/manage_devices_screen.dart';
+import 'totp_login_verify_screen.dart';
 
 enum _ApprovalOutcome { accepted, denied, timedOut, cancelled }
 
@@ -82,6 +83,22 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       uid = await _authService.beginEmailLogin(_emailController.text.trim(), _passwordController.text);
       passwordAccepted = true;
+
+      // Feature: TOTP two-factor authentication — checked right after the
+      // password (identity), before device-approval (device trust) and
+      // well before finishLogin touches any local crypto state or claims
+      // the active-device slot. See TotpLoginVerifyScreen's own comment
+      // for exactly why it sits in this spot.
+      if (await _authService.isTotpEnabled(uid)) {
+        final verified = await Navigator.of(context).push<bool>(
+          MaterialPageRoute(builder: (_) => const TotpLoginVerifyScreen()),
+        );
+        if (verified != true) {
+          await _authService.abortLogin();
+          if (mounted) setState(() {});
+          return;
+        }
+      }
 
       // BUGFIX: was DeviceSessionService.instance.isLoginApprovalRequired(uid)
       // — the raw toggle check, with no regard for whether the account's
