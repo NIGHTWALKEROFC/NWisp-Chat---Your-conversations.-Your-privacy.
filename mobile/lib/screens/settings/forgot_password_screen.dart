@@ -7,6 +7,7 @@ import '../../widgets/breach_warning_dialog.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import '../../widgets/otp_code_field.dart';
 import '../../widgets/strong_password_fields.dart';
+import '../../widgets/turnstile_captcha.dart';
 
 enum _Step { chooseMethod, identifier, code, newPassword, done }
 
@@ -168,10 +169,17 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       _identifierError = null;
       _notice = null;
     });
+    final turnstileToken = await TurnstileCaptcha.requestToken(context);
+    if (turnstileToken == null) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      return;
+    }
     try {
       final result = await _authService.requestPasswordReset(
         identifier,
         method: _method == _Method.code ? 'otp' : 'email',
+        turnstileToken: turnstileToken,
       );
       if (!mounted) return;
       _identifier = identifier;
@@ -230,8 +238,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       _sending = true;
       _otpMessage = null;
     });
+    final turnstileToken = await TurnstileCaptcha.requestToken(context);
+    if (turnstileToken == null) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      return;
+    }
     try {
-      await _authService.requestPasswordReset(_identifier, method: 'otp');
+      await _authService.requestPasswordReset(_identifier, method: 'otp', turnstileToken: turnstileToken);
       if (!mounted) return;
       setState(() => _sending = false);
       _otpKey.currentState?.clear();
