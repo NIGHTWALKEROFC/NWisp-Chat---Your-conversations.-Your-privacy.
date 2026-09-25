@@ -3,6 +3,7 @@ import '../../services/auth_service.dart';
 import '../../services/private_keyboard_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/settings_service.dart';
+import '../../services/traffic_camouflage_service.dart';
 import 'blocked_users_screen.dart';
 
 /// Feature: settings reorganized into WhatsApp-style category pages.
@@ -26,6 +27,7 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
   bool _hideRecentsPreview = true;
   String _whoCanInviteMe = 'contacts';
   bool _loading = true;
+  bool _trafficCamouflage = false;
 
   @override
   void initState() {
@@ -42,6 +44,7 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
       _hideRecentsPreview = hideRecents;
       _lastSeenVisible = (privateData['lastSeenVisible'] as bool?) ?? true;
       _readReceiptsEnabled = (privateData['readReceiptsEnabled'] as bool?) ?? true;
+      _trafficCamouflage = (privateData['trafficCamouflageGlobal'] as bool?) ?? false;
       _loading = false;
     });
     final uid = _authService.currentUserId;
@@ -105,6 +108,33 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't save that — check your connection and try again.")));
+    }
+  }
+
+  Future<void> _toggleTrafficCamouflage(bool enable) async {
+    if (enable) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Turn on traffic camouflage?'),
+          content: const Text(
+            "This pads your messages and occasionally sends extra, invisible cover messages to make it harder for "
+            "anyone watching network traffic patterns to tell when you're active or how long your messages are. "
+            "It uses more battery and mobile data than usual while it's on, and only helps while the app is running "
+            "on this device.\n\nYou can turn this on or off per chat instead, from that chat's own settings.",
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Turn on')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    setState(() => _trafficCamouflage = enable);
+    final uid = _authService.currentUserId;
+    if (uid != null) {
+      await TrafficCamouflageService.instance.setGlobalEnabled(uid, enable);
     }
   }
 
@@ -180,6 +210,18 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                     context,
                     MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
                   ),
+                ),
+                const Divider(height: 24),
+                SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.shuffle_outlined),
+                  title: const Text('Traffic pattern camouflage'),
+                  subtitle: const Text(
+                    "Pads message sizes and sends occasional invisible cover messages, so network-level watchers "
+                    "can't easily tell when you're chatting or how long your messages are. Uses more battery and "
+                    "data while on. Can be set per chat instead, from that chat's own settings.",
+                  ),
+                  value: _trafficCamouflage,
+                  onChanged: _toggleTrafficCamouflage,
                 ),
               ],
             ),
