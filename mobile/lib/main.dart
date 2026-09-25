@@ -23,6 +23,7 @@ import 'services/private_keyboard_service.dart';
 import 'services/screenshot_guard_service.dart';
 import 'services/settings_service.dart';
 import 'services/session_service.dart';
+import 'services/traffic_camouflage_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
 import 'screens/chat/chat_detail_screen.dart';
@@ -211,6 +212,7 @@ void _setUpMessagingLifecycle() {
   FirebaseAuth.instance.authStateChanges().listen((user) async {
     if (user == null) {
       MessageRelayService.stop();
+      TrafficCamouflageService.instance.stop();
       ScheduledMessageService.instance.stop();
       GroupService.instance.stopCaching();
       DeviceSessionService.instance.stopWatching();
@@ -234,6 +236,10 @@ void _setUpMessagingLifecycle() {
     await SessionService.prepareForUser(user.uid);
     await LocalMessageStore.purgeExpired();
     await MessageRelayService.start();
+    // Feature: traffic pattern camouflage — starts the randomized decoy
+    // scheduler (no-op each round unless the person has actually turned
+    // camouflage on somewhere — see TrafficCamouflageService).
+    TrafficCamouflageService.instance.start(user.uid);
     // Feature: send later — starts the timer that sends scheduled messages
     // when they come due (see ScheduledMessageService for its limits).
     ScheduledMessageService.instance.start();
