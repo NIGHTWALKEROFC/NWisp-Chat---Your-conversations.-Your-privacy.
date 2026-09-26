@@ -50,6 +50,39 @@ void main() async {
   await Supabase.initialize(
     url: const String.fromEnvironment('SUPABASE_URL'),
     anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
+    // SECURITY FIX (audit, 2026-09-24): before this, every request to
+    // Supabase — including message_relay — went out under the bare anon
+    // key with NO Supabase-side identity at all, because this app never
+    // calls Supabase's own auth.signIn (it uses Firebase Auth as its one
+    // real identity system). That meant a Postgres RLS policy based on
+    // auth.uid() had NOTHING to check — auth.uid() was always null — so
+    // message_relay could only ever have been protected by a fully open
+    // policy (or a still-open-by-default table if RLS was never turned
+    // on for it at all), not a real per-user one, however carefully its
+    // policy text was written.
+    //
+    // This wires Supabase's documented "Third-Party Auth" mechanism to
+    // this app's actual identity: on every request, the Supabase SDK
+    // calls this function and sends whatever it returns as the bearer
+    // token, instead of the plain anon key. Returning the current
+    // Firebase user's own ID token means Postgres's auth.uid() now
+    // resolves to their real Firebase uid — the same string already
+    // stored in every sender_uid/recipient_uid column — so a normal
+    // `auth.uid()::text = recipient_uid` RLS policy (see
+    // supabase/migrations/0008_message_relay_rls.sql) finally has
+    // something real to check against.
+    //
+    // Returning null when signed out is fine and expected — it just
+    // means those requests go out anonymously, exactly as they always
+    // have (nothing here narrows what a signed-out user could already
+    // do). This has NO effect until the matching dashboard step is done:
+    // Authentication > Third-Party Auth > add this app's Firebase
+    // project, and its RLS policies are applied — see that migration
+    // file's own header comment for the full, honest picture, including
+    // the one piece (giving every Firebase user Supabase's required
+    // `role: 'authenticated'` claim) that still needs a small privileged
+    // service built separately, not just this client change.
+    accessToken: () async => FirebaseAuth.instance.currentUser?.getIdToken(),
   );
   await LocalMessageStore.init();
 
