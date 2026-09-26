@@ -165,6 +165,16 @@ Deno.serve(async (req) => {
       if (error) throw error;
       return Response.json({ uid, signedUrl: data.signedUrl });
     } else if (mode === "delete") {
+      // Feature: Stories — the story's owner deletes their own story
+      // media directly (either a manual delete, or StoryService's
+      // best-effort cleanup of a just-expired story — see that method's
+      // comment). Same simple path-prefix check as uploads use, since
+      // here the deleter IS the uid in the path.
+      if (segments[0] === "stories" && ownerSegment === uid) {
+        const { error } = await supabase.storage.from(bucket).remove([path]);
+        if (error) throw error;
+        return Response.json({ uid, deleted: true });
+      }
       // Chat media is meant to be forward-only, never a permanent copy on
       // the server (see message_relay_service.dart) - the recipient's
       // device calls this right after it finishes downloading, decrypting,
