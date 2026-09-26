@@ -3,8 +3,10 @@ import '../../services/auth_service.dart';
 import '../../services/private_keyboard_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/settings_service.dart';
+import '../../services/story_service.dart';
 import '../../services/traffic_camouflage_service.dart';
 import 'blocked_users_screen.dart';
+import '../stories/story_privacy_screen.dart';
 
 /// Feature: settings reorganized into WhatsApp-style category pages.
 /// Who can see your last-seen/read-receipts, and who you've blocked —
@@ -138,6 +140,17 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
     }
   }
 
+  Future<void> _openStoryPrivacy() async {
+    final (mode, selected) = await StoryService.instance.getGlobalPrivacyDefault();
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoryPrivacyScreen(initialMode: mode, initialSelectedUids: selected, isGlobalDefault: true),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -222,6 +235,14 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                   ),
                   value: _trafficCamouflage,
                   onChanged: _toggleTrafficCamouflage,
+                ),
+                const Divider(height: 24),
+                ListTile(
+                  leading: const Icon(Icons.auto_awesome_motion_outlined),
+                  title: const Text('Story privacy'),
+                  subtitle: const Text('Who can see your stories by default'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _openStoryPrivacy,
                 ),
               ],
             ),
