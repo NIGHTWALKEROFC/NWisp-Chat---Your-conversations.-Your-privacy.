@@ -23,6 +23,7 @@ import 'services/private_keyboard_service.dart';
 import 'services/screenshot_guard_service.dart';
 import 'services/settings_service.dart';
 import 'services/session_service.dart';
+import 'services/story_service.dart';
 import 'services/traffic_camouflage_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
@@ -268,6 +269,10 @@ void _setUpMessagingLifecycle() {
     }
     await SessionService.prepareForUser(user.uid);
     await LocalMessageStore.purgeExpired();
+    // Feature: Stories — best-effort cleanup of MY OWN expired stories'
+    // Supabase Storage files (see StoryService.purgeMyExpiredStories for
+    // why this can't just rely on Firestore's TTL policy alone).
+    unawaited(StoryService.instance.purgeMyExpiredStories());
     await MessageRelayService.start();
     // Feature: traffic pattern camouflage — starts the randomized decoy
     // scheduler (no-op each round unless the person has actually turned
@@ -279,7 +284,16 @@ void _setUpMessagingLifecycle() {
     GroupService.instance.startCaching();
     GroupService.instance.retryAllPendingResends();
     sweepTimer?.cancel();
-    sweepTimer = Timer.periodic(const Duration(seconds: 30), (_) => LocalMessageStore.purgeExpired());
+    sweepTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      LocalMessageStore.purgeExpired();
+    });
+    // Feature: Stories — separate, less frequent sweep (expired stories
+    // don't need the same 30s responsiveness disappearing messages do;
+    // Firestore's own TTL policy is already handling the metadata side
+    // on whatever schedule it runs — this only speeds up the Storage
+    // file cleanup and covers the same ground redundantly, which is fine
+    // since deleting an already-deleted doc/file is a harmless no-op).
+    Timer.periodic(const Duration(minutes: 15), (_) => StoryService.instance.purgeMyExpiredStories());
 
     // Single-active-device enforcement (see DeviceSessionService): if a
     // different device claims this account (a real new login elsewhere,
