@@ -92,6 +92,46 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   final _scrollController = ScrollController();
   String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
+  // PERFORMANCE BUGFIX ("chats getting very laggy... auto move" as message
+  // count grows) — three separate, compounding problems found in the
+  // message list below, all fixed together here:
+  //
+  // 1. The auto-scroll-to-bottom below used to run UNCONDITIONALLY on
+  //    EVERY emission of the messages stream — not just when a genuinely
+  //    new message arrived. That stream re-emits for edits, deletions,
+  //    reactions, and read-receipt status changes too, not only new
+  //    messages, so someone scrolled up reading old messages would keep
+  //    getting yanked back to the bottom by things that had nothing to do
+  //    with new messages — this is almost certainly the "auto move"
+  //    being reported. Fixed below: a jump to bottom now only happens on
+  //    this screen's very first frame, or when the LAST message actually
+  //    changed (a real new message arrived) AND the person was already
+  //    near the bottom or the new message is their own.
+  // 2. Building each message's media-gallery (for the swipeable photo/video
+  //    viewer) used to filter + map + indexWhere over the ENTIRE messages
+  //    list — INSIDE itemBuilder, i.e. once per VISIBLE ROW, not once per
+  //    build. That's O(messages²) work every time the list rebuilds, and
+  //    it gets quadratically worse as a chat's history grows — exactly
+  //    "very laggy... when a lot of messages come". Fixed below: computed
+  //    ONCE per build, outside itemBuilder.
+  // 3. Finding a replied-to message used to linear-scan the entire
+  //    messages list for every row that was a reply — same O(N²) shape as
+  //    #2. Fixed below with a single id->message lookup map, built once.
+  bool _stickToBottom = true; // whether the person is at/near the bottom right now
+  int _lastMessageCount = 0;
+  String? _lastMessageId;
+  bool _didInitialScroll = false;
+
+  void _onScrollPositionChanged() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    // Comfortably generous — anything closer than a screen-ish of content
+    // from the bottom still counts as "reading the latest", so a new
+    // message from the other person naturally scrolls into view instead
+    // of leaving them to notice it landed just out of sight.
+    _stickToBottom = (pos.maxScrollExtent - pos.pixels) < 400;
+  }
+
   LocalMessage? _replyingTo;
 
   /// Non-null while composing an edit to a previously-sent text message
@@ -234,10 +274,16 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     PinService.pinnedFor(widget.conversationId).then((ids) {
       if (mounted) setState(() => _pinnedIds = ids);
     });
+    // PERFORMANCE BUGFIX — see this class's field-level doc comment above
+    // for the full explanation. Tracks whether the person is currently
+    // scrolled near the bottom, so new messages only auto-scroll into
+    // view when that's actually where their attention already is.
+    _scrollController.addListener(_onScrollPositionChanged);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScrollPositionChanged);
     if (ScreenshotGuardService.onScreenshotDetected == _onScreenshotAttempt) {
       ScreenshotGuardService.onScreenshotDetected = null;
     }
@@ -1445,10 +1491,42 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                         ),
                       );
                     }
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (_scrollController.hasClients) {
-                        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+                    // PERFORMANCE BUGFIX — see the field-level doc comment on
+                    // _stickToBottom for the full explanation. Only jump to
+                    // the bottom on this screen's very first frame, or when
+                    // the actual LAST message changed (a genuinely new
+                    // message, not an edit/reaction/receipt update
+                    // somewhere earlier in the list) and the person was
+                    // already near the bottom or it's their own message —
+                    // never unconditionally on every rebuild.
+                    final newLastId = messages.last.id;
+                    final lastMessageChanged = newLastId != _lastMessageId;
+                    final shouldScrollToBottom =
+                        !_didInitialScroll || (lastMessageChanged && (_stickToBottom || messages.last.isMine));
+                    _lastMessageCount = messages.length;
+                    _lastMessageId = newLastId;
+
+                    // PERFORMANCE BUGFIX — see the field-level doc comment
+                    // above for the full explanation. Computed ONCE per
+                    // build (not once per visible row) so opening a large
+                    // chat, or one more message arriving, no longer costs
+                    // O(messages²) work.
+                    final mediaGalleryItems = <MediaViewerItem>[];
+                    final mediaGalleryIndexById = <String, int>{};
+                    for (final m in messages) {
+                      if (m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video')) {
+                        mediaGalleryIndexById[m.id] = mediaGalleryItems.length;
+                        mediaGalleryItems.add(MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video'));
                       }
+                    }
+                    final messageById = <String, LocalMessage>{for (final m in messages) m.id: m};
+
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (shouldScrollToBottom && _scrollController.hasClients) {
+                        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+                        _stickToBottom = true;
+                      }
+                      _didInitialScroll = true;
                       final unread = messages.where((m) => !m.isMine && m.status != 'read');
                       if (unread.isNotEmpty) {
                         LocalMessageStore.markConversationRead(widget.conversationId);
@@ -1469,15 +1547,10 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                       itemCount: messages.length,
                       itemBuilder: (context, i) {
                         final msg = messages[i];
-                        LocalMessage? replySource;
-                        if (msg.replyToId != null) {
-                          for (final m in messages) {
-                            if (m.id == msg.replyToId) {
-                              replySource = m;
-                              break;
-                            }
-                          }
-                        }
+                        // PERFORMANCE BUGFIX — O(1) map lookup instead of an
+                        // O(N) linear scan per reply row (see the
+                        // field-level doc comment above _stickToBottom).
+                        final replySource = msg.replyToId != null ? messageById[msg.replyToId] : null;
                         final uid = _myUid;
                         // Feature: date separators, WhatsApp-style — a
                         // "Today"/"Yesterday"/date header appears above
@@ -1508,14 +1581,11 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                             isViewOnce: msg.isViewOnce,
                             viewOnceConsumed: msg.viewOnceConsumed,
                             isForwarded: msg.isForwarded,
-                            mediaGallery: messages
-                                .where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video'))
-                                .map((m) => MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video'))
-                                .toList(),
-                            mediaGalleryIndex: messages
-                                .where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video'))
-                                .toList()
-                                .indexWhere((m) => m.id == msg.id),
+                            // PERFORMANCE BUGFIX — reuse the list/index map
+                            // built once above instead of recomputing them
+                            // from scratch for every single row.
+                            mediaGallery: mediaGalleryItems,
+                            mediaGalleryIndex: mediaGalleryIndexById[msg.id] ?? -1,
                             onLongPress: () => _toggleSelect(msg.id),
                             onTap: () {
                               if (_selectedIds.isNotEmpty) _toggleSelect(msg.id);
