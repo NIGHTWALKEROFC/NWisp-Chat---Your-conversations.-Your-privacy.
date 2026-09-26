@@ -457,8 +457,23 @@ class DeviceSessionService {
   Future<void> watchForRevocation(String uid, void Function() onRevoked) async {
     _revocationSub?.cancel();
     final deviceId = await _localDeviceId();
-    _revocationSub = _devicesRef(uid).doc(deviceId).snapshots().listen((snap) {
+    _revocationSub = _devicesRef(uid).doc(deviceId).snapshots().listen((snap) async {
       if (isClaimPending) return;
+      // BUGFIX (2026-09-26): this doc only ever gets created for an
+      // account that has actually turned Multiple devices ON (see
+      // _claimThisDeviceMultiDevice) — for every other account, the
+      // overwhelming default, it never exists AT ALL. This listener used
+      // to treat "doesn't exist" as "was removed" unconditionally, so
+      // Firestore re-delivering that same not-found snapshot for any
+      // reason (a reconnect, a cache-then-server double delivery, etc. —
+      // completely normal Firestore behavior, not an error) forced an
+      // immediate, spurious sign-out with the "Device removed" dialog —
+      // on every single login, for every account, since none of them had
+      // this doc to begin with. Re-checking the actual setting here (not
+      // just relying on the doc's existence) is what fixes that: a
+      // missing doc only means "revoked" for an account that has really
+      // turned this feature on.
+      if (!await isMultiDeviceEnabled(uid)) return;
       if (!snap.exists) onRevoked();
     });
   }
