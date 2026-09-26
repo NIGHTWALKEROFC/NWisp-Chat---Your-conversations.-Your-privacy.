@@ -129,7 +129,7 @@ class MessageRelayService {
   static const _forwardMarker = '\u{E0F1}NWFWD1\u{E0F1}';
 
   /// Feature: traffic pattern camouflage. See TrafficCamouflageService's
-  /// own doc comment for the full picture — these three are the
+  /// own doc comment for the full picture -- these three are the
   /// mechanics: [_padPayload]/[_unpadPayload] pad a text payload out to
   /// one of [_paddingBuckets] bytes (inside the end-to-end-encrypted
   /// content, so only the real recipient ever sees the unpadded text or
@@ -137,7 +137,7 @@ class MessageRelayService {
   /// decoy message's plaintext starts with so the receiving device can
   /// recognize and silently discard it (see [_handleRow]'s text branch).
   /// Both markers use Unicode private-use characters, same as
-  /// [_forwardMarker] above — ordinary typed text will never start with
+  /// [_forwardMarker] above -- ordinary typed text will never start with
   /// either.
   static const _paddingMarker = '\u{E0F2}';
   static const _decoyMarker = '\u{E0F3}NWDECOY\u{E0F3}';
@@ -147,7 +147,7 @@ class MessageRelayService {
     final withMarker = '$payload$_paddingMarker';
     final baseLen = utf8.encode(withMarker).length;
     final bucket = _paddingBuckets.firstWhere((b) => b >= baseLen, orElse: () => -1);
-    // Longer than the biggest bucket (a long message) — left unpadded
+    // Longer than the biggest bucket (a long message) -- left unpadded
     // rather than truncating real content; only its length beyond the
     // top bucket is ever revealed, same as before this feature existed.
     if (bucket == -1) return payload;
@@ -368,17 +368,17 @@ class MessageRelayService {
         if (_mediaTypes.contains(messageType)) {
           await _receiveMediaMessage(row: row, senderUid: senderUid, payload: payload, createdAt: createdAt, ttlHours: ttlHours);
         } else {
-          // Feature: permission-gated forwarding — see [_forwardMarker].
           // Feature: traffic pattern camouflage — see [_decoyMarker]. A
           // decoy is unwrapped exactly like a real message (padding
           // stripped the same way, so its ciphertext was byte-for-byte
           // the same shape as a real padded message to anyone who
           // couldn't decrypt it) but is never actually stored or shown
           // once this device CAN read it. The receipt below still gets
-          // sent for it regardless — see [sendDecoyMessage]'s own note
-          // on why that matters for the camouflage to actually work.
+          // sent for it regardless — see sendDecoyMessage's own note on
+          // why that matters for the camouflage to actually work.
           var incomingText = _unpadPayload(payload);
           final isDecoy = messageType == 'text' && incomingText.startsWith(_decoyMarker);
+          // Feature: permission-gated forwarding — see [_forwardMarker].
           var incomingForwarded = false;
           if (!isDecoy && messageType == 'text' && incomingText.startsWith(_forwardMarker)) {
             incomingText = incomingText.substring(_forwardMarker.length);
