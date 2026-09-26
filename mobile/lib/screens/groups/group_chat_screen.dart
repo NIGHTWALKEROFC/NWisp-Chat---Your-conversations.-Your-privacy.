@@ -83,7 +83,53 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
   );
   String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
+  // PERFORMANCE BUGFIX ("chats getting very laggy... auto move" as message
+  // count grows) — the exact same three problems fixed in
+  // chat_detail_screen.dart, present here too (see that file's matching
+  // field-level doc comment for the full explanation of each):
+  //  1. Unconditional auto-scroll-to-bottom on every message-list update,
+  //     not just when a real new message arrived — the "auto move" itself.
+  //  2. The shared-media gallery for the swipeable photo/video viewer was
+  //     rebuilt from the FULL message list inside _bubbleFor, i.e. once per
+  //     VISIBLE ROW rather than once per rebuild — O(messages²).
+  //  3. Reply-lookup (_findMessage) was a linear scan per row — same
+  //     O(messages²) shape as #2.
+  // Fixed below: a cached id->message map and media-gallery list/index map,
+  // rebuilt once whenever _messages changes (see the _msgSub listener in
+  // initState) instead of once per row; and a "should I actually scroll"
+  // check before ever calling _scrollToBottom.
+  bool _stickToBottom = true;
+  String? _lastMessageId;
+  bool _didInitialScroll = false;
+  Map<String, LocalMessage> _messageById = {};
+  List<MediaViewerItem> _mediaGalleryItems = [];
+  Map<String, int> _mediaGalleryIndexById = {};
+
   List<LocalMessage> _messages = [];
+
+  void _onScrollPositionChanged() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    _stickToBottom = (pos.maxScrollExtent - pos.pixels) < 400;
+  }
+
+  /// Rebuilds the caches above from the current [_messages] — called once
+  /// per message-list update (see the _msgSub listener in initState),
+  /// never per row.
+  void _rebuildMessageCaches() {
+    _messageById = {for (final m in _messages) m.id: m};
+    final items = <MediaViewerItem>[];
+    final indexById = <String, int>{};
+    for (final m in _messages) {
+      if (m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video')) {
+        indexById[m.id] = items.length;
+        items.add(MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video'));
+      }
+    }
+    _mediaGalleryItems = items;
+    _mediaGalleryIndexById = indexById;
+  }
+
   List<String> _memberUids = [];
   final Map<String, String> _usernames = {}; // uid -> username, resolved lazily
   String _groupName = 'Group';
@@ -213,11 +259,35 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
     _textController.addListener(() => setState(() {}));
     _msgSub = LocalMessageStore.watchConversation(widget.groupId).listen((list) {
       if (!mounted) return;
-      setState(() => _messages = list);
+      // PERFORMANCE BUGFIX — see this class's field-level doc comment on
+      // _stickToBottom for the full explanation. Only scroll to the
+      // bottom on this screen's very first frame, or when the actual LAST
+      // message changed (a genuinely new message, not e.g. a reaction/
+      // edit/receipt update elsewhere in the list) and the person was
+      // already near the bottom or it's their own message — never
+      // unconditionally on every update, which is what caused messages
+      // to keep "auto move"-ing the view out from under someone reading
+      // older history.
+      final newLastId = list.isNotEmpty ? list.last.id : null;
+      final lastMessageChanged = newLastId != _lastMessageId;
+      final shouldScrollToBottom = list.isNotEmpty &&
+          (!_didInitialScroll || (lastMessageChanged && (_stickToBottom || list.last.isMine)));
+      _lastMessageId = newLastId;
+      setState(() {
+        _messages = list;
+        _rebuildMessageCaches();
+      });
       _resolveUsernames(list.map((m) => m.senderUid));
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+      if (shouldScrollToBottom) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollToBottom();
+          _stickToBottom = true;
+        });
+      }
+      _didInitialScroll = true;
       LocalMessageStore.markConversationRead(widget.groupId);
     });
+    _scrollController.addListener(_onScrollPositionChanged);
     _groupSub = GroupService.instance.groupStream(widget.groupId).listen((doc) {
       if (!mounted) return;
       final data = doc.data();
@@ -254,6 +324,7 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScrollPositionChanged);
     ScreenshotGuardService.release();
     GroupService.instance.setTyping(widget.groupId, false);
     // Feature: "clear on exit" ephemeral view mode, group version. Fires
@@ -912,12 +983,12 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
     );
   }
 
+  // PERFORMANCE BUGFIX — O(1) cached-map lookup instead of a linear scan
+  // over every message, per call (see this class's field-level doc
+  // comment on _stickToBottom).
   LocalMessage? _findMessage(String? id) {
     if (id == null) return null;
-    for (final m in _messages) {
-      if (m.id == id) return m;
-    }
-    return null;
+    return _messageById[id];
   }
 
   Widget _replyPreviewChip(LocalMessage target, bool mine, ColorScheme scheme) {
@@ -1078,9 +1149,12 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
     // single image/video page. View-once media is deliberately excluded
     // (see the isViewOnce check below) — it isn't part of the browsable
     // shared gallery, the same reasoning as chat_detail_screen.dart.
-    final galleryMessages = _messages.where((m) => m.mediaPath != null && !m.isViewOnce && (m.messageType == 'image' || m.messageType == 'video')).toList();
-    final gallery = galleryMessages.map((m) => MediaViewerItem(path: m.mediaPath!, isVideo: m.messageType == 'video')).toList();
-    final galleryIndex = galleryMessages.indexWhere((m) => m.id == message.id);
+    // PERFORMANCE BUGFIX — reuse the list/index map built once in
+    // _rebuildMessageCaches instead of recomputing them from the full
+    // message list for every single bubble (see this class's field-level
+    // doc comment on _stickToBottom).
+    final gallery = _mediaGalleryItems;
+    final galleryIndex = _mediaGalleryIndexById[message.id] ?? -1;
 
     Widget? mediaWidget;
     if (message.messageType == 'image' && message.isViewOnce) {
