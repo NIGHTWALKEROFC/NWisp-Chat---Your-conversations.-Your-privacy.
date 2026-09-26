@@ -150,6 +150,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Set<String> _manualUnread = {};
   StreamSubscription<Set<String>>? _manualUnreadSub;
 
+  // Bug fix: "Delete chat" — conversationIds removed from THIS device's
+  // home screen (see LocalMessageStore.watchDeletedChats /
+  // markChatDeletedLocally). Filtered out of _mergedRows below entirely.
+  Set<String> _deletedChats = {};
+  StreamSubscription<Set<String>>? _deletedChatsSub;
+
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
   late final StreamSubscription _groupsSub;
@@ -216,6 +222,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _loadHiddenIds();
     _manualUnreadSub = LocalMessageStore.watchManualUnread().listen((ids) {
       if (mounted) setState(() => _manualUnread = ids);
+    });
+    _deletedChatsSub = LocalMessageStore.watchDeletedChats().listen((ids) {
+      if (mounted) setState(() => _deletedChats = ids);
     });
     _foldersSub = ChatFolderService.watchFolders().listen((f) {
       if (mounted) setState(() => _folders = f);
@@ -287,6 +296,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _groupsSub.cancel();
     _foldersSub.cancel();
     _manualUnreadSub?.cancel();
+    _deletedChatsSub?.cancel();
     _freezeSub?.cancel();
     _freezeSweepTimer?.cancel();
     super.dispose();
@@ -440,6 +450,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
   List<_ChatRow> _mergedRows(String myUid) {
     final byConvo = <String, _ChatRow>{};
     for (final s in _localSummaries) {
+      // Bug fix: "Delete chat" — skip a conversation the person removed
+      // from their own home screen. It comes back on its own the moment
+      // a new message exists (LocalMessageStore.insert clears the flag),
+      // so this only ever hides genuinely-empty-since-deletion chats.
+      if (_deletedChats.contains(s.conversationId)) continue;
       byConvo[s.conversationId] = _ChatRow(
         conversationId: s.conversationId,
         peerUid: s.peerUid,
@@ -460,6 +475,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     }
     for (final doc in _convoDocs) {
       if (byConvo.containsKey(doc.id)) continue;
+      if (_deletedChats.contains(doc.id)) continue; // see comment above
       final participants = List<String>.from(doc.data()['participants'] ?? []);
       final peerUid = participants.firstWhere((p) => p != myUid, orElse: () => '');
       if (peerUid.isEmpty) continue;
@@ -481,6 +497,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     }
     for (final doc in _groupDocs) {
       if (byConvo.containsKey(doc.id)) continue;
+      if (_deletedChats.contains(doc.id)) continue; // see comment above
       final data = doc.data();
       final members = List<String>.from(data['members'] ?? []);
       if (!members.contains(myUid)) continue;
@@ -1041,7 +1058,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             ListTile(
               leading: Icon(Icons.delete_outline, color: scheme.error),
               title: Text('Delete chat', style: TextStyle(color: scheme.error)),
-              subtitle: const Text('Removes messages from this device only'),
+              subtitle: const Text('Removes this chat from your list — new messages bring it back'),
               onTap: () async {
                 Navigator.pop(sheetContext);
                 final confirmed = await showDialog<bool>(
@@ -1049,8 +1066,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   builder: (dialogContext) => AlertDialog(
                     title: const Text('Delete this chat?'),
                     content: const Text(
-                      "This removes all messages from this device only — it won't notify or affect "
-                      'anyone else in the chat, and new messages will still arrive normally.',
+                      "This removes the chat and its messages from this device only — it won't notify or "
+                      "affect anyone else in the chat. It will reappear here the next time either of you "
+                      'sends a message.',
                     ),
                     actions: [
                       TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
@@ -1063,7 +1081,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   ),
                 );
                 if (confirmed == true) {
+                  // Bug fix: clearing messages alone left the chat's row
+                  // sitting on the home screen (it just reappeared empty) —
+                  // markChatDeletedLocally is what actually removes the row
+                  // itself, WhatsApp-style, until new activity brings it back.
                   await LocalMessageStore.clearConversation(row.conversationId);
+                  await LocalMessageStore.markChatDeletedLocally(row.conversationId);
                 }
               },
             ),
