@@ -8,6 +8,7 @@ import '../services/local_message_store.dart';
 import 'announcements_screen.dart';
 import 'chat_list_screen.dart';
 import 'community/community_screen.dart';
+import 'stories/stories_tab_screen.dart';
 
 /// The app's home: a bottom bar with WhatsApp-style sections.
 ///
@@ -88,6 +89,7 @@ class _HomeShellState extends State<HomeShell> {
 
     final tabs = <_Tab>[
       const _Tab('chats', 'Chats', Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded),
+      const _Tab('stories', 'Stories', Icons.auto_awesome_motion_outlined, Icons.auto_awesome_motion),
       if (showAnnouncements) const _Tab('announcements', 'Announcements', Icons.campaign_outlined, Icons.campaign),
       if (showCommunity) const _Tab('community', 'Community', Icons.groups_2_outlined, Icons.groups_2),
     ];
@@ -101,6 +103,8 @@ class _HomeShellState extends State<HomeShell> {
 
     Widget screenFor(String id) {
       switch (id) {
+        case 'stories':
+          return const StoriesTabScreen();
         case 'announcements':
           return const AnnouncementsScreen();
         case 'community':
