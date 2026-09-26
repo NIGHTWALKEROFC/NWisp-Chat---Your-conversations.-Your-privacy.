@@ -33,13 +33,19 @@ class LocalMessageStore {
   // flagged as unread. Device-local only (see setManualUnread).
   static final _manualUnreadController = StreamController<Set<String>>.broadcast();
 
+  // Bug fix: "Delete chat" (home screen long-press) — conversationIds the
+  // person has removed from THEIR OWN chat list. Device-local only, same
+  // as manual_unread above. See markChatDeletedLocally's doc comment for
+  // why this needs its own table instead of just clearing messages.
+  static final _deletedChatsController = StreamController<Set<String>>.broadcast();
+
   static Future<void> init() async {
     if (_db != null) return;
     final dbPath = await getDatabasesPath();
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 10,
+      version: 11,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -73,6 +79,7 @@ class LocalMessageStore {
         await _createReceiptsTable(db);
         await _createPendingMediaSendsTable(db);
         await _createManualUnreadTable(db);
+        await _createDeletedChatsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // v1 -> v2: adds the group_meta cache table for Phase 7 (group
@@ -162,6 +169,23 @@ class LocalMessageStore {
           await db.execute('ALTER TABLE messages ADD COLUMN is_forwarded INTEGER NOT NULL DEFAULT 0');
           await _createManualUnreadTable(db);
         }
+        // v10 -> v11: BUG FIX — "Delete chat" (home screen long-press) used
+        // to only call clearConversation, which wipes this device's local
+        // MESSAGES for that conversation but leaves the chat's row on the
+        // home screen (it just reappears empty/as a placeholder, because
+        // the shared conversation/group record in Firestore is untouched
+        // and the chat list rebuilds a row from that — see
+        // ChatListScreen._mergedRows). This adds `deleted_chats`, a
+        // device-local list of conversationIds the person has explicitly
+        // removed from THEIR OWN home screen. A conversationId in this
+        // table is filtered out of the chat list entirely (see
+        // ChatListScreen) until a new message arrives in it, at which
+        // point [insert] below automatically clears the flag — matching
+        // WhatsApp's "Delete chat" behavior (it comes back if the other
+        // person messages you again, it just isn't deleted for them too).
+        if (oldVersion < 11) {
+          await _createDeletedChatsTable(db);
+        }
       },
     );
     await purgeExpired();
@@ -170,6 +194,14 @@ class LocalMessageStore {
   static Future<void> _createManualUnreadTable(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS manual_unread (
+        conversation_id TEXT PRIMARY KEY
+      )
+    ''');
+  }
+
+  static Future<void> _createDeletedChatsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS deleted_chats (
         conversation_id TEXT PRIMARY KEY
       )
     ''');
@@ -382,6 +414,12 @@ class LocalMessageStore {
       'starred': 0,
       'is_forwarded': isForwarded ? 1 : 0,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    // Bug fix: a new message (sent OR received) in a conversation the
+    // person previously "deleted" from their home screen un-deletes it —
+    // it has real new content again, so it belongs back on the list. See
+    // markChatDeletedLocally's doc comment.
+    await _clearDeletedFlagQuietly(conversationId);
 
     final msg = LocalMessage(
       id: id,
@@ -856,6 +894,61 @@ class LocalMessageStore {
     return _manualUnreadController.stream;
   }
 
+  // ---- "Delete chat" (Bug fix / feature) ------------------------------
+  //
+  // WhatsApp/Instagram-style "Delete chat": removes the chat's ROW from
+  // this device's home screen, not just its message content (that part —
+  // wiping the actual messages — is still clearForConversation/
+  // clearConversation, unchanged). See deleted_chats' table comment above
+  // for the full story. This is device-local only: it never touches the
+  // shared Firestore conversation/group document, so it can't affect
+  // pinned/muted/archived state or anything else for the OTHER person.
+
+  /// Call together with [clearConversation] when the person picks "Delete
+  /// chat" from the home screen's long-press menu (see ChatListScreen).
+  /// Kept separate from clearConversation itself because clearConversation
+  /// is ALSO used by "Clear chat" from inside an open chat (see
+  /// MessageRelayService.clearForBoth) and by the "clear on exit"
+  /// ephemeral-view feature (ChatDetailScreen.dispose) — neither of those
+  /// should remove the chat from the home screen, only "Delete chat"
+  /// should.
+  static Future<void> markChatDeletedLocally(String conversationId) async {
+    await _db!.insert(
+      'deleted_chats',
+      {'conversation_id': conversationId},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _notifyDeletedChats();
+    _notifySummaries();
+  }
+
+  /// Internal: silently clears the "deleted" flag (no-op if it wasn't
+  /// set) — called from [insert] so a fresh incoming/outgoing message
+  /// brings a deleted chat back, same as WhatsApp.
+  static Future<void> _clearDeletedFlagQuietly(String conversationId) async {
+    final removed = await _db!.delete('deleted_chats', where: 'conversation_id = ?', whereArgs: [conversationId]);
+    if (removed > 0) _notifyDeletedChats();
+  }
+
+  static Future<Set<String>> _loadDeletedChats() async {
+    final rows = await _db!.query('deleted_chats', columns: ['conversation_id']);
+    return rows.map((r) => r['conversation_id'] as String).toSet();
+  }
+
+  static void _notifyDeletedChats() {
+    _loadDeletedChats().then((ids) {
+      if (!_deletedChatsController.isClosed) _deletedChatsController.add(ids);
+    }).catchError((Object e) {});
+  }
+
+  /// Emits the full set of locally-deleted conversation ids whenever it
+  /// changes (and once right away with the current set). ChatListScreen
+  /// filters these out of the home screen entirely.
+  static Stream<Set<String>> watchDeletedChats() {
+    _notifyDeletedChats();
+    return _deletedChatsController.stream;
+  }
+
   static Future<void> markConversationRead(String conversationId) async {
     // Opening a chat also clears a manual "Mark as unread" flag on it.
     await setManualUnread(conversationId, false);
@@ -899,6 +992,8 @@ class LocalMessageStore {
     await _db!.delete('pending_media_sends');
     await _db!.delete('manual_unread');
     _notifyManualUnread();
+    await _db!.delete('deleted_chats');
+    _notifyDeletedChats();
     // Feature: locked media vault — it belongs to the account that set it up,
     // so a different account signing in on this phone (or an account being
     // deleted) wipes it too, exactly like everything else here.
