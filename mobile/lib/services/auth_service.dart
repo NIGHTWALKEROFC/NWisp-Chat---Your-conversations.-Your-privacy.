@@ -233,74 +233,141 @@ class AuthService {
     final existing = await _db.collection('usernames').doc(lowerUsername).get();
     if (existing.exists) throw Exception('Username already taken');
 
-    final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-    // SessionService both prepares this device's Signal Protocol identity
-    // AND — if a different account was last active on this device — wipes
-    // that previous account's local state first (old messages, old keys)
-    // so it's never visible to this new one.
-    await SessionService.prepareForUser(cred.user!.uid);
-
-    final batch = _db.batch();
-    batch.set(_db.collection('users').doc(cred.user!.uid), {
-      'username': lowerUsername,
-      'usernameLower': lowerUsername,
-      'photoUrl': null,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    batch.set(_privateProfileRef(cred.user!.uid), {
-      'emailVisible': false,
-      'lastSeenVisible': true,
-      'readReceiptsEnabled': true,
-      'blockedUsers': <String>[],
-      'messageTtlHours': 0, // never auto-delete — disappearing messages are opt-in (see settings_screen.dart)
-      'fcmTokens': <String>[],
-      'lastLoginAt': FieldValue.serverTimestamp(),
-    });
-    batch.set(_presenceRef(cred.user!.uid), {
-      'online': false,
-      'lastSeen': FieldValue.serverTimestamp(),
-    });
-    batch.set(_db.collection('usernames').doc(lowerUsername), {'uid': cred.user!.uid});
-    // BUGFIX: registration used to call batch.commit() with nothing
-    // guarding it. The initial "is this username taken" check above and
-    // the actual reservation here are two separate round-trips, so two
-    // people signing up with the same username at nearly the same moment
-    // could both pass the check and both reach this point. Firestore's
-    // security rules correctly reject the *second* writer's `usernames`
-    // create (it's a create-only doc), which fails the whole batch — but
-    // by then their Firebase Auth account already exists. Without this
-    // try/catch, that user would be left with a working Auth login and no
-    // Firestore profile document at all, breaking the app for them
-    // permanently. Now we delete the just-created Auth account and surface
-    // a clear, retryable error instead.
+    // BUGFIX ("shows signed in somewhere else / change your password" on a
+    // BRAND NEW account): registerWithEmail is the one device-claiming
+    // entry point in the whole app that never set isClaimPending, so it
+    // never had the protection LoginScreen's login flow already relies on
+    // (see DeviceSessionService.isClaimPending's doc comment for the full
+    // history of this exact race). createUserWithEmailAndPassword below
+    // makes Firebase report a signed-in user IMMEDIATELY — before the
+    // profile batch, email-verification redemption, and claimThisDevice a
+    // few lines down have even run, let alone finished. Without this flag:
+    //  * AuthGate reacts to that raw signal and switches straight to the
+    //    main app UI mid-registration, while this function is still
+    //    writing the account's own profile/session documents underneath
+    //    it — several screens read a freshly-created account before it's
+    //    actually finished being created.
+    //  * watchForRemoteLogout (started the moment AuthGate switches over)
+    //    starts watching this account's session doc before claimThisDevice
+    //    has written to it, which is exactly the timing gap that already
+    //    caused the same "signed in on another device, change your
+    //    password" false alarm for logins before isClaimPending existed.
+    // Setting it here, for the whole rest of this function, closes that
+    // gap for registration exactly the way LoginScreen already closes it
+    // for login — AuthGate holds until the `finally` below flips this back
+    // off, whether registration succeeds or fails.
+    DeviceSessionService.instance.isClaimPending = true;
     try {
-      await batch.commit();
-    } catch (e) {
+      final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
+      // SessionService both prepares this device's Signal Protocol identity
+      // AND — if a different account was last active on this device — wipes
+      // that previous account's local state first (old messages, old keys)
+      // so it's never visible to this new one.
+      await SessionService.prepareForUser(cred.user!.uid);
+
+      final batch = _db.batch();
+      batch.set(_db.collection('users').doc(cred.user!.uid), {
+        'username': lowerUsername,
+        'usernameLower': lowerUsername,
+        'photoUrl': null,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      batch.set(_privateProfileRef(cred.user!.uid), {
+        'emailVisible': false,
+        'lastSeenVisible': true,
+        'readReceiptsEnabled': true,
+        'blockedUsers': <String>[],
+        'messageTtlHours': 0, // never auto-delete — disappearing messages are opt-in (see settings_screen.dart)
+        'fcmTokens': <String>[],
+        'lastLoginAt': FieldValue.serverTimestamp(),
+      });
+      batch.set(_presenceRef(cred.user!.uid), {
+        'online': false,
+        'lastSeen': FieldValue.serverTimestamp(),
+      });
+      batch.set(_db.collection('usernames').doc(lowerUsername), {'uid': cred.user!.uid});
+      // BUGFIX: registration used to call batch.commit() with nothing
+      // guarding it. The initial "is this username taken" check above and
+      // the actual reservation here are two separate round-trips, so two
+      // people signing up with the same username at nearly the same moment
+      // could both pass the check and both reach this point. Firestore's
+      // security rules correctly reject the *second* writer's `usernames`
+      // create (it's a create-only doc), which fails the whole batch — but
+      // by then their Firebase Auth account already exists. Without this
+      // try/catch, that user would be left with a working Auth login and no
+      // Firestore profile document at all, breaking the app for them
+      // permanently. Now we delete the just-created Auth account and surface
+      // a clear, retryable error instead.
       try {
-        await cred.user!.delete();
-      } catch (_) {
-        // Best-effort cleanup — if this also fails (e.g. requires recent
-        // login, which it doesn't right after creation, or no network),
-        // the account may still be orphaned. Rare, but surfacing the
-        // original error is still the right call either way.
+        await batch.commit();
+      } catch (e) {
+        try {
+          await cred.user!.delete();
+        } catch (_) {
+          // Best-effort cleanup — if this also fails (e.g. requires recent
+          // login, which it doesn't right after creation, or no network),
+          // the account may still be orphaned. Rare, but surfacing the
+          // original error is still the right call either way.
+        }
+        throw Exception('That username was just taken by someone else — please choose another and try again.');
       }
-      throw Exception('That username was just taken by someone else — please choose another and try again.');
+
+      // Feature: Instagram-style signup — by this point the person already
+      // typed the email, got a 6-digit code emailed to them, and confirmed
+      // it (see RegisterScreen's email + verify steps, and sendSignupOtp /
+      // verifySignupOtp above). This is the step that redeems that
+      // confirmation onto the account we JUST created, flipping
+      // emailVerified to true server-side. Replaces the old
+      // cred.user!.sendEmailVerification() call — there's no separate
+      // "click a link to confirm" email anymore, the code they already
+      // entered during signup *is* the confirmation.
+      await _confirmVerifiedEmail();
+
+      pendingWelcomeMessage = 'Welcome to NWisp, $lowerUsername! 🎉';
+      await DeviceSessionService.instance.claimThisDevice(cred.user!.uid);
+      await _grantSupabaseAuthenticatedRole();
+      return cred;
+    } finally {
+      DeviceSessionService.instance.isClaimPending = false;
     }
+  }
 
-    // Feature: Instagram-style signup — by this point the person already
-    // typed the email, got a 6-digit code emailed to them, and confirmed
-    // it (see RegisterScreen's email + verify steps, and sendSignupOtp /
-    // verifySignupOtp above). This is the step that redeems that
-    // confirmation onto the account we JUST created, flipping
-    // emailVerified to true server-side. Replaces the old
-    // cred.user!.sendEmailVerification() call — there's no separate
-    // "click a link to confirm" email anymore, the code they already
-    // entered during signup *is* the confirmation.
-    await _confirmVerifiedEmail();
-
-    pendingWelcomeMessage = 'Welcome to NWisp, $lowerUsername! 🎉';
-    await DeviceSessionService.instance.claimThisDevice(cred.user!.uid);
-    return cred;
+  /// SECURITY FIX (2026-09-24 audit) — see supabase/functions/set-auth-role
+  /// for the full picture. Grants this account Supabase's required
+  /// `role: authenticated` custom claim, which is what lets Supabase's
+  /// Third-Party Auth bridge (see main.dart's Supabase.initialize) resolve
+  /// auth.uid() to this person's real Firebase uid, which in turn is what
+  /// lets the message_relay RLS policies in
+  /// supabase/migrations/0009_message_relay_rls.sql actually check
+  /// anything (see that file's own header for the full chain).
+  ///
+  /// Called once after every successful registration and login. Calling it
+  /// again for someone who already has the claim is harmless and cheap
+  /// (set-auth-role is idempotent) — that's deliberate: it's what lets
+  /// this same call quietly backfill every account that existed BEFORE
+  /// this fix, the next time each one simply logs in, with no separate
+  /// bulk migration script needed.
+  ///
+  /// Best-effort on purpose: if this fails (offline, or the Edge Function
+  /// hasn't been deployed to this Supabase project yet), registration and
+  /// login still succeed. Messaging itself never depended on Supabase's
+  /// Third-Party Auth being configured — only the extra RLS protection in
+  /// migration 0009 does, and that migration is written to fail CLOSED,
+  /// not open, until every piece of this is wired up (see its header
+  /// comment's "ORDERING WARNING"). Swallowing the error here means a
+  /// backend that hasn't caught up yet can never lock someone out of their
+  /// own account in the meantime.
+  Future<void> _grantSupabaseAuthenticatedRole() async {
+    try {
+      await _postFunction('set-auth-role', {}, includeIdToken: true);
+      // The claim only affects the NEXT ID token Firebase mints — force a
+      // refresh now so Supabase sees it immediately, instead of waiting up
+      // to an hour for the current token to expire naturally (see
+      // set-auth-role's own comment on exactly this).
+      await FirebaseAuth.instance.currentUser?.getIdToken(true);
+    } catch (_) {
+      // See doc comment above — deliberately not rethrown.
+    }
   }
 
   /// Step 1 of signing in: verify credentials only. Always call this
@@ -402,6 +469,7 @@ class AuthService {
     // device previously signed in gets signed out (see
     // DeviceSessionService and its listener wired up in main.dart).
     await DeviceSessionService.instance.claimThisDevice(uid);
+    await _grantSupabaseAuthenticatedRole();
   }
 
   /// Unchanged end-to-end behavior for the common case (login-approval
