@@ -27,6 +27,11 @@ Future<void> showAttachmentMenu(
   VoidCallback? onGalleryPhotoViewOnce,
   VoidCallback? onCameraVideoViewOnce,
   VoidCallback? onGalleryVideoViewOnce,
+  // Feature: live location sharing. Optional (and 1:1-chat-only for now —
+  // see ChatDetailScreen's own call site) so this shared sheet's other
+  // caller, group_chat_screen.dart, is completely unaffected when it
+  // doesn't pass this.
+  VoidCallback? onLiveLocation,
 }) {
   final scheme = Theme.of(context).colorScheme;
   // Any caller that hasn't wired up the view-once callbacks yet (there
@@ -99,6 +104,16 @@ Future<void> showAttachmentMenu(
                         (viewOnce && onGalleryVideoViewOnce != null) ? onGalleryVideoViewOnce() : onGalleryVideo();
                       },
                     ),
+                    if (onLiveLocation != null)
+                      _AttachmentOption(
+                        icon: Icons.location_on_outlined,
+                        label: 'Live location',
+                        color: const Color(0xFF1E88E5),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          onLiveLocation();
+                        },
+                      ),
                   ],
                 ),
               ],
