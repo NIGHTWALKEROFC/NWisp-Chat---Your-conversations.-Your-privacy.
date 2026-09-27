@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/broadcast_list_service.dart';
+import '../../widgets/quick_replies_sheet.dart';
 import 'create_broadcast_list_screen.dart';
 
 /// Feature: broadcast lists — the "compose and send" screen for one list.
@@ -214,6 +215,21 @@ class _BroadcastListScreenState extends State<BroadcastListScreen> {
               padding: const EdgeInsets.all(8),
               child: Row(
                 children: [
+                  // Feature: quick replies / saved message templates —
+                  // pairs especially well with broadcast lists (see
+                  // QuickReplyService's own doc comment).
+                  IconButton(
+                    onPressed: () async {
+                      final text = await showQuickRepliesSheet(context);
+                      if (text == null || !mounted) return;
+                      final existing = _textController.text;
+                      _textController.text = existing.isEmpty ? text : '$existing $text';
+                      _textController.selection = TextSelection.collapsed(offset: _textController.text.length);
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.bolt_outlined),
+                    tooltip: 'Quick replies',
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _textController,
