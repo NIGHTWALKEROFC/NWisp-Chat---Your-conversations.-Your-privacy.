@@ -1158,7 +1158,7 @@ class LocalMessageStore {
 
   static Future<List<ConversationSummary>> _loadSummaries() async {
     final rows = await _db!.rawQuery('''
-      SELECT m1.conversation_id, m1.peer_uid, m1.enc_text, m1.enc_nonce, m1.created_at,
+      SELECT m1.conversation_id, m1.peer_uid, m1.enc_text, m1.enc_nonce, m1.created_at, m1.message_type,
         gm.name AS group_name, gm.avatar_url AS group_avatar_url,
         (SELECT COUNT(*) FROM messages m2
           WHERE m2.conversation_id = m1.conversation_id AND m2.is_mine = 0 AND m2.status != 'read') AS unread
@@ -1170,8 +1170,12 @@ class LocalMessageStore {
     ''');
     final result = <ConversationSummary>[];
     for (final r in rows) {
-      final text = await CryptoService.decryptLocal(r['enc_text'] as String, r['enc_nonce'] as String);
+      var text = await CryptoService.decryptLocal(r['enc_text'] as String, r['enc_nonce'] as String);
       final conversationId = r['conversation_id'] as String;
+      // Feature: live location sharing — the stored text for this type is
+      // a JSON payload ({"shareId":...}) meant for the bubble to parse,
+      // not something to show as-is in the chat list preview.
+      if (r['message_type'] == 'live_location') text = '📍 Live location';
       result.add(ConversationSummary(
         conversationId: conversationId,
         peerUid: r['peer_uid'] as String,
