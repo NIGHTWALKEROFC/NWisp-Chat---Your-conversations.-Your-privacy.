@@ -59,6 +59,13 @@ dependencies:
   # loads Cloudflare's Turnstile widget inside a small WebView (see
   # TurnstileCaptcha in lib/widgets/turnstile_captcha.dart).
   webview_flutter: ^4.10.0
+  # Feature: live location sharing (see LiveLocationService). geolocator
+  # reads the device's GPS; flutter_map + latlong2 draw the map bubble/full
+  # screen view using OpenStreetMap tiles — no API key or billing account
+  # needed, unlike google_maps_flutter.
+  geolocator: ^13.0.2
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
 
 dev_dependencies:
   flutter_test:
