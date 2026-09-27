@@ -12,6 +12,7 @@ import 'group_service.dart';
 import 'local_media_files.dart';
 import 'local_message_store.dart';
 import 'media_service.dart';
+import 'pin_service.dart';
 import 'signal_session_service.dart';
 import 'traffic_camouflage_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
@@ -327,6 +328,13 @@ class MessageRelayService {
       case 'reaction':
         final data = jsonDecode(payload) as Map<String, dynamic>;
         await LocalMessageStore.setReaction(data['ref'] as String, senderUid, data['emoji'] as String?);
+        break;
+      case 'pin_update':
+        // Feature: shared pinned messages — see PinService's doc comment
+        // and sendPinUpdate above. setPinned (not togglePin) because this
+        // message already says exactly what state to end up in.
+        final data = jsonDecode(payload) as Map<String, dynamic>;
+        await PinService.setPinned(row['conversation_id'] as String, data['ref'] as String, data['pinned'] as bool);
         break;
       case 'screenshot':
         // Feature: screenshot alert. The other person's phone reported that
@@ -986,6 +994,30 @@ class MessageRelayService {
       'ciphertext': ciphertext,
       'nonce': nonce,
       'message_type': 'reaction',
+      'client_id': _uuid.v4(),
+      'ttl_hours': 1,
+    });
+  }
+
+  /// Feature: shared pinned messages. Tells the other person a message was
+  /// pinned/unpinned so both sides show the same pin — see PinService's
+  /// own doc comment for the full picture. A tiny control message, same
+  /// shape and same 1-hour throwaway TTL as [sendReaction] above.
+  static Future<void> sendPinUpdate({
+    required String conversationId,
+    required String toUid,
+    required String messageId,
+    required bool pinned,
+  }) async {
+    final (ciphertext, nonce) =
+        await SignalSessionService.instance.encryptForPeer(toUid, jsonEncode({'ref': messageId, 'pinned': pinned}));
+    await insertMessageRelayRow({
+      'conversation_id': conversationId,
+      'sender_uid': _myUid,
+      'recipient_uid': toUid,
+      'ciphertext': ciphertext,
+      'nonce': nonce,
+      'message_type': 'pin_update',
       'client_id': _uuid.v4(),
       'ttl_hours': 1,
     });
