@@ -16,6 +16,7 @@ import 'services/group_service.dart';
 import 'services/inactivity_wipe_service.dart';
 import 'services/keyword_mute_service.dart';
 import 'services/local_message_store.dart';
+import 'services/live_location_service.dart';
 import 'services/message_relay_service.dart';
 import 'services/scheduled_message_service.dart';
 import 'services/media_vault_service.dart';
@@ -86,6 +87,11 @@ void main() async {
     accessToken: () async => FirebaseAuth.instance.currentUser?.getIdToken(),
   );
   await LocalMessageStore.init();
+  // Feature: live location sharing — resumes pushing position updates for
+  // a share that was still running when the app was last closed, instead
+  // of leaving it silently stale. Safe to call even when signed out or
+  // when there's nothing to resume — see the method's own doc comment.
+  LiveLocationService.resumeActiveShareIfAny();
 
   // Screenshot alert: lets the native side (MainActivity.kt) report screenshot
   // attempts up to Dart. Recents preview: applies the saved "Hide app preview
