@@ -89,6 +89,9 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   final _conversationService = ConversationService();
   final _moderationService = ModerationService();
   final _textController = TextEditingController();
+  // Feature: message drafts — debounce timer for the periodic save while
+  // typing; see _onTextChanged and dispose().
+  Timer? _draftSaveTimer;
   final _scrollController = ScrollController();
   String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
 
@@ -217,6 +220,14 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   @override
   void initState() {
     super.initState();
+    // Feature: message drafts — restore whatever was left unsent last time
+    // this chat was open. Only fills the box if it's still empty (it will
+    // be, this early in initState) so it never clobbers anything.
+    LocalMessageStore.getDraft(widget.conversationId).then((draft) {
+      if (mounted && draft != null && _textController.text.isEmpty) {
+        setState(() => _textController.text = draft);
+      }
+    });
     // Feature: "jump to unread" button. Fired first, before anything
     // else in initState — best-effort race against markConversationRead
     // (called from the message StreamBuilder in build(), not from here),
@@ -289,6 +300,17 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     }
     ScreenshotGuardService.release();
     _conversationService.setTyping(widget.conversationId, false);
+    // Feature: message drafts — whatever's left in the compose bar when
+    // this screen actually closes is saved (or, if it's now empty because
+    // it was sent, cleared) — see LocalMessageStore.saveDraft. Skipped
+    // while mid-edit of an existing message (_editingMessage != null):
+    // that text is the ORIGINAL message being edited, not a new draft,
+    // and saving it here would wrongly turn a cancelled edit into a
+    // "draft" for a brand-new message next time this chat opens.
+    _draftSaveTimer?.cancel();
+    if (_editingMessage == null) {
+      LocalMessageStore.saveDraft(widget.conversationId, _textController.text);
+    }
     // Feature: "clear on exit" ephemeral view mode. Fires exactly once,
     // right as this exact conversationId's screen is actually leaving the
     // widget tree (back gesture, back button, or any other pop) —
@@ -311,6 +333,16 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
 
   void _onTextChanged(String value) {
     _conversationService.setTyping(widget.conversationId, value.isNotEmpty);
+    // Feature: message drafts — lightly debounced so a draft survives the
+    // app being killed by the OS while this chat is still open, not just
+    // a normal navigate-away (dispose() above handles that case already).
+    // Skipped while editing an existing message — see dispose()'s comment.
+    if (_editingMessage == null) {
+      _draftSaveTimer?.cancel();
+      _draftSaveTimer = Timer(const Duration(milliseconds: 800), () {
+        LocalMessageStore.saveDraft(widget.conversationId, _textController.text);
+      });
+    }
     setState(() {}); // toggles the compose bar between the mic icon and the send icon
   }
 
@@ -462,6 +494,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     final editing = _editingMessage;
     if (editing != null) {
       _textController.clear();
+      _draftSaveTimer?.cancel();
       setState(() => _editingMessage = null);
       try {
         await MessageRelayService.editMessage(
@@ -485,6 +518,8 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     }
 
     _textController.clear();
+    _draftSaveTimer?.cancel();
+    LocalMessageStore.clearDraft(widget.conversationId);
     final replyId = _replyingTo?.id;
     setState(() => _replyingTo = null);
     Future<void> attemptSend() async {
@@ -594,6 +629,8 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
       replyToId: _replyingTo?.id,
     );
     _textController.clear();
+    _draftSaveTimer?.cancel();
+    LocalMessageStore.clearDraft(widget.conversationId);
     setState(() => _replyingTo = null);
     await _conversationService.setTyping(widget.conversationId, false);
     _showForwardSnack('Scheduled for ${formatScheduledTime(choice.sendAt)}${choice.silent ? ' (silent)' : ''}.');
