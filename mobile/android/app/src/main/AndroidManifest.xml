@@ -15,6 +15,24 @@
          covers face/iris unlock too on devices that support it. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
 
+    <!-- Feature: live location sharing (see LiveLocationService). Fine +
+         coarse are the normal runtime-prompted permissions for "share while
+         using the app". ACCESS_BACKGROUND_LOCATION lets Android keep
+         reporting position for a short grace period after the app is
+         minimized; it is NOT the same as a true always-on background
+         tracker, which would additionally require a dedicated Android
+         foreground Service (native Kotlin code, not just this manifest
+         entry) — this app does not include one, so a share may pause
+         sooner than its chosen duration if the phone is left backgrounded
+         for a while. Android 10+ also requires this to be requested
+         separately from fine/coarse, and only after the person has already
+         granted one of those — LiveLocationService's permission flow does
+         this in that order. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
+
     <!-- Feature: screenshot alert. Lets the app find out (Android 14+) when the
          screenshot button combo is pressed, so the other person in a chat can
          be told. Screenshots themselves are still blocked (FLAG_SECURE) — this
