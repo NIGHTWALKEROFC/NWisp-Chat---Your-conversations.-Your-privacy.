@@ -32,6 +32,9 @@ Future<void> showAttachmentMenu(
   // caller, group_chat_screen.dart, is completely unaffected when it
   // doesn't pass this.
   VoidCallback? onLiveLocation,
+  // Feature: "Request their location" — the companion to onLiveLocation
+  // above, so it isn't always the sender who has to start sharing first.
+  VoidCallback? onRequestLocation,
 }) {
   final scheme = Theme.of(context).colorScheme;
   // Any caller that hasn't wired up the view-once callbacks yet (there
@@ -112,6 +115,16 @@ Future<void> showAttachmentMenu(
                         onTap: () {
                           Navigator.pop(sheetContext);
                           onLiveLocation();
+                        },
+                      ),
+                    if (onRequestLocation != null)
+                      _AttachmentOption(
+                        icon: Icons.person_pin_circle_outlined,
+                        label: 'Request location',
+                        color: const Color(0xFF3949AB),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          onRequestLocation();
                         },
                       ),
                   ],
