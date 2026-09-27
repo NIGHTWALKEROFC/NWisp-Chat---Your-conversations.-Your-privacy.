@@ -28,6 +28,8 @@ import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
 import '../../widgets/live_location_share_sheet.dart';
 import '../../widgets/live_location_bubble.dart';
+import '../../widgets/location_request_card.dart';
+import '../../widgets/quick_replies_sheet.dart';
 import '../../widgets/media_viewer_screen.dart';
 import '../../widgets/message_link_text.dart';
 import '../../widgets/view_once_media_screen.dart';
@@ -145,6 +147,10 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   /// let you do one or the other at a time.
   LocalMessage? _editingMessage;
   List<String> _pinnedIds = [];
+  // Feature: shared pinned messages — live subscription so a pin/unpin
+  // that just arrived from the other person updates this screen right
+  // away, not just this device's own pin actions.
+  StreamSubscription<List<String>>? _pinnedSub;
   int _pinnedBannerIndex = 0;
   bool _readReceiptsEnabled = true;
   bool _peerBlockedByMe = false;
@@ -284,7 +290,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
       final blocked = List<String>.from(doc.data()?['blockedUsers'] ?? []);
       setState(() => _peerBlockedByMe = blocked.contains(widget.peerUid));
     });
-    PinService.pinnedFor(widget.conversationId).then((ids) {
+    _pinnedSub = PinService.watchPinned(widget.conversationId).listen((ids) {
       if (mounted) setState(() => _pinnedIds = ids);
     });
     // PERFORMANCE BUGFIX — see this class's field-level doc comment above
@@ -313,6 +319,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     if (_editingMessage == null) {
       LocalMessageStore.saveDraft(widget.conversationId, _textController.text);
     }
+    _pinnedSub?.cancel();
     // Feature: "clear on exit" ephemeral view mode. Fires exactly once,
     // right as this exact conversationId's screen is actually leaving the
     // widget tree (back gesture, back button, or any other pop) —
@@ -747,7 +754,28 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
         conversationId: widget.conversationId,
         recipientUid: widget.peerUid,
       ),
+      onRequestLocation: _sendLocationRequest,
     );
+  }
+
+  /// Feature: "Request their location" — the companion to live location
+  /// sharing, so it isn't always the sender who has to start sharing
+  /// first. Sends an ordinary, end-to-end encrypted chat message (no
+  /// coordinates in it — just a request), rendered by _MessageBubble as a
+  /// small card with a "Share my location" button for whoever receives it.
+  Future<void> _sendLocationRequest() async {
+    try {
+      await MessageRelayService.sendMessage(
+        conversationId: widget.conversationId,
+        recipientUid: widget.peerUid,
+        text: 'Requested your live location',
+        messageType: 'location_request',
+        ttlHours: _effectiveTtlHours,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't send request: $e")));
+    }
   }
 
   Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
@@ -1070,6 +1098,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   Future<void> _pinSelected() async {
     if (_selectedIds.length != 1) return;
     final id = _selectedIds.first;
+    final wasPinned = _pinnedIds.contains(id);
     final error = await PinService.togglePin(widget.conversationId, id);
     final ids = await PinService.pinnedFor(widget.conversationId);
     if (!mounted) return;
@@ -1078,6 +1107,17 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
       _pinnedBannerIndex = 0;
       _selectedIds.clear();
     });
+    // Feature: shared pinned messages — tell the other person, unless the
+    // pin limit was hit (error != null), in which case nothing actually
+    // changed here and there's nothing to tell them.
+    if (error == null) {
+      MessageRelayService.sendPinUpdate(
+        conversationId: widget.conversationId,
+        toUid: widget.peerUid,
+        messageId: id,
+        pinned: !wasPinned,
+      );
+    }
     if (error != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
     }
@@ -1640,6 +1680,11 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                               if (_selectedIds.isNotEmpty) return;
                               setState(() => _replyingTo = msg);
                             },
+                            onShareLocationRequest: () => showLiveLocationShareSheet(
+                              context,
+                              conversationId: widget.conversationId,
+                              recipientUid: widget.peerUid,
+                            ),
                           ),
                         );
                         if (!showDateHeader) return bubble;
@@ -1740,6 +1785,19 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                                 )
                               : Icon(Icons.add_circle_outline, color: scheme.primary),
                           tooltip: 'Attach photo or video',
+                        ),
+                        // Feature: quick replies / saved message templates.
+                        IconButton(
+                          onPressed: () async {
+                            final text = await showQuickRepliesSheet(context);
+                            if (text == null || !mounted) return;
+                            final existing = _textController.text;
+                            _textController.text = existing.isEmpty ? text : '$existing $text';
+                            _textController.selection = TextSelection.collapsed(offset: _textController.text.length);
+                            _onTextChanged(_textController.text);
+                          },
+                          icon: Icon(Icons.bolt_outlined, color: scheme.primary),
+                          tooltip: 'Quick replies',
                         ),
                         Expanded(
                           child: Container(
@@ -1940,6 +1998,14 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                     _pinnedIds = ids;
                     _pinnedBannerIndex = 0;
                   });
+                  // Feature: shared pinned messages — see _pinSelected's
+                  // matching comment above.
+                  MessageRelayService.sendPinUpdate(
+                    conversationId: widget.conversationId,
+                    toUid: widget.peerUid,
+                    messageId: pinnedId,
+                    pinned: false,
+                  );
                 },
               ),
             ],
@@ -2166,6 +2232,13 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback onTapReactionChip;
   final VoidCallback onRetry;
   final VoidCallback onSwipeReply;
+  // Feature: "Request their location" — only meaningful for a
+  // messageType == 'location_request' bubble; every other bubble ignores
+  // this. Kept as a callback (rather than raw conversationId/peerUid
+  // fields on this widget) so this widget doesn't need to know anything
+  // about live location sharing itself — see this file's call site for
+  // what it actually does.
+  final VoidCallback onShareLocationRequest;
 
   const _MessageBubble({
     required this.id,
@@ -2192,6 +2265,7 @@ class _MessageBubble extends StatelessWidget {
     required this.onTapReactionChip,
     required this.onRetry,
     required this.onSwipeReply,
+    required this.onShareLocationRequest,
   });
 
   /// Feature: message timestamps with seconds — shown on the bottom-right
@@ -2346,8 +2420,16 @@ class _MessageBubble extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 2),
                             child: LiveLocationBubble(payloadText: text, isMine: isMine),
+                          )
+                        else if (messageType == 'location_request')
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: LocationRequestCard(
+                              isMine: isMine,
+                              onShareLocation: onShareLocationRequest,
+                            ),
                           ),
-                        if (text.isNotEmpty && messageType != 'live_location')
+                        if (text.isNotEmpty && messageType != 'live_location' && messageType != 'location_request')
                           RichText(
                             text: TextSpan(
                               style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
