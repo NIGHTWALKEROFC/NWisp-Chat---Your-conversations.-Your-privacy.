@@ -403,7 +403,18 @@ class _AccountScreenState extends State<AccountScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+                    // Bug fix: this screen already knows the signed-in
+                    // account's email (_email, loaded in _load() above) —
+                    // AccountSecurityScreen's own "Not sure this was you?"
+                    // entry point already does this correctly by passing
+                    // knownEmail, this row just hadn't been updated to
+                    // match. Passing it here does the same thing
+                    // ForgotPasswordScreen already supports: it shows
+                    // "We'll email a code/link to <email>" and skips
+                    // straight past the identifier text field entirely,
+                    // instead of asking someone to re-type an email
+                    // the app already has.
+                    MaterialPageRoute(builder: (_) => ForgotPasswordScreen(knownEmail: _email)),
                   ),
                 ),
 
