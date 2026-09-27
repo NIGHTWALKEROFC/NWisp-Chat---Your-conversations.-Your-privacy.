@@ -282,6 +282,30 @@ service cloud.firestore {
       }
     }
 
+    // ---- liveLocations/{shareId} — Feature: live location sharing --------
+    // Each share is its own document (the shareId is generated client-side,
+    // see LiveLocationService), holding the CURRENT position only — not a
+    // history/trail. Unlike message content, this does NOT go through the
+    // Signal-encrypted Supabase relay: it's continuously-updating ephemeral
+    // metadata, handled the same way this app already treats typing
+    // indicators above (plain Firestore, gated to only the two people
+    // involved) rather than one-shot encrypted content. The share's
+    // existence and expiry time ARE sent as a normal end-to-end encrypted
+    // chat message (see LiveLocationService.startSharing) — only the
+    // ongoing coordinates themselves live here.
+    match /liveLocations/{shareId} {
+      function isSenderOrRecipient() {
+        return isSignedIn() && (request.auth.uid == resource.data.senderUid || request.auth.uid == resource.data.recipientUid);
+      }
+      allow read: if isSenderOrRecipient();
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.senderUid;
+      // Only the sender ever writes an update (new coordinates, or
+      // stopped: true) — the recipient is read-only, same as they can't
+      // edit a message someone sent them.
+      allow update: if isSignedIn() && request.auth.uid == resource.data.senderUid;
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.senderUid;
+    }
+
     // ---- groups/{groupId} — Phase 7 (group chats) ------------------------
     // Metadata only (name/avatar/membership) — group MESSAGE content never
     // touches Firestore at all, it's fanned out through Supabase
