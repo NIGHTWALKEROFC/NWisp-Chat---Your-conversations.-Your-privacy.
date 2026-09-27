@@ -26,6 +26,8 @@ import '../../services/scheduled_message_service.dart';
 import '../../widgets/schedule_send_sheet.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
+import '../../widgets/live_location_share_sheet.dart';
+import '../../widgets/live_location_bubble.dart';
 import '../../widgets/media_viewer_screen.dart';
 import '../../widgets/message_link_text.dart';
 import '../../widgets/view_once_media_screen.dart';
@@ -740,6 +742,11 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
       onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
       // The separate "view once" entries are gone from this menu: view once is
       // now a switch inside the preview that opens after you pick something.
+      onLiveLocation: () => showLiveLocationShareSheet(
+        context,
+        conversationId: widget.conversationId,
+        recipientUid: widget.peerUid,
+      ),
     );
   }
 
@@ -2334,8 +2341,13 @@ class _MessageBubble extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 2),
                             child: VoiceMessageBubble(path: mediaPath!, isMine: isMine),
+                          )
+                        else if (messageType == 'live_location')
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: LiveLocationBubble(payloadText: text, isMine: isMine),
                           ),
-                        if (text.isNotEmpty)
+                        if (text.isNotEmpty && messageType != 'live_location')
                           RichText(
                             text: TextSpan(
                               style: TextStyle(color: isMine ? scheme.onPrimary : scheme.onSurface),
