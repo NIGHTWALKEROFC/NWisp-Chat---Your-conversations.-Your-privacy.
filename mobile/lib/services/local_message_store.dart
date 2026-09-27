@@ -39,13 +39,18 @@ class LocalMessageStore {
   // why this needs its own table instead of just clearing messages.
   static final _deletedChatsController = StreamController<Set<String>>.broadcast();
 
+  // Feature: message drafts — conversationId -> unsent compose-bar text,
+  // kept locally so leaving a chat without sending never loses what was
+  // typed (see saveDraft/getDraft/clearDraft below).
+  static final _draftsController = StreamController<Map<String, String>>.broadcast();
+
   static Future<void> init() async {
     if (_db != null) return;
     final dbPath = await getDatabasesPath();
     final path = p.join(dbPath, 'nwisp_messages.db');
     _db = await openDatabase(
       path,
-      version: 11,
+      version: 12,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -80,6 +85,7 @@ class LocalMessageStore {
         await _createPendingMediaSendsTable(db);
         await _createManualUnreadTable(db);
         await _createDeletedChatsTable(db);
+        await _createDraftsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // v1 -> v2: adds the group_meta cache table for Phase 7 (group
@@ -186,9 +192,24 @@ class LocalMessageStore {
         if (oldVersion < 11) {
           await _createDeletedChatsTable(db);
         }
+        // v11 -> v12: adds `drafts` for the "unsent text stays there when
+        // you come back" feature — see saveDraft/getDraft/clearDraft.
+        if (oldVersion < 12) {
+          await _createDraftsTable(db);
+        }
       },
     );
     await purgeExpired();
+  }
+
+  static Future<void> _createDraftsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS drafts (
+        conversation_id TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    ''');
   }
 
   static Future<void> _createManualUnreadTable(Database db) async {
@@ -949,6 +970,64 @@ class LocalMessageStore {
     return _deletedChatsController.stream;
   }
 
+  // ---- Message drafts (Feature) ----------------------------------------
+  //
+  // WhatsApp/Telegram-style: whatever's sitting in the compose bar when you
+  // leave a chat without sending is saved here, keyed by conversationId,
+  // and put back the next time that chat opens. Device-local only — never
+  // sent anywhere, never visible to the other person.
+
+  /// Saves (or clears, if [text] is blank) the draft for [conversationId].
+  /// Call this from ChatDetailScreen.dispose() and/or a short debounce
+  /// while typing — see that screen's _saveDraftDebounced.
+  static Future<void> saveDraft(String conversationId, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      await clearDraft(conversationId);
+      return;
+    }
+    await _db!.insert(
+      'drafts',
+      {'conversation_id': conversationId, 'text': text, 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    _notifyDrafts();
+  }
+
+  /// Call once a message actually sends (or an edit/schedule goes through)
+  /// so the draft doesn't linger and reappear next time.
+  static Future<void> clearDraft(String conversationId) async {
+    final removed = await _db!.delete('drafts', where: 'conversation_id = ?', whereArgs: [conversationId]);
+    if (removed > 0) _notifyDrafts();
+  }
+
+  /// The saved draft text for one chat, or null if there isn't one. Used
+  /// by ChatDetailScreen.initState to restore the compose bar.
+  static Future<String?> getDraft(String conversationId) async {
+    final rows = await _db!.query('drafts', columns: ['text'], where: 'conversation_id = ?', whereArgs: [conversationId]);
+    if (rows.isEmpty) return null;
+    return rows.first['text'] as String;
+  }
+
+  static Future<Map<String, String>> _loadDrafts() async {
+    final rows = await _db!.query('drafts', columns: ['conversation_id', 'text']);
+    return {for (final r in rows) r['conversation_id'] as String: r['text'] as String};
+  }
+
+  static void _notifyDrafts() {
+    _loadDrafts().then((drafts) {
+      if (!_draftsController.isClosed) _draftsController.add(drafts);
+    }).catchError((Object e) {});
+  }
+
+  /// Emits conversationId -> draft text for every chat with an unsent
+  /// draft, whenever it changes (and once right away). ChatListScreen
+  /// uses this to show a "Draft: ..." preview instead of the last message.
+  static Stream<Map<String, String>> watchDrafts() {
+    _notifyDrafts();
+    return _draftsController.stream;
+  }
+
   static Future<void> markConversationRead(String conversationId) async {
     // Opening a chat also clears a manual "Mark as unread" flag on it.
     await setManualUnread(conversationId, false);
@@ -994,6 +1073,8 @@ class LocalMessageStore {
     _notifyManualUnread();
     await _db!.delete('deleted_chats');
     _notifyDeletedChats();
+    await _db!.delete('drafts');
+    _notifyDrafts();
     // Feature: locked media vault — it belongs to the account that set it up,
     // so a different account signing in on this phone (or an account being
     // deleted) wipes it too, exactly like everything else here.
