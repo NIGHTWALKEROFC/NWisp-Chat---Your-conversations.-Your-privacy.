@@ -27,6 +27,7 @@ import 'contacts/contacts_screen.dart';
 import 'contacts/find_users_screen.dart';
 import 'global_search_screen.dart';
 import 'groups/create_group_screen.dart';
+import 'broadcast/broadcast_lists_screen.dart';
 import 'groups/group_chat_screen.dart';
 import 'groups/group_invites_screen.dart';
 import 'security/chat_pin_guard.dart';
@@ -65,6 +66,13 @@ class _ChatRow {
   /// forward messages from this chat and is waiting on my answer.
   final bool forwardRequestPending;
 
+  /// Feature: message drafts — unsent compose-bar text left in this chat
+  /// (see LocalMessageStore.watchDrafts). When non-null, the row's
+  /// subtitle shows "Draft: ..." instead of the last real message, the
+  /// same way WhatsApp/Telegram do — the draft always wins over lastText
+  /// for display purposes, but lastText/lastAt are untouched underneath.
+  final String? draftText;
+
   _ChatRow({
     required this.conversationId,
     required this.peerUid,
@@ -81,6 +89,7 @@ class _ChatRow {
     this.markedUnread = false,
     this.mutedUntil,
     this.forwardRequestPending = false,
+    this.draftText,
   });
 }
 
@@ -156,6 +165,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Set<String> _deletedChats = {};
   StreamSubscription<Set<String>>? _deletedChatsSub;
 
+  // Feature: message drafts — conversationId -> unsent compose-bar text
+  // (see LocalMessageStore.watchDrafts). Shown as "Draft: ..." on the row.
+  Map<String, String> _drafts = {};
+  StreamSubscription<Map<String, String>>? _draftsSub;
+
   late final StreamSubscription _localSub;
   late final StreamSubscription _convoSub;
   late final StreamSubscription _groupsSub;
@@ -225,6 +239,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
     });
     _deletedChatsSub = LocalMessageStore.watchDeletedChats().listen((ids) {
       if (mounted) setState(() => _deletedChats = ids);
+    });
+    _draftsSub = LocalMessageStore.watchDrafts().listen((drafts) {
+      if (mounted) setState(() => _drafts = drafts);
     });
     _foldersSub = ChatFolderService.watchFolders().listen((f) {
       if (mounted) setState(() => _folders = f);
@@ -297,6 +314,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _foldersSub.cancel();
     _manualUnreadSub?.cancel();
     _deletedChatsSub?.cancel();
+    _draftsSub?.cancel();
     _freezeSub?.cancel();
     _freezeSweepTimer?.cancel();
     super.dispose();
@@ -471,6 +489,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         markedUnread: _manualUnread.contains(s.conversationId),
         mutedUntil: _muteExpiry(s.conversationId),
         forwardRequestPending: !s.isGroup && _hasIncomingForwardRequest(s.conversationId),
+        draftText: _drafts[s.conversationId],
       );
     }
     for (final doc in _convoDocs) {
@@ -493,6 +512,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         markedUnread: _manualUnread.contains(doc.id),
         mutedUntil: _muteExpiry(doc.id),
         forwardRequestPending: _conversationService.hasIncomingForwardingRequest(doc.data()),
+        draftText: _drafts[doc.id],
       );
     }
     for (final doc in _groupDocs) {
@@ -517,6 +537,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         pinned: GroupService.instance.isPinnedByMe(data),
         markedUnread: _manualUnread.contains(doc.id),
         mutedUntil: _muteExpiry(doc.id),
+        draftText: _drafts[doc.id],
       );
     }
     final rows = byConvo.values.toList()
@@ -541,6 +562,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
         break;
       case 'new_group':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateGroupScreen()));
+        break;
+      case 'broadcast_lists':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const BroadcastListsScreen()));
         break;
       case 'profile':
         _openProfile();
@@ -669,6 +693,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
               PopupMenuItem(
                 value: 'new_group',
                 child: ListTile(leading: Icon(Icons.groups_rounded), title: Text('New group'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'broadcast_lists',
+                child: ListTile(leading: Icon(Icons.campaign_outlined), title: Text('Broadcast lists'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuDivider(),
               PopupMenuItem(
@@ -1096,6 +1124,22 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
+  /// Feature: message drafts — "Draft: ..." styled like WhatsApp (the
+  /// "Draft" label in the error/accent color, the text itself normal),
+  /// shown instead of the last real message whenever one exists.
+  Widget _draftSubtitle(ColorScheme scheme, String draftText) {
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: 'Draft: ', style: TextStyle(color: scheme.error, fontWeight: FontWeight.w600)),
+          TextSpan(text: draftText.replaceAll('\n', ' ')),
+        ],
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
   Widget _chatRowTile(BuildContext context, ColorScheme scheme, _ChatRow row) {
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
@@ -1149,16 +1193,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
           child: row.avatarUrl == null ? const Icon(Icons.groups_rounded) : null,
         ),
         title: Text(row.title ?? 'Group', style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
-        subtitle: row.isPlaceholder
-            ? Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic))
-            : FutureBuilder<String>(
-                future: _usernameFor(row.peerUid),
-                builder: (context, nameSnap) {
-                  final sender = nameSnap.data;
-                  final prefix = sender != null ? '$sender: ' : '';
-                  return Text('$prefix${row.lastText}', maxLines: 1, overflow: TextOverflow.ellipsis);
-                },
-              ),
+        subtitle: row.draftText != null
+            ? _draftSubtitle(scheme, row.draftText!)
+            : row.isPlaceholder
+                ? Text(row.lastText, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic))
+                : FutureBuilder<String>(
+                    future: _usernameFor(row.peerUid),
+                    builder: (context, nameSnap) {
+                      final sender = nameSnap.data;
+                      final prefix = sender != null ? '$sender: ' : '';
+                      return Text('$prefix${row.lastText}', maxLines: 1, overflow: TextOverflow.ellipsis);
+                    },
+                  ),
         trailing: trailing,
         onTap: () async {
           if (!await requireChatPinIfLocked(context, row.conversationId)) return;
@@ -1178,12 +1224,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
         return _withSwipeActions(scheme, row, ListTile(
           leading: UserAvatar(uid: row.peerUid, name: username),
           title: Text(username, style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
-          subtitle: Text(
-            row.lastText,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: row.isPlaceholder ? TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic) : null,
-          ),
+          subtitle: row.draftText != null
+              ? _draftSubtitle(scheme, row.draftText!)
+              : Text(
+                  row.lastText,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: row.isPlaceholder ? TextStyle(color: scheme.onSurfaceVariant, fontStyle: FontStyle.italic) : null,
+                ),
           trailing: trailing,
           onTap: () async {
             if (!await requireChatPinIfLocked(context, row.conversationId)) return;
