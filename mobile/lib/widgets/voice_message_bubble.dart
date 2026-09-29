@@ -22,7 +22,16 @@ class VoiceMessageBubble extends StatefulWidget {
 }
 
 class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
+  /// Playback speeds the little chip cycles through: 1x -> 1.5x -> 2x -> 1x.
+  static const _speeds = [1.0, 1.5, 2.0];
+
+  /// The speed last picked on ANY voice message, so if you listen to a
+  /// string of them at 2x you don't have to tap it again on every one.
+  /// Only lives until the app is closed — not saved anywhere.
+  static double _lastSpeed = 1.0;
+
   final _player = AudioPlayer();
+  double _speed = _lastSpeed;
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
   bool _loaded = false;
@@ -42,6 +51,9 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
     });
     _player.setFilePath(widget.path).then((d) {
       if (!mounted) return;
+      // Applied after the file is loaded (setSpeed before that is ignored
+      // on some phones). just_audio keeps the voice's pitch natural.
+      if (_speed != 1.0) _player.setSpeed(_speed);
       setState(() {
         _duration = d ?? Duration.zero;
         _loaded = true;
@@ -66,6 +78,13 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
     super.dispose();
   }
 
+  void _cycleSpeed() {
+    final next = _speeds[(_speeds.indexOf(_speed) + 1) % _speeds.length];
+    setState(() => _speed = next);
+    _lastSpeed = next;
+    _player.setSpeed(next);
+  }
+
   String _fmt(Duration d) {
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
@@ -82,7 +101,7 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
     final playedBars = (progress * _bars.length).round();
 
     return SizedBox(
-      width: 210,
+      width: 240,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -134,6 +153,25 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
                   style: TextStyle(fontSize: 10.5, color: fg.withValues(alpha: 0.75)),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          // Speed chip — tap to switch between 1x, 1.5x and 2x.
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: !_loaded ? null : _cycleSpeed,
+            child: Container(
+              width: 38,
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: fg.withValues(alpha: _speed == 1.0 ? 0.12 : 0.28),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                _speed == _speed.roundToDouble() ? '${_speed.toInt()}x' : '${_speed}x',
+                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: fg),
+              ),
             ),
           ),
         ],
