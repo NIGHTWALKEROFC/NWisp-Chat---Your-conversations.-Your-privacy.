@@ -33,6 +33,7 @@ import 'screens/groups/group_chat_screen.dart';
 import 'screens/login_approval_screen.dart';
 import 'screens/security/chat_pin_guard.dart';
 import 'services/notification_sound_service.dart';
+import 'screens/security_chat_screen.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -151,6 +152,10 @@ Future<void> _setUpLocalNotifications() async {
     onDidReceiveNotificationResponse: (response) {
       final payload = response.payload;
       if (payload == null || payload.isEmpty) return;
+      if (payload == 'security_event') {
+        _openSecurityChat();
+        return;
+      }
       final parts = payload.split('|'); // conversationId|peerUid|peerUsername
       if (parts.length < 3) return;
       _openChat(conversationId: parts[0], peerUid: parts[1], peerUsername: parts.sublist(2).join('|'));
@@ -165,6 +170,11 @@ Future<void> _setUpLocalNotifications() async {
 }
 
 void _handleNotificationData(Map<String, dynamic> data) {
+  // Feature: NWisp Chat — a tapped security notice opens the official chat.
+  if (data['type'] == 'security_event') {
+    _openSecurityChat();
+    return;
+  }
   if (data['type'] == 'login_approval') {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final requestId = data['requestId'] as String?;
@@ -184,6 +194,14 @@ void _handleNotificationData(Map<String, dynamic> data) {
   final peerUsername = data['senderUsername'] as String?;
   if (conversationId == null || peerUid == null) return;
   _openChat(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername ?? 'Chat');
+}
+
+void _openSecurityChat() {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Only when someone is signed in — otherwise there's nothing to show.
+    if (FirebaseAuth.instance.currentUser == null) return;
+    navigatorKey.currentState?.push(MaterialPageRoute(builder: (_) => const SecurityChatScreen()));
+  });
 }
 
 /// Group ids are always "group_<uuid>" (see GroupService.newGroupId) — a
@@ -543,11 +561,13 @@ void _setUpPushNotifications() {
         return;
       }
     }
-    final payload = [
-      data['conversationId'] ?? '',
-      data['senderUid'] ?? '',
-      data['senderUsername'] ?? 'Chat',
-    ].join('|');
+    final payload = data['type'] == 'security_event'
+        ? 'security_event'
+        : [
+            data['conversationId'] ?? '',
+            data['senderUid'] ?? '',
+            data['senderUsername'] ?? 'Chat',
+          ].join('|');
     // Feature: custom notification sound — post to whichever channel carries
     // the sound the person picked in Settings > Notifications > Sounds.
     final channelId = await NotificationSoundService.instance.currentChannelId();
