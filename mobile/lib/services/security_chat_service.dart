@@ -28,15 +28,10 @@ class SecurityNotice {
   });
 }
 
-/// What the chat list needs to draw the pinned "NWisp Chat" row.
-class SecurityChatSummary {
-  final SecurityNotice? latest;
-  final int unread;
-  const SecurityChatSummary({required this.latest, required this.unread});
-}
-
-/// Feature: the official "NWisp Chat" conversation (like Telegram's
-/// service-notification chat).
+/// Feature: the official "NWisp Chat Notifications" conversation (like
+/// Telegram's service-notification chat). It's a read-only row in the normal
+/// chat list, ordered by its newest notice like any other chat, and it only
+/// appears once there is at least one notice.
 ///
 /// It is NOT a real chat and there's no server-side "NWisp account": the
 /// messages are just the account's own security history
@@ -60,15 +55,36 @@ class SecurityChatService {
   /// Firestore to send something new.
   final ValueNotifier<int> readTick = ValueNotifier(0);
 
-  Future<int> _lastReadMs() async {
+  int _lastReadMs = 0;
+  bool _loaded = false;
+
+  /// Reads which notices this phone has already seen. Call before showing
+  /// unread counts (the chat list does it once when it opens). The very first
+  /// time, "now" is stored, so a brand-new install doesn't announce its whole
+  /// old history as unread.
+  Future<void> load() async {
+    if (_loaded) return;
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt(_kLastRead) ?? 0;
+    final saved = prefs.getInt(_kLastRead);
+    if (saved == null) {
+      _lastReadMs = DateTime.now().millisecondsSinceEpoch;
+      await prefs.setInt(_kLastRead, _lastReadMs);
+    } else {
+      _lastReadMs = saved;
+    }
+    _loaded = true;
   }
+
+  /// How many of [list] arrived after the chat was last opened.
+  int unreadCount(List<SecurityNotice> list) =>
+      list.where((n) => n.time != null && n.time!.millisecondsSinceEpoch > _lastReadMs).length;
 
   /// Marks everything up to now as seen (called while the chat is open).
   Future<void> markRead() async {
+    _lastReadMs = DateTime.now().millisecondsSinceEpoch;
+    _loaded = true;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_kLastRead, DateTime.now().millisecondsSinceEpoch);
+    await prefs.setInt(_kLastRead, _lastReadMs);
     readTick.value++;
   }
 
@@ -83,15 +99,6 @@ class SecurityChatService {
       return DeviceSessionService.instance.historyStream(uid, after: cleared).map(
             (snap) => snap.docs.map((d) => fromHistory(d.id, d.data())).toList(),
           );
-    });
-  }
-
-  /// Latest notice + unread count, for the chat list row.
-  Stream<SecurityChatSummary> summary(String uid) {
-    return notices(uid).asyncMap((list) async {
-      final lastRead = await _lastReadMs();
-      final unread = list.where((n) => n.time != null && n.time!.millisecondsSinceEpoch > lastRead).length;
-      return SecurityChatSummary(latest: list.isEmpty ? null : list.first, unread: unread);
     });
   }
 
