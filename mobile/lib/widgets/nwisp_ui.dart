@@ -292,3 +292,42 @@ class NwispBackdrop extends StatelessWidget {
     );
   }
 }
+
+/// The blue verified tick shown next to the official "NWisp Chat" name —
+/// same idea as the tick Telegram puts on its own service account.
+class VerifiedBadge extends StatelessWidget {
+  final double size;
+  const VerifiedBadge({super.key, this.size = 16});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF38A8FF), Color(0xFF2F6BFF)],
+        ),
+      ),
+      child: Icon(Icons.check_rounded, size: size * 0.72, color: Colors.white),
+    );
+  }
+}
+
+/// Round avatar for the official account: the NWisp "N" on a navy disc.
+class NwispOfficialAvatar extends StatelessWidget {
+  final double radius;
+  const NwispOfficialAvatar({super.key, this.radius = 26});
+
+  @override
+  Widget build(BuildContext context) {
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: const Color(0xFF101A44),
+      child: NwispLogo(size: radius * 1.15),
+    );
+  }
+}
