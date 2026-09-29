@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
 import '../login_screen.dart';
 import 'account_screen.dart';
@@ -60,6 +61,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// One rounded, bordered block holding a few menu rows.
+  Widget _group(List<Widget> rows) {
+    final children = <Widget>[];
+    for (var i = 0; i < rows.length; i++) {
+      children.add(rows[i]);
+      if (i != rows.length - 1) children.add(const Divider(height: 1, indent: 60));
+    }
+    return NwispCard(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: Column(children: children),
+      ),
+    );
+  }
+
+  Widget _row(IconData icon, String title, String subtitle, Widget screen) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: scheme.primary.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(icon, color: scheme.primary, size: 20),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12.5)),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => screen)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -68,102 +103,73 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: _loadingProfile
           ? const Center(child: CircularProgressIndicator())
           : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
               children: [
-                ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: UserAvatar(
-                    // New key whenever my photo address changes, so this
-                    // avatar redraws right after I edit my profile.
-                    key: ValueKey('me_${AvatarCache.instance.peek(_authService.currentUserId ?? '')}'),
-                    uid: _authService.currentUserId ?? '',
-                    name: _username,
-                    radius: 26,
+                // Profile header — centred avatar, name, email, Edit profile.
+                const SizedBox(height: 8),
+                Center(
+                  child: GradientRing(
+                    padding: 3,
+                    child: UserAvatar(
+                      // New key whenever my photo address changes, so this
+                      // avatar redraws right after I edit my profile.
+                      key: ValueKey('me_${AvatarCache.instance.peek(_authService.currentUserId ?? '')}'),
+                      uid: _authService.currentUserId ?? '',
+                      name: _username,
+                      radius: 44,
+                    ),
                   ),
-                  title: Text(_username, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17)),
-                  subtitle: Text(_email),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () async {
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _username,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20),
+                ),
+                const SizedBox(height: 2),
+                Text(_email, textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant)),
+                const SizedBox(height: 14),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+                  onPressed: () async {
                     await Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => EditProfileScreen(currentUsername: _username)),
                     );
                     _load();
                   },
+                  child: const Text('Edit Profile'),
                 ),
-                const Divider(height: 24),
+                const SizedBox(height: 18),
                 // Feature: Privacy checkup — a guided, WhatsApp-style walk
                 // through every privacy / security setting, with a one-tap
                 // "make it all as private as possible" option.
-                ListTile(
-                  leading: Icon(Icons.health_and_safety_outlined, color: scheme.primary),
-                  title: const Text('Privacy checkup', style: TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Check your privacy settings and turn them all on in one tap'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrivacyCheckupScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.badge_outlined),
-                  title: const Text('Account'),
-                  subtitle: const Text('Email, password, account security'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AccountScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.lock_outline),
-                  title: const Text('Privacy'),
-                  subtitle: const Text('Last seen, read receipts, blocked users'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrivacySettingsScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.shield_outlined),
-                  title: const Text('Security'),
-                  subtitle: const Text('App lock, biometrics, panic PIN, chat hiding'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SecuritySettingsScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.notifications_outlined),
-                  title: const Text('Notifications'),
-                  subtitle: const Text('Muted keywords'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsSettingsScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.chat_bubble_outline),
-                  title: const Text('Chats'),
-                  subtitle: const Text('Auto-delete, paused chats, home screen layout'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatsSettingsScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.palette_outlined),
-                  title: const Text('Appearance'),
-                  subtitle: const Text('Customize how the app looks on this device'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AppearanceScreen())),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.help_outline),
-                  title: const Text('Help & About'),
-                  subtitle: const Text('Help centre, legal, feature guide'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HelpAboutScreen())),
-                ),
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: OutlinedButton.icon(
-                    onPressed: _logout,
-                    icon: Icon(Icons.logout, color: scheme.error),
-                    label: Text('Log out', style: TextStyle(color: scheme.error)),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(48),
-                      side: BorderSide(color: scheme.error.withValues(alpha: 0.4)),
-                    ),
+                _group([
+                  _row(Icons.health_and_safety_outlined, 'Privacy checkup', 'Check your privacy settings and turn them all on in one tap', const PrivacyCheckupScreen()),
+                  _row(Icons.badge_outlined, 'Account', 'Email, password, account security', const AccountScreen()),
+                  _row(Icons.lock_outline, 'Privacy', 'Last seen, read receipts, blocked users', const PrivacySettingsScreen()),
+                  _row(Icons.shield_outlined, 'Security', 'App lock, biometrics, panic PIN, chat hiding', const SecuritySettingsScreen()),
+                ]),
+                const SizedBox(height: 14),
+                _group([
+                  _row(Icons.notifications_outlined, 'Notifications', 'Muted keywords', const NotificationsSettingsScreen()),
+                  _row(Icons.chat_bubble_outline, 'Chats', 'Auto-delete, paused chats, home screen layout', const ChatsSettingsScreen()),
+                  _row(Icons.palette_outlined, 'Appearance', 'Customize how the app looks on this device', const AppearanceScreen()),
+                ]),
+                const SizedBox(height: 14),
+                _group([
+                  _row(Icons.help_outline, 'Help & About', 'Help centre, legal, feature guide', const HelpAboutScreen()),
+                ]),
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  onPressed: _logout,
+                  icon: Icon(Icons.logout, color: scheme.error),
+                  label: Text('Log out', style: TextStyle(color: scheme.error)),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                    side: BorderSide(color: scheme.error.withValues(alpha: 0.4)),
                   ),
                 ),
-                const SizedBox(height: 24),
               ],
             ),
     );
