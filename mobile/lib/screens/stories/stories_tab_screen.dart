@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/story_service.dart';
+import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
 import 'story_composer_screen.dart';
 import 'story_viewer_screen.dart';
@@ -78,12 +79,19 @@ class _StoriesTabScreenState extends State<StoriesTabScreen> {
               ListTile(
                 leading: Stack(
                   children: [
-                    UserAvatar(uid: _myUid, name: 'You', radius: 26),
+                    GradientRing(
+                      ring: myStories.isNotEmpty,
+                      child: UserAvatar(uid: _myUid, name: 'You', radius: 24),
+                    ),
                     if (myStories.isEmpty)
-                      const Positioned(
+                      Positioned(
                         bottom: 0,
                         right: 0,
-                        child: CircleAvatar(radius: 9, backgroundColor: Colors.blue, child: Icon(Icons.add, size: 14, color: Colors.white)),
+                        child: CircleAvatar(
+                          radius: 10,
+                          backgroundColor: Theme.of(context).colorScheme.primary,
+                          child: const Icon(Icons.add, size: 14, color: Colors.white),
+                        ),
                       ),
                   ],
                 ),
@@ -107,13 +115,9 @@ class _StoriesTabScreenState extends State<StoriesTabScreen> {
                       builder: (context, seenSnap) {
                         final seen = seenSnap.data ?? false;
                         return ListTile(
-                          leading: Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(color: seen ? Colors.grey : Theme.of(context).colorScheme.primary, width: 2.5),
-                            ),
-                            child: UserAvatar(uid: uid, name: name, radius: 24),
+                          leading: GradientRing(
+                            seen: seen,
+                            child: UserAvatar(uid: uid, name: name, radius: 22),
                           ),
                           title: Text(name),
                           subtitle: Text('${stories.length} ${stories.length == 1 ? 'story' : 'stories'}'),
