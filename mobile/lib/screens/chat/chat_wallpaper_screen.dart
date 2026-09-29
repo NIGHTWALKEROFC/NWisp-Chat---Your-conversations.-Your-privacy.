@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../services/chat_theme_service.dart';
 import '../../services/chat_wallpaper_service.dart';
 
@@ -21,6 +23,10 @@ class ChatWallpaperScreen extends StatefulWidget {
 class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
   String _wallpaperId = 'default';
   String? _accentId;
+  // Feature: custom photo backgrounds — only meaningful when _wallpaperId
+  // == 'custom'; every preset ignores this.
+  String? _customImagePath;
+  bool _pickingPhoto = false;
 
   @override
   void initState() {
@@ -34,11 +40,14 @@ class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
     if (!mounted) return;
     setState(() {
       _wallpaperId = w.id;
+      _customImagePath = w.imagePath;
       _accentId = a?.id;
     });
   }
 
-  ChatWallpaper get _wallpaper => kChatWallpapers.firstWhere((w) => w.id == _wallpaperId, orElse: () => kChatWallpapers.first);
+  ChatWallpaper get _wallpaper => _wallpaperId == 'custom' && _customImagePath != null
+      ? ChatWallpaper(id: 'custom', name: 'Custom photo', colors: const [], imagePath: _customImagePath)
+      : kChatWallpapers.firstWhere((w) => w.id == _wallpaperId, orElse: () => kChatWallpapers.first);
   ChatAccent? get _accent {
     for (final a in kChatAccents) {
       if (a.id == _accentId) return a;
@@ -49,6 +58,30 @@ class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
   Future<void> _pickWallpaper(ChatWallpaper w) async {
     await ChatWallpaperService.setWallpaper(widget.conversationId, w.id);
     if (mounted) setState(() => _wallpaperId = w.id);
+  }
+
+  /// Feature: custom photo backgrounds — opens the gallery, saves the
+  /// chosen photo into this app's own storage (see
+  /// ChatWallpaperService.persistCustomImage — NOT the picker's temp
+  /// path, which the OS can clear later), and sets it as this chat's
+  /// wallpaper.
+  Future<void> _pickCustomPhoto() async {
+    setState(() => _pickingPhoto = true);
+    try {
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 85);
+      if (picked == null) return;
+      final path = await ChatWallpaperService.persistCustomImage(File(picked.path), widget.conversationId);
+      await ChatWallpaperService.setCustomWallpaper(widget.conversationId, path);
+      if (!mounted) return;
+      setState(() {
+        _wallpaperId = 'custom';
+        _customImagePath = path;
+      });
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't set that photo: $e")));
+    } finally {
+      if (mounted) setState(() => _pickingPhoto = false);
+    }
   }
 
   Future<void> _pickAccent(ChatAccent? a) async {
@@ -71,6 +104,7 @@ class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
     if (mounted) {
       setState(() {
         _wallpaperId = 'default';
+        _customImagePath = null;
         _accentId = null;
       });
     }
@@ -177,8 +211,39 @@ class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.72),
-              itemCount: kChatWallpapers.length,
+              // Feature: custom photo backgrounds — one extra tile at the
+              // end of the preset grid.
+              itemCount: kChatWallpapers.length + 1,
               itemBuilder: (context, i) {
+                if (i == kChatWallpapers.length) {
+                  final selected = _wallpaperId == 'custom' && _customImagePath != null;
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: _pickingPhoto ? null : _pickCustomPhoto,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(12),
+                              border: selected ? Border.all(color: scheme.primary, width: 3) : Border.all(color: scheme.outlineVariant),
+                              image: selected ? DecorationImage(image: FileImage(File(_customImagePath!)), fit: BoxFit.cover) : null,
+                            ),
+                            child: _pickingPhoto
+                                ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+                                : (selected
+                                    ? const Icon(Icons.check_circle, color: Colors.white)
+                                    : Icon(Icons.add_photo_alternate_outlined, color: scheme.onSurfaceVariant)),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text('Custom photo', style: TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ],
+                    ),
+                  );
+                }
                 final w = kChatWallpapers[i];
                 final selected = w.id == _wallpaperId;
                 return InkWell(
@@ -270,8 +335,13 @@ class _ChatPreview extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: wallpaper.colors.isEmpty ? baseScheme.surface : (wallpaper.colors.length == 1 ? wallpaper.colors.first : null),
-        gradient: wallpaper.colors.length > 1 ? LinearGradient(colors: wallpaper.colors, begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
+        color: wallpaper.imagePath == null && wallpaper.colors.isEmpty
+            ? baseScheme.surface
+            : (wallpaper.imagePath == null && wallpaper.colors.length == 1 ? wallpaper.colors.first : null),
+        gradient: wallpaper.imagePath == null && wallpaper.colors.length > 1
+            ? LinearGradient(colors: wallpaper.colors, begin: Alignment.topLeft, end: Alignment.bottomRight)
+            : null,
+        image: wallpaper.imagePath != null ? DecorationImage(image: FileImage(File(wallpaper.imagePath!)), fit: BoxFit.cover) : null,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: baseScheme.outlineVariant),
       ),
