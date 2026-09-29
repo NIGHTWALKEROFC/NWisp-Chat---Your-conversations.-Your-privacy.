@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -531,6 +532,9 @@ class DeviceSessionService {
   /// see send-security-alert's own comments. Best-effort, same
   /// tolerance as [_realIp]: never blocks or fails the login itself.
   Future<void> _sendSecurityAlert(String event, String? deviceLabel, String? location, String? ip) async {
+    // Feature: NWisp Chat — every event that reaches the email alert below
+    // also pushes a notification to the account's phones.
+    unawaited(_sendSecurityPush(event, deviceLabel));
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
@@ -546,6 +550,58 @@ class DeviceSessionService {
     } catch (_) {
       // Best-effort — see doc comment above.
     }
+  }
+
+  /// Feature: NWisp Chat security notices. Asks the send-security-push Edge
+  /// Function to notify every phone signed in to this account (except this
+  /// one — it just did the thing itself) with a push titled "NWisp Chat".
+  /// Tapping it opens the in-app NWisp Chat conversation (see
+  /// SecurityChatService). Best-effort like the email alert: a failure here
+  /// never blocks the login / password change / 2FA change itself.
+  Future<void> _sendSecurityPush(String event, String? deviceLabel) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final idToken = await user.getIdToken();
+      String? myFcmToken;
+      try {
+        myFcmToken = await FirebaseMessaging.instance.getToken();
+      } catch (_) {}
+      final base = const String.fromEnvironment('SUPABASE_URL');
+      await http
+          .post(
+            Uri.parse('$base/functions/v1/send-security-push'),
+            headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'event': event,
+              'deviceLabel': deviceLabel,
+              if (myFcmToken != null) 'excludeToken': myFcmToken,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // Best-effort — see doc comment above.
+    }
+  }
+
+  /// Records that two-step verification was turned on or off — shows up in
+  /// the Account Security history and as a message in NWisp Chat. Called
+  /// from TotpSetupScreen right after the change succeeds.
+  Future<void> logTotpChanged(String uid, {required bool enabled}) async {
+    final event = enabled ? 'totp_enabled' : 'totp_disabled';
+    final deviceId = await _localDeviceId();
+    final label = await _realDeviceLabel();
+    final location = await _locationLabel();
+    final ip = await _realIp();
+    await _historyRef(uid).add({
+      'event': event,
+      'deviceId': deviceId,
+      'deviceLabel': label,
+      'location': location,
+      'ip': ip,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+    unawaited(_sendSecurityAlert(event, label, location, ip));
   }
 
   Future<void> _claimThisDevice(String uid) async {
