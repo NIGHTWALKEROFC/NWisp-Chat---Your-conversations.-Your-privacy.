@@ -17,6 +17,8 @@ import '../services/local_message_store.dart';
 import '../services/settings_service.dart';
 import '../services/signal_session_service.dart';
 import '../widgets/mute_duration_sheet.dart';
+import '../widgets/nwisp_ui.dart';
+import '../widgets/stories_strip.dart';
 import '../widgets/user_avatar.dart';
 import 'chat/chat_detail_screen.dart';
 import 'chat/scheduled_messages_screen.dart';
@@ -639,7 +641,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 }),
               )
             : null,
-        title: Text(_showHiddenOnly ? 'Hidden chats' : (_showArchived ? 'Archived chats' : 'Chats')),
+        title: (_showHiddenOnly || _showArchived)
+            ? Text(_showHiddenOnly ? 'Hidden chats' : 'Archived chats')
+            : const NwispWordmark(fontSize: 22, alignment: MainAxisAlignment.start),
         actions: (_showArchived || _showHiddenOnly)
             ? null
             : [
@@ -752,6 +756,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
       body: Column(
         children: [
           if (_peersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme, myUid),
+          // Stories row from the new design — normal chat view only.
+          if (!_showHiddenOnly && !_showArchived) const StoriesStrip(),
           if (_folders.isNotEmpty && !_showHiddenOnly && !_showArchived) _buildFolderChipsRow(scheme),
           Expanded(
             child: Builder(
