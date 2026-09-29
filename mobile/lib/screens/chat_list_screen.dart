@@ -6,6 +6,7 @@ import '../models/local_message.dart';
 import '../services/app_badge_service.dart';
 import '../services/app_lock_service.dart';
 import '../services/note_to_self_service.dart';
+import '../services/security_chat_service.dart';
 import '../services/auth_service.dart';
 import '../services/chat_freeze_service.dart';
 import '../services/chat_lock_service.dart';
@@ -186,6 +187,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
   // default — see SettingsService.getSeparateGroupsAndChats.
   bool _separateGroupsAndChats = false;
   static const _archivedHeaderMarker = '__archived_header_marker__';
+  static const _securityRowMarker = '__security_row_marker__';
+
+  /// Feature: "NWisp Chat Notifications" — the read-only account-alerts chat.
+  /// [_securityNotices] is its newest-first message list; the row only exists
+  /// once that list has something in it (see _securityRowFor).
+  List<SecurityNotice> _securityNotices = const [];
+  StreamSubscription<List<SecurityNotice>>? _securitySub;
 
   // Feature: anti-tampering / MITM re-verification prompts, shown "on
   // entering the app" (i.e. here, on the chat list) rather than only
@@ -239,6 +247,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     HomeSectionsService.announcementsTab.addListener(_onSectionSettingChanged);
     HomeSectionsService.communityTab.addListener(_onSectionSettingChanged);
     _loadHiddenIds();
+    _startSecurityWatch();
     _manualUnreadSub = LocalMessageStore.watchManualUnread().listen((ids) {
       if (mounted) setState(() => _manualUnread = ids);
     });
@@ -313,6 +322,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void dispose() {
     HomeSectionsService.announcementsTab.removeListener(_onSectionSettingChanged);
     HomeSectionsService.communityTab.removeListener(_onSectionSettingChanged);
+    SecurityChatService.instance.readTick.removeListener(_onSecurityRead);
+    _securitySub?.cancel();
     _localSub.cancel();
     _convoSub.cancel();
     _groupsSub.cancel();
@@ -470,6 +481,42 @@ class _ChatListScreenState extends State<ChatListScreen> {
   /// group you've opened/created but not messaged in yet, so a chat shows
   /// up on the home screen the moment you start it — not only after the
   /// first message is sent.
+  Future<void> _startSecurityWatch() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    await SecurityChatService.instance.load();
+    if (!mounted) return;
+    SecurityChatService.instance.readTick.addListener(_onSecurityRead);
+    _securitySub = SecurityChatService.instance.notices(uid).listen((list) {
+      if (mounted) setState(() => _securityNotices = list);
+    });
+  }
+
+  // Opening the notifications chat clears its unread badge right away.
+  void _onSecurityRead() {
+    if (mounted) setState(() {});
+  }
+
+  /// Puts the notifications row into an already-sorted list of chats, at the
+  /// place its newest notice belongs by time — after any pinned chats, before
+  /// the first chat that's older than it. So a new message in a normal chat
+  /// pushes it up above this row, exactly like it would for any other chat.
+  /// Returns the list untouched when there are no notices yet.
+  List<Object> _withSecurityRow(List<_ChatRow> sorted) {
+    if (_securityNotices.isEmpty) return List<Object>.of(sorted);
+    final at = _securityNotices.first.time ?? DateTime.now();
+    var index = sorted.length;
+    for (var i = 0; i < sorted.length; i++) {
+      if (!sorted[i].pinned && sorted[i].lastAt.isBefore(at)) {
+        index = i;
+        break;
+      }
+    }
+    final out = List<Object>.of(sorted);
+    out.insert(index, _securityRowMarker);
+    return out;
+  }
+
   List<_ChatRow> _mergedRows(String myUid) {
     final byConvo = <String, _ChatRow>{};
     for (final s in _localSummaries) {
@@ -759,8 +806,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
           if (_peersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme, myUid),
           // Stories row from the new design — normal chat view only.
           if (!_showHiddenOnly && !_showArchived) const StoriesStrip(),
-          // Official "NWisp Chat" security notices, pinned under the stories.
-          if (!_showHiddenOnly && !_showArchived && myUid != null) SecurityChatTile(uid: myUid),
           if (_folders.isNotEmpty && !_showHiddenOnly && !_showArchived) _buildFolderChipsRow(scheme),
           Expanded(
             child: Builder(
@@ -795,7 +840,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
           final rows = (selectedFolder != null && !_showHiddenOnly && !_showArchived)
               ? unfiltered.where((r) => selectedFolder.conversationIds.contains(r.conversationId)).toList()
               : unfiltered;
-          if (rows.isEmpty && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
+          // The notifications row only lives in the normal, unfiltered view.
+          final showSecurityRow = _securityNotices.isNotEmpty && !_showHiddenOnly && !_showArchived && selectedFolder == null;
+          if (rows.isEmpty && !showSecurityRow && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
@@ -838,16 +885,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
           if (_separateGroupsAndChats && !_showHiddenOnly && !_showArchived) {
             final direct = rows.where((r) => !r.isGroup).toList();
             final groups = rows.where((r) => r.isGroup).toList();
-            if (direct.isNotEmpty) {
+            final directItems = showSecurityRow ? _withSecurityRow(direct) : List<Object>.of(direct);
+            if (directItems.isNotEmpty) {
               items.add('Direct messages');
-              items.addAll(direct);
+              items.addAll(directItems);
             }
             if (groups.isNotEmpty) {
               items.add('Groups');
               items.addAll(groups);
             }
           } else {
-            items.addAll(rows);
+            items.addAll(showSecurityRow ? _withSecurityRow(rows) : rows);
           }
           return ListView.builder(
             itemCount: items.length,
@@ -862,6 +910,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   title: const Text('Archived chats'),
                   trailing: Text('$archivedCount', style: TextStyle(color: scheme.onSurfaceVariant)),
                   onTap: () => setState(() => _showArchived = true),
+                );
+              }
+              if (item == _securityRowMarker) {
+                return SecurityChatTile(
+                  latest: _securityNotices.first,
+                  unread: SecurityChatService.instance.unreadCount(_securityNotices),
                 );
               }
               if (item is String) {
