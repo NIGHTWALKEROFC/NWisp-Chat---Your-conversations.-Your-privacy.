@@ -44,19 +44,27 @@ Future<void> showAttachmentMenu(
   // feature existed.
   final viewOnceAvailable = onCameraPhotoViewOnce != null || onGalleryPhotoViewOnce != null || onCameraVideoViewOnce != null || onGalleryVideoViewOnce != null;
 
+  // Declared out here (not inside the StatefulBuilder below) — declared inside,
+  // it was reset to false on every rebuild, so the "Send as view once" chip
+  // could never actually stay switched on.
+  var viewOnce = false;
+
   return showModalBottomSheet(
     context: context,
     showDragHandle: true,
     isScrollControlled: true,
     builder: (sheetContext) => StatefulBuilder(
       builder: (sheetContext, setState) {
-        var viewOnce = false;
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 16),
+                  child: Text('Select an option', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                ),
                 if (viewOnceAvailable)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
@@ -69,7 +77,7 @@ Future<void> showAttachmentMenu(
                   ),
                 Wrap(
                   alignment: WrapAlignment.spaceEvenly,
-                  runSpacing: 20,
+                  runSpacing: 18,
                   children: [
                     _AttachmentOption(
                       icon: Icons.photo_camera_outlined,
@@ -153,18 +161,23 @@ class _AttachmentOption extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(18),
       child: SizedBox(
-        width: 76,
+        width: 80,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(color: color.withValues(alpha: 0.15), shape: BoxShape.circle),
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+              ),
               child: Icon(icon, color: color, size: 26),
             ),
             const SizedBox(height: 8),
