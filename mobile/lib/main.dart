@@ -575,11 +575,21 @@ class SecureChatApp extends StatelessWidget {
     final branding = context.watch<BrandingService>();
     return MaterialApp(
       navigatorKey: navigatorKey,
-      title: 'Secure Chat',
+      title: 'NWisp Chat',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(branding.accentColor),
       darkTheme: AppTheme.dark(branding.accentColor),
       themeMode: themeService.mode,
+      // Appearance > Font size. Multiplies whatever text size the phone
+      // itself already asks for, so system accessibility settings still work.
+      builder: (context, child) {
+        final media = MediaQuery.of(context);
+        final base = media.textScaler.scale(1.0);
+        return MediaQuery(
+          data: media.copyWith(textScaler: TextScaler.linear(base * themeService.fontScale)),
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       home: const AuthGate(),
     );
   }
