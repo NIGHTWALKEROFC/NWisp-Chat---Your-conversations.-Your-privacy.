@@ -3,8 +3,8 @@ import * as jose from "https://esm.sh/jose@5";
 // Feature: "NWisp Chat" security notices. When something sensitive happens on
 // an account (a new sign-in, a password change, two-step verification turned
 // on or off) the app calls this function, and every phone signed in to that
-// account gets a push notification titled "NWisp Chat". Tapping it opens the
-// in-app NWisp Chat security conversation.
+// account gets a push notification titled "NWisp Chat Notifications". Tapping it opens the
+// in-app NWisp Chat Notifications conversation.
 //
 // Same free-tier pieces send-push already uses: this Edge Function, and the
 // FCM HTTP v1 API. No Firebase Cloud Functions, no Blaze plan.
@@ -156,7 +156,7 @@ Deno.serve(async (req) => {
           body: JSON.stringify({
             message: {
               token,
-              notification: { title: "NWisp Chat", body: makeText(deviceLabel) },
+              notification: { title: "NWisp Chat Notifications", body: makeText(deviceLabel) },
               data: { type: "security_event", event },
               android: {
                 priority: "high",
