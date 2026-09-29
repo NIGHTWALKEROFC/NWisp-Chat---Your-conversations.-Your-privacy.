@@ -200,6 +200,16 @@ Deno.serve(async (req) => {
     const finalTitle = hideContent ? "NWisp" : displayName;
     const finalBody = hideContent ? "New notification" : bodyText;
 
+    // Feature: custom notification sound. The app creates a notification
+    // channel carrying the person's chosen sound and saves its id on their
+    // private profile (see NotificationSoundService.syncToProfile). Naming that
+    // channel here is what makes the sound play for notifications that arrive
+    // while the app is closed. Only plain channel-id characters are accepted;
+    // if the phone doesn't have that channel, Android just uses its default.
+    const rawChannelId = recipientProfile?.notificationChannelId;
+    const channelId =
+      typeof rawChannelId === "string" && /^[A-Za-z0-9_]{1,64}$/.test(rawChannelId) ? rawChannelId : null;
+
     const results = await Promise.all(
       tokens.map(async (token) => {
         const res = await fetch(`https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`, {
@@ -218,7 +228,10 @@ Deno.serve(async (req) => {
                 // shouldn't leak what the visible title just hid.
                 senderUsername: hideContent ? "New notification" : displayName,
               },
-              android: { priority: "high" },
+              android: {
+                priority: "high",
+                ...(channelId ? { notification: { channel_id: channelId } } : {}),
+              },
               apns: { headers: { "apns-priority": "10" } },
             },
           }),
