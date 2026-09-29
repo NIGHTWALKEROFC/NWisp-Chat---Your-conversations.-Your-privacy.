@@ -23,12 +23,23 @@ workflows:
       - name: Build APK
         script: |
           cd mobile
+          # Size reduction (no app changes):
+          #  --split-per-abi   one APK per CPU type instead of one fat APK
+          #                    holding all three. Install the arm64-v8a one
+          #                    on nearly every phone made since ~2017.
+          #  --obfuscate +     shortens Dart names and moves debug symbols
+          #  --split-debug-info out of the APK into build/symbols.
           flutter build apk --release \
+            --split-per-abi \
+            --obfuscate \
+            --split-debug-info=build/symbols \
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
             --dart-define=TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY
     artifacts:
       - mobile/build/**/outputs/**/*.apk
+      # Keep these: they let you read crash stack traces from obfuscated builds.
+      - mobile/build/symbols/**
     publishing:
       email:
         recipients:
