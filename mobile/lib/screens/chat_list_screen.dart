@@ -18,6 +18,7 @@ import '../services/settings_service.dart';
 import '../services/signal_session_service.dart';
 import '../widgets/mute_duration_sheet.dart';
 import '../widgets/nwisp_ui.dart';
+import '../widgets/security_chat_tile.dart';
 import '../widgets/stories_strip.dart';
 import '../widgets/user_avatar.dart';
 import 'chat/chat_detail_screen.dart';
@@ -758,6 +759,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
           if (_peersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme, myUid),
           // Stories row from the new design — normal chat view only.
           if (!_showHiddenOnly && !_showArchived) const StoriesStrip(),
+          // Official "NWisp Chat" security notices, pinned under the stories.
+          if (!_showHiddenOnly && !_showArchived && myUid != null) SecurityChatTile(uid: myUid),
           if (_folders.isNotEmpty && !_showHiddenOnly && !_showArchived) _buildFolderChipsRow(scheme),
           Expanded(
             child: Builder(
