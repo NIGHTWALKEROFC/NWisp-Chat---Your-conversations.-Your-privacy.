@@ -4,7 +4,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../../services/media_compression_service.dart';
+import '../../services/screenshot_guard_service.dart';
+import '../../services/story_reply_service.dart';
 import '../../services/story_service.dart';
+import '../../widgets/user_avatar.dart';
+import '../chat/chat_detail_screen.dart';
+import '../security/chat_pin_guard.dart';
 import 'story_viewers_screen.dart';
 
 /// Feature: Stories — the full-screen viewer. Shown one user's stories at
@@ -13,6 +18,12 @@ import 'story_viewers_screen.dart';
 /// long-press to pause. Downloads and decrypts each story's media only
 /// when it's actually about to be shown (see
 /// StoryService.downloadAndDecrypt) — nothing is pre-fetched.
+///
+/// Screenshots and screen recording are blocked while this screen is open
+/// (same always-on FLAG_SECURE protection chats use — see
+/// ScreenshotGuardService), and someone else's story has a "Reply..." bar
+/// that sends a private, end-to-end-encrypted message to its owner (see
+/// StoryReplyService).
 class StoryViewerScreen extends StatefulWidget {
   /// This one user's stories, oldest first, each a Firestore doc snapshot
   /// turned into a plain map with its id included as 'id'.
@@ -44,12 +55,27 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
   String? _error;
   bool _liked = false;
 
+  final _replyController = TextEditingController();
+  final _replyFocus = FocusNode();
+  bool _sendingReply = false;
+
   bool get _isMine => widget.ownerUid == FirebaseAuth.instance.currentUser?.uid;
   Map<String, dynamic> get _current => widget.stories[_index];
 
   @override
   void initState() {
     super.initState();
+    // Blocks screenshots / screen recording for as long as this screen is
+    // open. Released in dispose() below.
+    ScreenshotGuardService.acquire();
+    // Typing a reply pauses the story so it doesn't move on under you.
+    _replyFocus.addListener(() {
+      if (_replyFocus.hasFocus) {
+        _pause();
+      } else if (!_sendingReply) {
+        _resume();
+      }
+    });
     _progress = AnimationController(vsync: this)
       ..addStatusListener((status) {
         if (status == AnimationStatus.completed) _goNext();
@@ -59,6 +85,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
 
   @override
   void dispose() {
+    ScreenshotGuardService.release();
+    _replyController.dispose();
+    _replyFocus.dispose();
     _progress.dispose();
     _videoController?.dispose();
     super.dispose();
@@ -133,6 +162,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
   }
 
   void _resume() {
+    // Nothing to resume while a story is still loading or failed to load
+    // (its timer has no duration yet).
+    if (_loading || _error != null) return;
     _progress.forward();
     _videoController?.play();
   }
@@ -142,12 +174,106 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
     await _storyService.setLiked(_current['id'] as String, _liked);
   }
 
+  Future<void> _sendReply() async {
+    final text = _replyController.text.trim();
+    if (text.isEmpty || _sendingReply || _isMine) return;
+    setState(() => _sendingReply = true);
+    _pause();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final conversationId = await StoryReplyService.send(
+        ownerUid: widget.ownerUid,
+        story: _current,
+        imageBytes: _current['mediaType'] == 'video' ? null : _mediaBytes,
+        text: text,
+      );
+      if (!mounted) return;
+      _replyController.clear();
+      _replyFocus.unfocus();
+      // Open the chat with the reply in it. If that chat is hidden, locked
+      // behind its PIN, or paused, canOpenChat handles it (a hidden chat just
+      // stays closed) — the reply itself has already been sent either way.
+      final canOpen = await canOpenChat(context, conversationId: conversationId, otherUid: widget.ownerUid);
+      if (!mounted) return;
+      if (canOpen) {
+        await Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ChatDetailScreen(
+              conversationId: conversationId,
+              peerUid: widget.ownerUid,
+              peerUsername: widget.ownerName,
+            ),
+          ),
+        );
+        return;
+      }
+      messenger.showSnackBar(const SnackBar(content: Text('Reply sent.')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't send your reply: $e")));
+    } finally {
+      if (mounted) {
+        setState(() => _sendingReply = false);
+        if (!_replyFocus.hasFocus) _resume();
+      }
+    }
+  }
+
+  Widget _buildReplyBar() {
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _replyController,
+              focusNode: _replyFocus,
+              enabled: !_sendingReply,
+              style: const TextStyle(color: Colors.white),
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _sendReply(),
+              decoration: InputDecoration(
+                hintText: 'Reply...',
+                hintStyle: const TextStyle(color: Colors.white54),
+                filled: true,
+                fillColor: Colors.white12,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(26), borderSide: BorderSide.none),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(26), borderSide: BorderSide.none),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(26),
+                  borderSide: const BorderSide(color: Colors.white38),
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: Icon(_liked ? Icons.favorite : Icons.favorite_border, color: _liked ? Colors.redAccent : Colors.white),
+            onPressed: _toggleLike,
+          ),
+          _sendingReply
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white)),
+                )
+              : IconButton(
+                  icon: const Icon(Icons.send_rounded, color: Colors.white),
+                  onPressed: _sendReply,
+                ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final caption = (_current['caption'] as String?) ?? '';
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
         child: GestureDetector(
           onTapUp: (details) {
             final width = MediaQuery.of(context).size.width;
@@ -213,7 +339,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
                 right: 12,
                 child: Row(
                   children: [
-                    CircleAvatar(radius: 16, child: Text(widget.ownerName.isNotEmpty ? widget.ownerName[0].toUpperCase() : '?')),
+                    UserAvatar(uid: widget.ownerUid, name: widget.ownerName, radius: 16),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -252,17 +378,17 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
                         },
                         icon: const Icon(Icons.visibility_outlined, color: Colors.white),
                         label: const Text('Viewers', style: TextStyle(color: Colors.white)),
-                      )
-                    else
-                      IconButton(
-                        icon: Icon(_liked ? Icons.favorite : Icons.favorite_border, color: _liked ? Colors.redAccent : Colors.white),
-                        onPressed: _toggleLike,
                       ),
                   ],
                 ),
               ),
             ],
           ),
+        ),
+            ),
+            // Someone else's story: the "Reply..." bar (also holds the heart).
+            if (!_isMine) _buildReplyBar(),
+          ],
         ),
       ),
     );
