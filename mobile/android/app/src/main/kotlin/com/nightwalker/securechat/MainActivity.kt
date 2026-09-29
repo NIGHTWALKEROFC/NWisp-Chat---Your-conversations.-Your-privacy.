@@ -1,7 +1,11 @@
 package com.nightwalker.securechat
 
 import android.app.Activity
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -41,10 +45,20 @@ import io.flutter.plugin.common.MethodChannel
 //    DETECT_SCREEN_CAPTURE permission (see AndroidManifest.xml). It is
 //    registered in onStart and removed in onStop, as Android requires. On
 //    Android 13 and older there is no such API, so nothing is sent.
+//
+// UPDATED (custom notification sound): a second tiny channel,
+// "notification_sound", opens Android's own ringtone picker so the person can
+// choose any notification tone installed on the phone (or "Silent"), and
+// hands the chosen sound's address + display name back to Dart
+// (NotificationSoundService). No permission is needed for the picker itself.
 class MainActivity : FlutterFragmentActivity() {
     private val channelName = "com.nightwalker.securechat/screenshot_guard"
     private var channel: MethodChannel? = null
     private var screenCaptureCallback: Activity.ScreenCaptureCallback? = null
+
+    private val soundChannelName = "com.nightwalker.securechat/notification_sound"
+    private val soundRequestCode = 4711
+    private var pendingSoundResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -79,6 +93,69 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, soundChannelName).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "pickSound" -> {
+                    if (pendingSoundResult != null) {
+                        result.error("busy", "The sound picker is already open.", null)
+                        return@setMethodCallHandler
+                    }
+                    val current = call.argument<String>("current")
+                    val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Notification sound")
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI, Settings.System.DEFAULT_NOTIFICATION_URI)
+                        if (!current.isNullOrEmpty()) {
+                            putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(current))
+                        }
+                    }
+                    pendingSoundResult = result
+                    try {
+                        startActivityForResult(intent, soundRequestCode)
+                    } catch (e: Exception) {
+                        pendingSoundResult = null
+                        result.error("unavailable", "This phone has no sound picker.", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        // Anything that isn't ours (image picker, biometrics, ...) must still
+        // reach Flutter's plugins.
+        if (requestCode != soundRequestCode) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val pending = pendingSoundResult
+        pendingSoundResult = null
+        if (pending == null) return
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            pending.success(null) // cancelled — Dart leaves the current sound alone
+            return
+        }
+        val uri: Uri? = if (Build.VERSION.SDK_INT >= 33) {
+            data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+        } else {
+            data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+        }
+        if (uri == null) {
+            // "Silent" was chosen.
+            pending.success(mapOf("uri" to "", "title" to "Silent"))
+            return
+        }
+        val title = try {
+            RingtoneManager.getRingtone(this, uri)?.getTitle(this)
+        } catch (e: Exception) {
+            null
+        }
+        pending.success(mapOf("uri" to uri.toString(), "title" to (title ?: "Custom sound")))
     }
 
     override fun onStart() {
