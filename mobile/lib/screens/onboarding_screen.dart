@@ -1,56 +1,14 @@
 import 'package:flutter/material.dart';
 import '../services/settings_service.dart';
-
-class _OnboardingSlide {
-  final IconData icon;
-  final String title;
-  final String body;
-  const _OnboardingSlide({required this.icon, required this.title, required this.body});
-}
-
-const _slides = [
-  _OnboardingSlide(
-    icon: Icons.lock_outline_rounded,
-    title: 'Private by default',
-    body: 'Every chat is end-to-end encrypted — messages, photos, videos, and voice notes are '
-        'only ever readable on your device and the person you sent them to. Nothing in between '
-        'can read your conversations.',
-  ),
-  _OnboardingSlide(
-    icon: Icons.timer_outlined,
-    title: 'Disappearing messages',
-    body: 'Set a per-chat timer and messages delete themselves automatically after the time you '
-        'choose — or turn it off to keep everything, your call, per conversation.',
-  ),
-  _OnboardingSlide(
-    icon: Icons.groups_outlined,
-    title: 'Groups, the same way',
-    body: 'Group chats get the same end-to-end encryption, per-member read receipts, and media '
-        'sharing as one-on-one chats.',
-  ),
-  _OnboardingSlide(
-    icon: Icons.phonelink_lock_outlined,
-    title: 'You control your sessions',
-    body: 'Only one device can be signed in at a time, and you can turn on "Require approval for '
-        'new logins" in Account Security so a new sign-in needs your OK first.',
-  ),
-  _OnboardingSlide(
-    icon: Icons.manage_accounts_outlined,
-    title: 'Your account, your rules',
-    body: 'Temporarily deactivate whenever you like, export your data, or delete your account '
-        'entirely — all from Account settings, no waiting on support.',
-  ),
-  _OnboardingSlide(
-    icon: Icons.shield_outlined,
-    title: 'A safer space for everyone',
-    body: 'Report anything that breaks the Community Guidelines with specific details and proof — '
-        'every report is reviewed by a real person.',
-  ),
-];
+import '../widgets/nwisp_ui.dart';
 
 /// Shown once, ever, per install — see SettingsService.getHasSeenOnboarding.
-/// Wired in main.dart, right after AuthGate would otherwise show the chat
-/// list or login screen for the very first time.
+/// Wired in auth_gate.dart, right before AuthGate would otherwise show the
+/// chat list or login screen for the very first time.
+///
+/// Redesigned 2026-09-29: three slides like the new design sheet
+/// (Private Chats / Stories / Your Privacy). The feature rows on the last
+/// slide only mention things the app really does.
 class OnboardingScreen extends StatefulWidget {
   final VoidCallback onDone;
   const OnboardingScreen({super.key, required this.onDone});
@@ -60,6 +18,8 @@ class OnboardingScreen extends StatefulWidget {
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
+  static const _pageCount = 3;
+
   final _controller = PageController();
   int _index = 0;
 
@@ -69,7 +29,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   void _next() {
-    if (_index == _slides.length - 1) {
+    if (_index == _pageCount - 1) {
       _finish();
       return;
     }
@@ -85,77 +45,266 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final last = _index == _pageCount - 1;
     return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            Align(
-              alignment: Alignment.topRight,
-              child: Padding(
-                padding: const EdgeInsets.only(right: 8, top: 4),
-                child: TextButton(onPressed: _finish, child: const Text('Skip')),
+      body: NwispBackdrop(
+        child: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: PageView(
+                  controller: _controller,
+                  onPageChanged: (i) => setState(() => _index = i),
+                  children: const [
+                    _SlideShell(
+                      title: 'Private Chats',
+                      body: 'Send messages, share media and stay connected — all with end-to-end encryption.',
+                      child: _ShieldArt(),
+                    ),
+                    _SlideShell(
+                      title: 'Stories',
+                      body: 'Share your moments with close friends through stories. They disappear after 24 hours.',
+                      child: _StoriesArt(),
+                    ),
+                    _SlideShell(
+                      title: 'Your Privacy',
+                      body: 'Your data. Your control. You\'re in charge.',
+                      child: _PrivacyList(),
+                    ),
+                  ],
+                ),
+              ),
+              if (!last)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    _pageCount,
+                    (i) => AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      width: i == _index ? 20 : 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: i == _index ? scheme.primary : scheme.outlineVariant,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(28, 22, 28, 8),
+                child: GradientButton(label: last ? 'Get Started' : 'Next', onPressed: _next),
+              ),
+              SizedBox(
+                height: 48,
+                child: last
+                    ? null
+                    : TextButton(
+                        onPressed: _finish,
+                        child: Text('Skip', style: TextStyle(color: scheme.onSurface, fontWeight: FontWeight.w500)),
+                      ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SlideShell extends StatelessWidget {
+  final String title;
+  final String body;
+  final Widget child;
+  const _SlideShell({required this.title, required this.body, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 28),
+      child: Column(
+        children: [
+          const SizedBox(height: 40),
+          Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontSize: 26)),
+          const SizedBox(height: 12),
+          Text(
+            body,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: scheme.onSurfaceVariant, height: 1.45, fontSize: 15),
+          ),
+          Expanded(child: Center(child: child)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Glowing shield-with-padlock, with two soft orbit rings behind it.
+class _ShieldArt extends StatelessWidget {
+  const _ShieldArt();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 260,
+      height: 260,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          for (final t in [0.0, 0.5])
+            Transform.rotate(
+              angle: t * 1.2,
+              child: Container(
+                width: 250 - t * 40,
+                height: 170 + t * 30,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(200),
+                  border: Border.all(color: scheme.primary.withValues(alpha: 0.35), width: 1.4),
+                ),
               ),
             ),
-            Expanded(
-              child: PageView.builder(
-                controller: _controller,
-                itemCount: _slides.length,
-                onPageChanged: (i) => setState(() => _index = i),
-                itemBuilder: (context, i) {
-                  final slide = _slides[i];
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
+          Container(
+            width: 150,
+            height: 150,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(colors: [scheme.primary.withValues(alpha: 0.35), Colors.transparent]),
+            ),
+          ),
+          ShaderMask(
+            shaderCallback: (r) => const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF38C8FF), Color(0xFF4C7DFF), Color(0xFF8A4DFF)],
+            ).createShader(r),
+            child: const Icon(Icons.shield_rounded, size: 150, color: Colors.white),
+          ),
+          const Icon(Icons.lock_rounded, size: 56, color: Colors.white),
+        ],
+      ),
+    );
+  }
+}
+
+/// A small illustrative mock of the Stories tab (avatar row + one story
+/// card). It's artwork only — no real data.
+class _StoriesArt extends StatelessWidget {
+  const _StoriesArt();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    const names = ['My Story', 'Alex', 'Zara', 'Riya'];
+    return NwispCard(
+      radius: 22,
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              for (var i = 0; i < names.length; i++)
+                Column(
+                  children: [
+                    GradientRing(
+                      padding: 2,
+                      child: CircleAvatar(
+                        radius: 20,
+                        backgroundColor: scheme.primaryContainer,
+                        child: Text(names[i][0], style: const TextStyle(fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(names[i], style: TextStyle(fontSize: 10.5, color: scheme.onSurfaceVariant)),
+                  ],
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 210,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFF2A2F7A), Color(0xFFB4548C), Color(0xFFF2A45B)],
+              ),
+            ),
+            alignment: Alignment.bottomLeft,
+            padding: const EdgeInsets.all(12),
+            child: const Text('My Story · 2h ago', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrivacyList extends StatelessWidget {
+  const _PrivacyList();
+
+  @override
+  Widget build(BuildContext context) {
+    const rows = [
+      (Icons.lock_outline_rounded, 'End-to-End Encryption', 'Even the server can\'t read your messages'),
+      (Icons.timer_outlined, 'Disappearing Messages', 'Set a timer per chat'),
+      (Icons.phone_disabled_outlined, 'No Call Features', 'Only chat & stories'),
+      (Icons.phonelink_lock_outlined, 'You Control Your Sessions', 'Approve every new login'),
+    ];
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final r in rows)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: NwispCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  _IconBadge(icon: r.$1),
+                  const SizedBox(width: 14),
+                  Expanded(
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(slide.icon, size: 84, color: scheme.primary),
-                        const SizedBox(height: 32),
+                        Text(r.$2, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14.5)),
+                        const SizedBox(height: 2),
                         Text(
-                          slide.title,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          slide.body,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: scheme.onSurfaceVariant, height: 1.4, fontSize: 15),
+                          r.$3,
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
                         ),
                       ],
                     ),
-                  );
-                },
-              ),
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(
-                _slides.length,
-                (i) => AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  width: i == _index ? 20 : 6,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: i == _index ? scheme.primary : scheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(3),
                   ),
-                ),
+                ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                  onPressed: _next,
-                  child: Text(_index == _slides.length - 1 ? 'Get started' : 'Next'),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+      ],
+    );
+  }
+}
+
+class _IconBadge extends StatelessWidget {
+  final IconData icon;
+  const _IconBadge({required this.icon});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: scheme.primary.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(14),
       ),
+      child: Icon(icon, color: scheme.primary, size: 22),
     );
   }
 }
