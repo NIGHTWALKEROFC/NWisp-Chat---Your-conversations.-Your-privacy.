@@ -5,6 +5,8 @@ import '../services/auth_service.dart';
 import '../services/branding_service.dart';
 import '../services/device_session_service.dart';
 import '../services/settings_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/nwisp_ui.dart';
 import 'register_screen.dart';
 import 'settings/forgot_password_screen.dart';
 import 'settings/help_center_screen.dart';
@@ -270,6 +272,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -284,96 +287,136 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ],
       ),
-      extendBodyBehindAppBar: true,
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const SizedBox(height: 8),
-                Icon(Icons.lock_outline_rounded, size: 56, color: scheme.primary),
-                const SizedBox(height: 12),
-                Text(
-                  'Welcome back',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Sign in to continue',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: scheme.onSurfaceVariant),
-                ),
-                const SizedBox(height: 28),
-                TextField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'Email',
-                    prefixIcon: Icon(Icons.email_outlined),
+      body: NwispBackdrop(
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Center(child: NwispLogo(size: 72)),
+                  const SizedBox(height: 12),
+                  const NwispWordmark(fontSize: 30),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Your conversations.\nYour privacy.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: scheme.onSurfaceVariant, height: 1.4),
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _passwordController,
-                  obscureText: _obscurePassword,
-                  decoration: InputDecoration(
-                    labelText: 'Password',
-                    prefixIcon: const Icon(Icons.lock_outline),
-                    suffixIcon: IconButton(
-                      icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
-                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  const SizedBox(height: 24),
+                  // Login / Sign Up switch. "Login" is this screen; "Sign Up"
+                  // opens the existing RegisterScreen (same as the link below).
+                  _AuthTabs(
+                    onSignUp: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const RegisterScreen()),
                     ),
                   ),
-                ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
+                  const SizedBox(height: 18),
+                  TextField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      hintText: 'Email',
+                      prefixIcon: Icon(Icons.person_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _passwordController,
+                    obscureText: _obscurePassword,
+                    decoration: InputDecoration(
+                      hintText: 'Password',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(
+                        icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                        onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                      ),
+                    ),
+                  ),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Stay signed in'),
+                    subtitle: const Text('Off = sign in again every time you open the app'),
+                    value: _stayLoggedIn,
+                    onChanged: (v) => setState(() => _stayLoggedIn = v),
+                  ),
+                  if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(_error!, style: TextStyle(color: scheme.error)),
+                    ),
+                  GradientButton(
+                    label: 'Login',
+                    loading: _loading,
+                    onPressed: _loading ? null : _login,
+                  ),
+                  const SizedBox(height: 4),
+                  TextButton(
                     onPressed: () => Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
                     ),
-                    child: const Text('Forgot password?'),
+                    child: Text('Forgot Password?', style: TextStyle(color: scheme.onSurfaceVariant)),
                   ),
-                ),
-                SwitchListTile.adaptive(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Stay signed in'),
-                  subtitle: const Text('Off = sign in again every time you open the app'),
-                  value: _stayLoggedIn,
-                  onChanged: (v) => setState(() => _stayLoggedIn = v),
-                ),
-                const SizedBox(height: 8),
-                if (_error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(_error!, style: TextStyle(color: scheme.error)),
+                  const SizedBox(height: 4),
+                  TextButton(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const RegisterScreen()),
+                    ),
+                    child: const Text("Don't have an account? Sign up"),
                   ),
-                ElevatedButton(
-                  onPressed: _loading ? null : _login,
-                  child: _loading
-                      ? const SizedBox(
-                          height: 22,
-                          width: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
-                        )
-                      : const Text('Sign in'),
-                ),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                  ),
-                  child: const Text("Don't have an account? Sign up"),
-                ),
-                const SizedBox(height: 16),
-              ],
+                  const SizedBox(height: 16),
+                ],
+              ),
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The two-segment "Login | Sign Up" switch at the top of the login form.
+class _AuthTabs extends StatelessWidget {
+  final VoidCallback onSignUp;
+  const _AuthTabs({required this.onSignUp});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 46,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: AppTheme.brandGradient(scheme.primary),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text('Login', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+            ),
+          ),
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: onSignUp,
+              child: Center(
+                child: Text('Sign Up', style: TextStyle(color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
