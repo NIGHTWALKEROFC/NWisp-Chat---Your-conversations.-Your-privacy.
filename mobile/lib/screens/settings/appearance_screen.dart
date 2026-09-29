@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/branding_service.dart';
 import '../../services/theme_service.dart';
+import 'home_background_screen.dart';
 
 const _accentPresets = [
   Color(0xFF00C896),
@@ -14,6 +15,14 @@ const _accentPresets = [
   Color(0xFFC62828),
   Color(0xFF8D6E63),
   Color(0xFF5E35B1),
+  // Feature: more theme options — additional curated accent colors, on
+  // top of the 10 already here plus the full custom color picker below.
+  Color(0xFF00BFA5),
+  Color(0xFFFFB300),
+  Color(0xFF3949AB),
+  Color(0xFFE91E63),
+  Color(0xFF43A047),
+  Color(0xFF795548),
 ];
 
 class AppearanceScreen extends StatefulWidget {
@@ -198,6 +207,23 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 32),
+          // Feature: home screen background — presets (same set your chats
+          // already use, for a consistent look) + a custom photo option.
+          // Per-chat wallpaper already has its own entry in each chat's own
+          // Chat Settings screen ("Chat theme") — this is the home screen
+          // list's background instead.
+          Text('Home screen background', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: const Text('Change background'),
+              subtitle: const Text('Background behind your chat list'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HomeBackgroundScreen())),
+            ),
           ),
         ],
       ),
