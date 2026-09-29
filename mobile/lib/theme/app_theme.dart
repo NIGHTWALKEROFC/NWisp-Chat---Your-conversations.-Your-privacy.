@@ -1,52 +1,92 @@
 import 'package:flutter/material.dart';
 
 /// Central place for the app's visual identity.
-/// [seedColor] can be overridden per-device from Settings > Appearance;
-/// it defaults to the app's signature teal-green if the user hasn't
-/// picked a custom accent color.
 ///
-/// Full rebuild, 2026-09-12 — the previous version of this file was
-/// already solid Material 3 (confirmed by review before touching it), so
-/// this isn't a start-over so much as a considered refinement pass:
-/// - Shadows switched from raw black to tinted (blended toward the
-///   surface color) — Material 3's own guidance, and reads as noticeably
-///   softer/more "designed" than flat black at any opacity.
-/// - Corner radii bumped up a step across cards/dialogs/sheets/popups to
-///   match the slightly rounder message bubbles built this same round
-///   (see group_chat_screen.dart's _bubbleFor) — one consistent shape
-///   language across the app instead of bubbles being the roundest thing
-///   on screen.
-/// - A couple of component themes that existed as Flutter defaults before
-///   (segmented buttons, menus) now explicitly themed instead of
-///   inheriting generic Material defaults that didn't match anything else
-///   here.
+/// Redesigned 2026-09-29 to match the new NWisp design sheet: deep navy
+/// surfaces, a vivid blue -> violet accent, thin blue-tinted borders on
+/// cards and rounded (16-20px) shapes everywhere.
+///
+/// [seedColor] can still be overridden per-device from Settings >
+/// Appearance. Everything else (surfaces, borders) stays navy so the app
+/// keeps its look whichever accent is picked.
 class AppTheme {
-  static const Color defaultSeedColor = Color(0xFF00C896);
-  static const Color darkSurface = Color(0xFF0D1117);
+  /// Signature accent — the blue of the NWisp "N" logo.
+  static const Color defaultSeedColor = Color(0xFF4C7DFF);
+
+  /// Second stop of the brand gradient (violet). Used with the accent for
+  /// gradient buttons, story rings, the logo and so on.
+  static const Color brandViolet = Color(0xFF7B5CFF);
+
+  // Navy surface ladder (dark mode), darkest -> lightest.
+  static const Color darkSurface = Color(0xFF070B1A);
+  static const Color darkSurfaceLow = Color(0xFF0A1024);
+  static const Color darkSurfaceMid = Color(0xFF0E1530);
+  static const Color darkSurfaceHigh = Color(0xFF131B3A);
+  static const Color darkSurfaceHighest = Color(0xFF1A2347);
+  static const Color darkBorder = Color(0xFF26315E);
+
+  /// The two-colour gradient used for primary buttons, rings, logo.
+  static LinearGradient brandGradient([Color? accent]) {
+    final a = accent ?? defaultSeedColor;
+    return LinearGradient(
+      begin: Alignment.centerLeft,
+      end: Alignment.centerRight,
+      colors: [a, Color.lerp(a, brandViolet, 0.75)!],
+    );
+  }
 
   static ThemeData light([Color? seedColor]) {
+    final seed = seedColor ?? defaultSeedColor;
     final scheme = ColorScheme.fromSeed(
-      seedColor: seedColor ?? defaultSeedColor,
+      seedColor: seed,
       brightness: Brightness.light,
+    ).copyWith(
+      primary: seed,
+      onPrimary: _onColor(seed),
+      surface: const Color(0xFFF6F8FE),
+      surfaceContainerLowest: Colors.white,
+      surfaceContainerLow: const Color(0xFFF1F4FC),
+      surfaceContainer: const Color(0xFFECF0FA),
+      surfaceContainerHigh: Colors.white,
+      surfaceContainerHighest: const Color(0xFFE3E9F7),
+      outlineVariant: const Color(0xFFD5DDF2),
     );
     return _base(scheme);
   }
 
   static ThemeData dark([Color? seedColor]) {
+    final seed = seedColor ?? defaultSeedColor;
     final scheme = ColorScheme.fromSeed(
-      seedColor: seedColor ?? defaultSeedColor,
+      seedColor: seed,
       brightness: Brightness.dark,
+    ).copyWith(
+      // Use the accent itself (not Material's pastel tone of it) so buttons
+      // and sent bubbles are vivid like in the design.
+      primary: seed,
+      onPrimary: _onColor(seed),
+      primaryContainer: Color.lerp(darkSurfaceHigh, seed, 0.28),
+      onPrimaryContainer: Colors.white,
       surface: darkSurface,
+      onSurface: const Color(0xFFEAF0FF),
+      onSurfaceVariant: const Color(0xFF9AA6C9),
+      surfaceContainerLowest: const Color(0xFF050815),
+      surfaceContainerLow: darkSurfaceLow,
+      surfaceContainer: darkSurfaceMid,
+      surfaceContainerHigh: darkSurfaceHigh,
+      surfaceContainerHighest: darkSurfaceHighest,
+      outline: const Color(0xFF3A4675),
+      outlineVariant: darkBorder,
     );
     return _base(scheme);
   }
 
+  static Color _onColor(Color c) => c.computeLuminance() > 0.6 ? Colors.black : Colors.white;
+
   static ThemeData _base(ColorScheme scheme) {
-    // Tinted shadow — a shadow color blended toward the scheme's own
-    // primary rather than plain black. Barely perceptible as a color on
-    // its own, but it's what makes elevated surfaces feel like they
-    // belong to the app's palette instead of a generic dark smudge.
+    final isDark = scheme.brightness == Brightness.dark;
+    // Tinted shadow — blended toward the primary instead of plain black.
     final tintedShadow = Color.lerp(Colors.black, scheme.primary, 0.15)!;
+    final cardBorder = BorderSide(color: scheme.outlineVariant.withValues(alpha: isDark ? 0.7 : 1), width: 1);
 
     return ThemeData(
       useMaterial3: true,
@@ -55,14 +95,14 @@ class AppTheme {
       splashFactory: InkSparkle.splashFactory,
       visualDensity: VisualDensity.standard,
       shadowColor: tintedShadow,
-      dividerColor: scheme.outlineVariant.withValues(alpha: 0.4),
+      dividerColor: scheme.outlineVariant.withValues(alpha: 0.5),
 
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
         foregroundColor: scheme.onSurface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        scrolledUnderElevation: 1,
+        scrolledUnderElevation: 0,
         shadowColor: tintedShadow,
         centerTitle: false,
         titleTextStyle: TextStyle(
@@ -84,15 +124,15 @@ class AppTheme {
 
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        fillColor: isDark ? darkSurfaceHigh.withValues(alpha: 0.9) : scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide.none,
+          borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide.none,
+          borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
@@ -101,6 +141,10 @@ class AppTheme {
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(color: scheme.error, width: 1.2),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: scheme.error, width: 1.6),
         ),
         hintStyle: TextStyle(color: scheme.onSurfaceVariant.withValues(alpha: 0.7)),
       ),
@@ -118,14 +162,15 @@ class AppTheme {
 
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          textStyle: const TextStyle(fontWeight: FontWeight.w700),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          minimumSize: const Size(64, 50),
+          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5),
         ),
       ),
 
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           side: BorderSide(color: scheme.outlineVariant),
           textStyle: const TextStyle(fontWeight: FontWeight.w600),
         ),
@@ -145,8 +190,10 @@ class AppTheme {
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: SegmentedButton.styleFrom(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          selectedBackgroundColor: scheme.primary.withValues(alpha: 0.16),
-          selectedForegroundColor: scheme.primary,
+          side: BorderSide(color: scheme.outlineVariant),
+          backgroundColor: isDark ? darkSurfaceMid : null,
+          selectedBackgroundColor: scheme.primary.withValues(alpha: 0.22),
+          selectedForegroundColor: isDark ? Colors.white : scheme.primary,
         ),
       ),
 
@@ -163,7 +210,7 @@ class AppTheme {
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         shadowColor: tintedShadow,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18), side: cardBorder),
         margin: EdgeInsets.zero,
       ),
 
@@ -176,10 +223,13 @@ class AppTheme {
 
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith(
-          (states) => states.contains(WidgetState.selected) ? scheme.primary : null,
+          (states) => states.contains(WidgetState.selected) ? Colors.white : scheme.onSurfaceVariant,
         ),
         trackColor: WidgetStateProperty.resolveWith(
-          (states) => states.contains(WidgetState.selected) ? scheme.primary.withValues(alpha: 0.4) : null,
+          (states) => states.contains(WidgetState.selected) ? scheme.primary : scheme.surfaceContainerHighest,
+        ),
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected) ? Colors.transparent : scheme.outlineVariant,
         ),
       ),
 
@@ -205,9 +255,35 @@ class AppTheme {
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: scheme.primary,
         foregroundColor: scheme.onPrimary,
-        elevation: 2,
-        highlightElevation: 4,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 4,
+        highlightElevation: 6,
+        shape: const CircleBorder(),
+      ),
+
+      // Bottom bar — the design uses a slightly lighter navy strip with a
+      // soft blue pill behind the selected item.
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: isDark ? darkSurfaceLow : scheme.surfaceContainerLowest,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        height: 68,
+        indicatorColor: scheme.primary.withValues(alpha: isDark ? 0.22 : 0.14),
+        indicatorShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return IconThemeData(
+            size: 24,
+            color: selected ? (isDark ? Colors.white : scheme.primary) : scheme.onSurfaceVariant,
+          );
+        }),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return TextStyle(
+            fontSize: 11.5,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? (isDark ? Colors.white : scheme.primary) : scheme.onSurfaceVariant,
+          );
+        }),
       ),
 
       tabBarTheme: TabBarThemeData(
@@ -226,12 +302,12 @@ class AppTheme {
         color: scheme.surfaceContainerHigh,
         surfaceTintColor: Colors.transparent,
         shadowColor: tintedShadow,
-        elevation: 4,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        elevation: 6,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18), side: cardBorder),
       ),
 
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: scheme.surface,
+        backgroundColor: isDark ? darkSurfaceLow : scheme.surface,
         surfaceTintColor: Colors.transparent,
         shadowColor: tintedShadow,
         elevation: 3,
@@ -246,31 +322,31 @@ class AppTheme {
         surfaceTintColor: Colors.transparent,
         shadowColor: tintedShadow,
         elevation: 6,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24), side: cardBorder),
         titleTextStyle: TextStyle(color: scheme.onSurface, fontSize: 18, fontWeight: FontWeight.w700),
         contentTextStyle: TextStyle(color: scheme.onSurfaceVariant, fontSize: 14.5, height: 1.4),
       ),
 
       chipTheme: ChipThemeData(
         backgroundColor: scheme.surfaceContainerHigh,
-        selectedColor: scheme.primary.withValues(alpha: 0.16),
+        selectedColor: scheme.primary.withValues(alpha: 0.22),
         labelStyle: TextStyle(color: scheme.onSurface, fontSize: 13, fontWeight: FontWeight.w600),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        side: BorderSide.none,
+        side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       ),
 
       dividerTheme: DividerThemeData(
-        color: scheme.outlineVariant.withValues(alpha: 0.4),
+        color: scheme.outlineVariant.withValues(alpha: 0.5),
         space: 1,
       ),
 
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        backgroundColor: scheme.inverseSurface,
-        contentTextStyle: TextStyle(color: scheme.onInverseSurface),
+        backgroundColor: isDark ? darkSurfaceHighest : scheme.inverseSurface,
+        contentTextStyle: TextStyle(color: isDark ? scheme.onSurface : scheme.onInverseSurface),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        actionTextColor: scheme.inversePrimary,
+        actionTextColor: isDark ? scheme.primary : scheme.inversePrimary,
       ),
 
       badgeTheme: BadgeThemeData(
