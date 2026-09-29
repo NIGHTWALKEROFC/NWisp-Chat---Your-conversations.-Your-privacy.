@@ -35,6 +35,8 @@ import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
 import 'settings/settings_screen.dart';
 import 'starred_messages_screen.dart';
+import '../services/chat_wallpaper_service.dart';
+import '../services/home_background_service.dart';
 
 /// A row shown on the home screen — either a real ConversationSummary (has
 /// at least one local message) or a placeholder for a conversation/group
@@ -618,7 +620,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final scheme = Theme.of(context).colorScheme;
     final myUid = FirebaseAuth.instance.currentUser?.uid;
 
-    return Scaffold(
+    // Feature: home screen background — wraps the whole Scaffold so the
+    // chosen background shows through behind everything (app bar included),
+    // the same way a chat's own wallpaper shows through behind its messages.
+    return Stack(
+      children: [
+        const Positioned.fill(child: _HomeBackgroundView()),
+        Scaffold(
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         leading: (_showArchived || _showHiddenOnly)
             ? IconButton(
@@ -865,6 +874,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         tooltip: 'Message a contact',
         child: const Icon(Icons.chat_rounded),
       ),
+    ),
+      ],
     );
   }
 
@@ -1248,5 +1259,45 @@ class _ChatListScreenState extends State<ChatListScreen> {
         ));
       },
     );
+  }
+}
+
+/// Feature: home screen background — renders whatever HomeBackgroundService
+/// currently has set (a preset from the same set chats use, or a custom
+/// photo) behind the whole home screen. Reloads itself whenever
+/// HomeBackgroundService.changes ticks, so picking a new one in
+/// HomeBackgroundScreen updates this immediately if it's still mounted.
+class _HomeBackgroundView extends StatefulWidget {
+  const _HomeBackgroundView();
+  @override
+  State<_HomeBackgroundView> createState() => _HomeBackgroundViewState();
+}
+
+class _HomeBackgroundViewState extends State<_HomeBackgroundView> {
+  ChatWallpaper? _background;
+
+  @override
+  void initState() {
+    super.initState();
+    HomeBackgroundService.changes.addListener(_load);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    HomeBackgroundService.changes.removeListener(_load);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final w = await HomeBackgroundService.getBackground();
+    if (mounted) setState(() => _background = w);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = _background;
+    if (w == null || (w.colors.isEmpty && w.imagePath == null)) return const SizedBox.shrink();
+    return DecoratedBox(decoration: w.decoration());
   }
 }
