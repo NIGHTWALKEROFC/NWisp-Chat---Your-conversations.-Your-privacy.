@@ -23,6 +23,7 @@ import '../services/local_message_store.dart';
 import '../services/media_vault_service.dart';
 import '../services/scheduled_message_service.dart';
 import '../services/shake_detector.dart';
+import 'splash_screen.dart';
 
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
@@ -81,7 +82,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       future: _prepared,
       builder: (context, prefSnapshot) {
         if (!prefSnapshot.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const SplashScreen();
         }
         if (!prefSnapshot.data!.hasSeenOnboarding && !_onboardingJustFinished) {
           return OnboardingScreen(onDone: () => setState(() => _onboardingJustFinished = true));
@@ -90,7 +91,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
           stream: _authService.authStateChanges,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const SplashScreen();
             }
             // BUGFIX: this used to switch to _PostAuthGate() as soon as
             // Firebase Auth reported a signed-in user. But
