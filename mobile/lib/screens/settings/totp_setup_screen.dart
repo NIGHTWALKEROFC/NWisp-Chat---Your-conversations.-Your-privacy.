@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../services/auth_service.dart';
+import '../../services/device_session_service.dart';
 import '../../widgets/otp_code_field.dart';
 import '../../widgets/totp_factor_sheet.dart';
 import 'totp_backup_codes_screen.dart';
@@ -86,6 +87,11 @@ class _TotpSetupScreenState extends State<TotpSetupScreen> {
     try {
       final backupCodes = await _authService.totpEnrollConfirm(code);
       await _authService.setTotpEnabledFlag(_uid, true);
+      // NWisp Chat notice + push. A failure here must never undo or hide a
+      // successful enrollment, so it's swallowed.
+      try {
+        await DeviceSessionService.instance.logTotpChanged(_uid, enabled: true);
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -125,6 +131,9 @@ class _TotpSetupScreenState extends State<TotpSetupScreen> {
     try {
       await _authService.totpDisable(code: factor['code'], backupCode: factor['backupCode']);
       await _authService.setTotpEnabledFlag(_uid, false);
+      try {
+        await DeviceSessionService.instance.logTotpChanged(_uid, enabled: false);
+      } catch (_) {}
       if (!mounted) return;
       setState(() => _busy = false);
       _refresh();
