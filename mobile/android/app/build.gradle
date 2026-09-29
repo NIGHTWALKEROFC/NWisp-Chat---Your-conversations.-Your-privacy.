@@ -31,7 +31,9 @@ android {
     defaultConfig {
         applicationId "com.nightwalker.securechat"
         minSdkVersion 23
-        targetSdkVersion 34
+        // Raised from 34 — Google Play only accepts new uploads/updates that
+        // target a recent Android version. compileSdk was already 36.
+        targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
