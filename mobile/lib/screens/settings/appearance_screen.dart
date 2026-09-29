@@ -2,9 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/branding_service.dart';
 import '../../services/theme_service.dart';
+import '../../theme/app_theme.dart';
 import 'home_background_screen.dart';
 
 const _accentPresets = [
+  // The five from the design sheet first…
+  Color(0xFF4C7DFF),
+  Color(0xFF7B5CFF),
+  Color(0xFF1FBF8F),
+  Color(0xFFFF8A3D),
+  Color(0xFFFF4D6D),
+  // …then the older curated set, so nobody loses a colour they had.
   Color(0xFF00C896),
   Color(0xFF6750A4),
   Color(0xFF1E88E5),
@@ -15,14 +23,10 @@ const _accentPresets = [
   Color(0xFFC62828),
   Color(0xFF8D6E63),
   Color(0xFF5E35B1),
-  // Feature: more theme options — additional curated accent colors, on
-  // top of the 10 already here plus the full custom color picker below.
   Color(0xFF00BFA5),
   Color(0xFFFFB300),
   Color(0xFF3949AB),
-  Color(0xFFE91E63),
   Color(0xFF43A047),
-  Color(0xFF795548),
 ];
 
 class AppearanceScreen extends StatefulWidget {
@@ -126,32 +130,53 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
     final themeService = context.watch<ThemeService>();
     final branding = context.watch<BrandingService>();
     final scheme = Theme.of(context).colorScheme;
+    final currentAccent = branding.accentColor ?? AppTheme.defaultSeedColor;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Appearance')),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          Text('This device only', style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant)),
-          const SizedBox(height: 4),
           Text(
-            'Theme mode and accent color below apply just to your phone.',
+            'Theme mode, accent color and text size below apply just to your phone.',
             style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 20),
-          Text('Theme mode', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          SegmentedButton<ThemeMode>(
-            segments: const [
-              ButtonSegment(value: ThemeMode.system, label: Text('System'), icon: Icon(Icons.brightness_auto_outlined)),
-              ButtonSegment(value: ThemeMode.light, label: Text('Light'), icon: Icon(Icons.light_mode_outlined)),
-              ButtonSegment(value: ThemeMode.dark, label: Text('Dark'), icon: Icon(Icons.dark_mode_outlined)),
+          Row(
+            children: [
+              Expanded(
+                child: _ThemeModeCard(
+                  label: 'Dark',
+                  icon: Icons.dark_mode_outlined,
+                  preview: const [Color(0xFF070B1A), Color(0xFF1A2347)],
+                  selected: themeService.mode == ThemeMode.dark,
+                  onTap: () => themeService.setMode(ThemeMode.dark),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _ThemeModeCard(
+                  label: 'Light',
+                  icon: Icons.light_mode_outlined,
+                  preview: const [Color(0xFFF6F8FE), Color(0xFFD5DDF2)],
+                  selected: themeService.mode == ThemeMode.light,
+                  onTap: () => themeService.setMode(ThemeMode.light),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _ThemeModeCard(
+                  label: 'System',
+                  icon: Icons.brightness_auto_outlined,
+                  preview: const [Color(0xFF070B1A), Color(0xFFF6F8FE)],
+                  selected: themeService.mode == ThemeMode.system,
+                  onTap: () => themeService.setMode(ThemeMode.system),
+                ),
+              ),
             ],
-            selected: {themeService.mode},
-            onSelectionChanged: (s) => themeService.setMode(s.first),
           ),
           const SizedBox(height: 28),
-          Text('Accent color', style: Theme.of(context).textTheme.titleMedium),
+          Text('Accent Color', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 12),
           Wrap(
             spacing: 14,
@@ -163,13 +188,12 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                   child: Container(
                     width: 44,
                     height: 44,
+                    padding: const EdgeInsets.all(3),
                     decoration: BoxDecoration(
-                      color: color,
                       shape: BoxShape.circle,
-                      border: branding.accentColor == color
-                          ? Border.all(color: scheme.onSurface, width: 3)
-                          : null,
+                      border: currentAccent == color ? Border.all(color: scheme.onSurface, width: 2.5) : null,
                     ),
+                    child: DecoratedBox(decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
                   ),
                 ),
               GestureDetector(
@@ -177,9 +201,9 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
                 child: Container(
                   width: 44,
                   height: 44,
-                  decoration: BoxDecoration(
+                  decoration: const BoxDecoration(
                     shape: BoxShape.circle,
-                    gradient: const SweepGradient(
+                    gradient: SweepGradient(
                       colors: [
                         Colors.red,
                         Colors.yellow,
@@ -208,6 +232,18 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 28),
+          Text('Font Size', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 12),
+          SegmentedButton<double>(
+            segments: const [
+              ButtonSegment(value: ThemeService.normalScale, label: Text('Normal')),
+              ButtonSegment(value: ThemeService.largeScale, label: Text('Large')),
+            ],
+            selected: {themeService.fontScale >= ThemeService.largeScale ? ThemeService.largeScale : ThemeService.normalScale},
+            showSelectedIcon: false,
+            onSelectionChanged: (s) => themeService.setFontScale(s.first),
+          ),
           const SizedBox(height: 32),
           // Feature: home screen background — presets (same set your chats
           // already use, for a consistent look) + a custom photo option.
@@ -226,6 +262,68 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// One of the three Dark / Light / System tiles. The little two-tone block
+/// is a mini preview of that theme's colours.
+class _ThemeModeCard extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final List<Color> preview;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ThemeModeCard({
+    required this.label,
+    required this.icon,
+    required this.preview,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected ? scheme.primary : scheme.outlineVariant.withValues(alpha: 0.7),
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          children: [
+            Container(
+              height: 72,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: preview,
+                ),
+              ),
+              child: Icon(icon, color: preview.first.computeLuminance() > 0.5 ? Colors.black54 : Colors.white70),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
