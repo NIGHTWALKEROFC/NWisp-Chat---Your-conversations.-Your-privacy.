@@ -32,6 +32,7 @@ import 'screens/chat/chat_detail_screen.dart';
 import 'screens/groups/group_chat_screen.dart';
 import 'screens/login_approval_screen.dart';
 import 'screens/security/chat_pin_guard.dart';
+import 'services/notification_sound_service.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -158,6 +159,9 @@ Future<void> _setUpLocalNotifications() async {
   await _localNotifications
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(_androidChannel);
+  // Feature: custom notification sound — re-create the person's chosen
+  // channel too (no-op if they never picked one, or it already exists).
+  await NotificationSoundService.instance.ensureChannel();
 }
 
 void _handleNotificationData(Map<String, dynamic> data) {
@@ -502,6 +506,9 @@ void _setUpPushNotifications() {
     if (token != null) {
       await AuthService().saveFcmToken(token);
     }
+    // Feature: custom notification sound — keep the server's copy of which
+    // channel to use in step with this phone (also covers a fresh login).
+    await NotificationSoundService.instance.syncToProfile();
   });
   FirebaseMessaging.instance.onTokenRefresh.listen((token) async {
     if (FirebaseAuth.instance.currentUser != null) {
@@ -541,13 +548,16 @@ void _setUpPushNotifications() {
       data['senderUid'] ?? '',
       data['senderUsername'] ?? 'Chat',
     ].join('|');
+    // Feature: custom notification sound — post to whichever channel carries
+    // the sound the person picked in Settings > Notifications > Sounds.
+    final channelId = await NotificationSoundService.instance.currentChannelId();
     _localNotifications.show(
       notification.hashCode,
       notification.title,
       notification.body,
       NotificationDetails(
         android: AndroidNotificationDetails(
-          _androidChannel.id,
+          channelId,
           _androidChannel.name,
           channelDescription: _androidChannel.description,
           importance: Importance.high,
