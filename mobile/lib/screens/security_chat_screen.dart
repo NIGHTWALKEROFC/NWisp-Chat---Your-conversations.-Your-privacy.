@@ -67,19 +67,31 @@ class _SecurityChatScreenState extends State<SecurityChatScreen> {
           children: [
             const NwispOfficialAvatar(radius: 19),
             const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('NWisp Chat', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-                    const SizedBox(width: 6),
-                    const VerifiedBadge(size: 16),
-                  ],
-                ),
-                Text('Official notifications', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-              ],
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Flexible(
+                        child: Text(
+                          'NWisp Chat Notifications',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const VerifiedBadge(size: 16),
+                    ],
+                  ),
+                  Text(
+                    'Account alerts · read only',
+                    style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -170,11 +182,12 @@ class _SecurityChatScreenState extends State<SecurityChatScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Welcome to NWisp Chat', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                const Text('NWisp Chat Notifications', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
                 const SizedBox(height: 6),
                 Text(
-                  "This is the official NWisp account. I'll tell you here whenever someone signs in to your "
-                  'account, your password is changed, or two-step verification is switched on or off.',
+                  "Official NWisp alerts for your account appear here — a new sign-in, a password change, or "
+                  'two-step verification being switched on or off. Nobody can send messages to this chat, '
+                  'and you can\'t reply to it.',
                   style: TextStyle(color: scheme.onSurfaceVariant, height: 1.4, fontSize: 13.5),
                 ),
               ],
