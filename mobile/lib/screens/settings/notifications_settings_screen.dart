@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/app_badge_service.dart';
+import '../../services/notification_sound_service.dart';
 import '../../services/settings_service.dart';
 import 'keyword_mute_screen.dart';
 
@@ -22,17 +23,43 @@ class NotificationsSettingsScreen extends StatefulWidget {
 class _NotificationsSettingsScreenState extends State<NotificationsSettingsScreen> {
   bool _badgeEnabled = true;
   bool _loading = true;
+  String _soundLabel = 'Default';
+  bool _customSound = false;
 
   @override
   void initState() {
     super.initState();
-    SettingsService.getAppBadgeEnabled().then((v) {
-      if (!mounted) return;
-      setState(() {
-        _badgeEnabled = v;
-        _loading = false;
-      });
+    _load();
+  }
+
+  Future<void> _load() async {
+    final badge = await SettingsService.getAppBadgeEnabled();
+    final label = await NotificationSoundService.instance.currentSoundLabel();
+    final custom = await NotificationSoundService.instance.hasCustomSound();
+    if (!mounted) return;
+    setState(() {
+      _badgeEnabled = badge;
+      _soundLabel = label;
+      _customSound = custom;
+      _loading = false;
     });
+  }
+
+  Future<void> _pickSound() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final chosen = await NotificationSoundService.instance.pickSound();
+      if (chosen == null) return; // backed out
+      await _load();
+      messenger.showSnackBar(SnackBar(content: Text('Notification sound: $chosen')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't open the sound picker: $e")));
+    }
+  }
+
+  Future<void> _resetSound() async {
+    await NotificationSoundService.instance.resetToDefault();
+    await _load();
   }
 
   Future<void> _toggleBadge(bool value) async {
@@ -59,6 +86,15 @@ class _NotificationsSettingsScreenState extends State<NotificationsSettingsScree
                   ),
                   value: _badgeEnabled,
                   onChanged: _toggleBadge,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.music_note_outlined),
+                  title: const Text('Sounds'),
+                  subtitle: Text(_customSound ? _soundLabel : 'Default — tap to choose a notification sound'),
+                  trailing: _customSound
+                      ? TextButton(onPressed: _resetSound, child: const Text('Reset'))
+                      : const Icon(Icons.chevron_right),
+                  onTap: _pickSound,
                 ),
                 ListTile(
                   leading: const Icon(Icons.notifications_off_outlined),
