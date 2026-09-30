@@ -2,7 +2,16 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
+import '../broadcast/broadcast_lists_screen.dart';
+import '../browser/browser_settings_screen.dart';
+import '../chat/scheduled_messages_screen.dart';
+import '../chat_folders_screen.dart';
 import '../login_screen.dart';
+import '../notes/note_to_self_screen.dart';
+import '../starred_messages_screen.dart';
+import '../vault/media_vault_screen.dart';
+import 'account_security_screen.dart';
+import 'encryption_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
 import 'chats_settings_screen.dart';
@@ -95,6 +104,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Like [_row] but for a screen that needs its own route settings.
+  Widget _rowRoute(IconData icon, String title, String subtitle, Route<void> Function() route) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(color: scheme.primary.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(12)),
+        child: Icon(icon, color: scheme.primary, size: 20),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12.5)),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.push(context, route()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -149,6 +175,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _row(Icons.badge_outlined, 'Account', 'Email, password, account security', const AccountScreen()),
                   _row(Icons.lock_outline, 'Privacy', 'Last seen, read receipts, blocked users', const PrivacySettingsScreen()),
                   _row(Icons.shield_outlined, 'Security', 'App lock, biometrics, panic PIN, chat hiding', const SecuritySettingsScreen()),
+                ]),
+                const SizedBox(height: 14),
+                // Feature: moved here from the Chats 3-dot menu.
+                _group([
+                  _row(Icons.encrypted_outlined, 'Encryption & quantum safety', 'Post-quantum protection, strict mode', const EncryptionScreen()),
+                  _row(Icons.shield_moon_outlined, 'Private browser', 'In-app browser, tracker blocking, search engine', const BrowserSettingsScreen()),
+                  _row(Icons.security_outlined, 'Login activity', 'Devices and sign-ins on your account', const AccountSecurityScreen()),
+                ]),
+                const SizedBox(height: 14),
+                _group([
+                  _row(Icons.campaign_outlined, 'Broadcast lists', 'Send one message to many people', const BroadcastListsScreen()),
+                  _row(Icons.folder_outlined, 'Chat folders', 'Organise your chats', const ChatFoldersScreen()),
+                  _row(Icons.edit_note, 'Note to self', 'A private notepad on this phone', const NoteToSelfScreen()),
+                  _row(Icons.schedule, 'Scheduled messages', 'Messages waiting to be sent', const ScheduledMessagesScreen()),
+                  _row(Icons.star_border, 'Starred messages', 'Messages you starred', const StarredMessagesScreen()),
+                  _rowRoute(
+                    Icons.enhanced_encryption_outlined,
+                    'Media vault',
+                    'Locked photos and videos',
+                    () => MaterialPageRoute<void>(settings: const RouteSettings(name: '/vault'), builder: (_) => const MediaVaultScreen()),
+                  ),
                 ]),
                 const SizedBox(height: 14),
                 _group([
