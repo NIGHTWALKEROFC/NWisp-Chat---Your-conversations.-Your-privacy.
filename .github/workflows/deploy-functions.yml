@@ -38,6 +38,13 @@ jobs:
       # new-login-approval feature actually depends on) but was never
       # added to this deploy list — see supabase/SETUP.md's "still owed"
       # list. Added so it stops silently lagging behind the other two.
+      # Feature: voice calls — rings the other phone even when NWisp is closed.
+      - name: Deploy send-call-push
+        run: supabase functions deploy send-call-push --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
       - name: Deploy send-login-approval-push
         run: supabase functions deploy send-login-approval-push --project-ref "$SUPABASE_PROJECT_REF"
         env:
