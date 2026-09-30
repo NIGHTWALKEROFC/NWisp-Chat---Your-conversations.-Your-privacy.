@@ -22,6 +22,10 @@ verify_jwt = false
 [functions.send-login-approval-push]
 verify_jwt = false
 
+# Feature: voice calls — verifies the caller's Firebase ID token itself.
+[functions.send-call-push]
+verify_jwt = false
+
 # --- Feature: custom-branded, non-spam signup/reset email flow ----------
 # See EMAIL_SETUP.md. send-signup-otp, verify-signup-otp and
 # send-password-reset are all public/unauthenticated by design (there's no
