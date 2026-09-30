@@ -35,7 +35,11 @@ import '../../widgets/message_link_text.dart';
 import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
+import 'chat_media_browser_screen.dart';
 import 'chat_search_screen.dart';
+import '../call/call_screens.dart';
+import '../secret/secret_chat_screen.dart';
+import '../../services/call_service.dart';
 import 'forward_destination_screen.dart';
 import 'media_preview_screen.dart';
 import 'scheduled_messages_screen.dart';
@@ -2018,7 +2022,11 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   AppBar _buildNormalAppBar(ColorScheme scheme) {
     return AppBar(
       titleSpacing: 0,
-      title: Row(
+      // Feature: like WhatsApp / Telegram — tapping the name opens the
+      // chat's settings.
+      title: InkWell(
+        onTap: _openChatSettings,
+        child: Row(
         children: [
           StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
             stream: PresenceService.watchUser(widget.peerUid),
@@ -2079,29 +2087,143 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
             ),
           ),
         ],
+        ),
       ),
       actions: [
+        // Feature: voice call (audio only — no video).
         IconButton(
-          icon: const Icon(Icons.search),
-          tooltip: 'Search in chat',
-          onPressed: _openSearch,
+          icon: const Icon(Icons.call_outlined),
+          tooltip: 'Voice call',
+          onPressed: _startVoiceCall,
         ),
-        IconButton(
-          icon: const Icon(Icons.tune_rounded),
-          tooltip: 'Chat settings',
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ChatSettingsScreen(
-                conversationId: widget.conversationId,
-                peerUid: widget.peerUid,
-                peerUsername: widget.peerUsername,
+        // Feature: WhatsApp / Telegram style 3-dot menu with the important
+        // chat options; everything else is behind "Chat settings".
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert),
+          onSelected: _onChatMenu,
+          itemBuilder: (context) {
+            final muted = _conversationService.isMutedByMe(_convoData);
+            return [
+              const PopupMenuItem(value: 'settings', child: ListTile(leading: Icon(Icons.tune_rounded), title: Text('Chat settings'), contentPadding: EdgeInsets.zero)),
+              const PopupMenuItem(value: 'search', child: ListTile(leading: Icon(Icons.search), title: Text('Search'), contentPadding: EdgeInsets.zero)),
+              const PopupMenuItem(value: 'media', child: ListTile(leading: Icon(Icons.photo_library_outlined), title: Text('Media'), contentPadding: EdgeInsets.zero)),
+              PopupMenuItem(
+                value: 'mute',
+                child: ListTile(
+                  leading: Icon(muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+                  title: Text(muted ? 'Unmute notifications' : 'Mute notifications'),
+                  contentPadding: EdgeInsets.zero,
+                ),
               ),
-            ),
-          ).then((_) => _loadWallpaper()),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'secret', child: ListTile(leading: Icon(Icons.lock_clock_outlined), title: Text('Start secret chat'), contentPadding: EdgeInsets.zero)),
+              PopupMenuItem(
+                value: 'clear',
+                child: ListTile(
+                  leading: Icon(Icons.delete_sweep_outlined, color: Theme.of(context).colorScheme.error),
+                  title: Text('Clear chat', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ];
+          },
         ),
       ],
     );
+  }
+
+  // ---- Feature: 3-dot menu, voice call, clear chat, secret chat ---------
+
+  Future<void> _openChatSettings() {
+    return Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatSettingsScreen(
+          conversationId: widget.conversationId,
+          peerUid: widget.peerUid,
+          peerUsername: widget.peerUsername,
+        ),
+      ),
+    ).then((_) => _loadWallpaper());
+  }
+
+  Future<void> _onChatMenu(String value) async {
+    switch (value) {
+      case 'settings':
+        await _openChatSettings();
+        break;
+      case 'search':
+        await _openSearch();
+        break;
+      case 'media':
+        if (!mounted) return;
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ChatMediaBrowserScreen(conversationId: widget.conversationId, title: widget.peerUsername),
+          ),
+        );
+        break;
+      case 'mute':
+        final muted = _conversationService.isMutedByMe(_convoData);
+        try {
+          await _conversationService.setMuted(widget.conversationId, !muted);
+          _showForwardSnack(muted ? 'Notifications on' : 'Notifications muted');
+        } catch (_) {
+          _showForwardSnack("Couldn't change that — check your connection.");
+        }
+        break;
+      case 'secret':
+        await startSecretChatWith(context, peerUid: widget.peerUid, peerName: widget.peerUsername);
+        break;
+      case 'clear':
+        await _confirmClearChatFromMenu();
+        break;
+    }
+  }
+
+  Future<void> _confirmClearChatFromMenu() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear this chat?'),
+        content: Text(
+          'This deletes every message in this chat for both you and @${widget.peerUsername}. This can\'t be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Clear chat'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await MessageRelayService.clearForBoth(conversationId: widget.conversationId, toUid: widget.peerUid);
+      _showForwardSnack('Chat cleared');
+    } catch (_) {
+      _showForwardSnack('Could not clear chat');
+    }
+  }
+
+  Future<void> _startVoiceCall() async {
+    final nav = Navigator.of(context);
+    try {
+      final profile = await AuthService().currentUserProfile();
+      final myName = (profile.data()?['username'] as String?) ?? 'Someone';
+      final session = await CallService.instance.startCall(
+        conversationId: widget.conversationId,
+        peerUid: widget.peerUid,
+        peerName: widget.peerUsername,
+        myName: myName,
+      );
+      nav.push(MaterialPageRoute(builder: (_) => VoiceCallScreen(session: session)));
+    } catch (e) {
+      _showForwardSnack(e is StateError ? e.message.toString() : "Couldn't start the call — check the microphone permission and your connection.");
+    }
   }
 
   AppBar _buildSelectionAppBar(ColorScheme scheme) {
