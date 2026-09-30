@@ -59,6 +59,11 @@ dependencies:
   # loads Cloudflare's Turnstile widget inside a small WebView (see
   # TurnstileCaptcha in lib/widgets/turnstile_captcha.dart).
   webview_flutter: ^4.10.0
+  # Feature: private in-app browser (see InAppBrowserScreen) — Android-only
+  # extras such as refusing third-party cookies.
+  webview_flutter_android: ^4.0.0
+  # Feature: voice calls (see CallService) — WebRTC, audio only.
+  flutter_webrtc: ^0.12.0
   # Feature: live location sharing (see LiveLocationService). geolocator
   # reads the device's GPS; flutter_map + latlong2 draw the map bubble/full
   # screen view using OpenStreetMap tiles — no API key or billing account
