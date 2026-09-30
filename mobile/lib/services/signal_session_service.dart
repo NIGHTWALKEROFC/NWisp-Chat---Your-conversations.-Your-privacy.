@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+import 'post_quantum_service.dart';
 import 'signal_store.dart';
 
 /// Thrown when [uid] has never published a Signal Protocol key bundle at
@@ -72,11 +73,22 @@ class SignalSessionService {
     } else {
       await _replenishIfLow();
     }
+    // Feature: post-quantum layer. Creates / rotates and publishes this
+    // phone's ML-KEM public key, signed by the identity key. Never throws.
+    try {
+      await PostQuantumService.instance.ensurePublished(
+        uid: _myUidOrThrow(),
+        identityKeyPair: await _store.getIdentityKeyPair(),
+      );
+    } catch (_) {}
   }
 
   /// Wipes this device's entire Signal identity/session state — used when
   /// a different account signs in on this device (see SessionService).
-  Future<void> wipe() => _store.wipeAll();
+  Future<void> wipe() async {
+    await _store.wipeAll();
+    await PostQuantumService.instance.wipe();
+  }
 
   /// Feature: multiple devices — "Make this my primary device" (see
   /// DeviceSessionService.makeThisDevicePrimary, which this is always
@@ -241,17 +253,50 @@ class SignalSessionService {
   /// in a session (carries the handshake data) or '1' for every message
   /// after (pure ratchet-advanced ciphertext), matching Signal's own
   /// PreKeySignalMessage vs SignalMessage distinction.
-  Future<(String, String)> encryptForPeer(String uid, String plaintext) async {
+  ///
+  /// Feature: post-quantum layer. When the contact has published an ML-KEM
+  /// key, the Double Ratchet ciphertext is sealed once more with a key from
+  /// an ML-KEM-768 exchange (see PostQuantumService) and the marker becomes
+  /// 'P3' / 'P1'. Contacts on an older app get the classical marker as before
+  /// — unless strict mode (or [requirePq]) is on, which blocks that send.
+  Future<(String, String)> encryptForPeer(String uid, String plaintext, {bool requirePq = false}) async {
     await _ensureSession(uid);
     final cipher = SessionCipher(_store, _store, _store, _store, _addressFor(uid));
     final ciphertext = await cipher.encrypt(Uint8List.fromList(utf8.encode(plaintext)));
     final typeMarker = ciphertext.getType() == CiphertextMessage.prekeyType ? '3' : '1';
-    return (bytesToB64(ciphertext.serialize()), typeMarker);
+    final inner = ciphertext.serialize();
+    final peerIdentity = await peerIdentityPublicKeyBytes(uid);
+    if (peerIdentity != null) {
+      final wrapped = await PostQuantumService.instance.wrapForPeer(
+        myUid: _myUidOrThrow(),
+        peerUid: uid,
+        peerIdentityKey: peerIdentity,
+        inner: inner,
+        requirePq: requirePq,
+      );
+      if (wrapped != null) return (bytesToB64(wrapped), 'P$typeMarker');
+    }
+    return (bytesToB64(inner), typeMarker);
   }
 
   /// Decrypts a message from [uid]. [typeMarker] is whatever
   /// [encryptForPeer] tagged it with on the sending side (see above).
   Future<String> decryptFromPeer(String uid, String ciphertextB64, String typeMarker) async {
+    // Feature: post-quantum layer — 'P3' / 'P1' means an ML-KEM envelope
+    // wraps the normal Double Ratchet message. Open it, then carry on with
+    // the ordinary '3' / '1' path below.
+    if (typeMarker.startsWith('P')) {
+      final inner = await PostQuantumService.instance.unwrapFromPeer(
+        myUid: _myUidOrThrow(),
+        peerUid: uid,
+        envelope: b64ToBytes(ciphertextB64),
+      );
+      return _decryptSignal(uid, bytesToB64(inner), typeMarker.substring(1));
+    }
+    return _decryptSignal(uid, ciphertextB64, typeMarker);
+  }
+
+  Future<String> _decryptSignal(String uid, String ciphertextB64, String typeMarker) async {
     final address = _addressFor(uid);
     final cipher = SessionCipher(_store, _store, _store, _store, address);
     final bytes = b64ToBytes(ciphertextB64);
@@ -301,6 +346,22 @@ class SignalSessionService {
     });
     if (plaintext == null) throw Exception('Could not decrypt message.');
     return utf8.decode(plaintext!);
+  }
+
+  /// Feature: secret chats. Signs [message] with this device's Signal
+  /// identity key so the other person can prove the handshake really came
+  /// from us and wasn't swapped by anyone in the middle.
+  Future<Uint8List> signWithIdentity(Uint8List message) async {
+    final pair = await _store.getIdentityKeyPair();
+    return Curve.calculateSignature(pair.getPrivateKey(), message);
+  }
+
+  /// Checks a signature made by [uid]'s identity key (the one pinned on this
+  /// device, or their published one if no chat has happened yet).
+  Future<bool> verifyPeerSignature(String uid, Uint8List message, Uint8List signature) async {
+    final key = await peerIdentityPublicKeyBytes(uid);
+    if (key == null) return false;
+    return Curve.verifySignature(Curve.decodePoint(key, 0), message, signature);
   }
 
   /// This device's own identity public key — used only to build the
