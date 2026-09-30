@@ -1,5 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Feature: voice calls (flutter_webrtc) -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <!-- Required on Android 13+ (API 33) for any notification to show at
          all, including FCM's own background/terminated notifications and
          the foreground ones flutter_local_notifications shows. -->
