@@ -1,6 +1,8 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../screens/browser/in_app_browser_screen.dart';
+import '../services/browser_settings_service.dart';
 import '../services/link_safety_service.dart';
 
 /// Feature: in-app scam/phishing link warning. Shared by both
@@ -53,6 +55,15 @@ Future<void> openMessageLink(BuildContext context, String url) async {
   if (confirmed != true) return;
   final uri = Uri.tryParse(url);
   if (uri == null) return;
+  // Feature: private in-app browser. On by default — the link opens inside
+  // NWisp. If the person switched it off in Settings > Private browser, it
+  // goes to the phone's default browser like before.
+  await BrowserSettingsService.instance.load();
+  if (BrowserSettingsService.instance.enabled.value) {
+    if (!context.mounted) return;
+    await openInAppBrowser(context, url: url);
+    return;
+  }
   try {
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   } catch (_) {
