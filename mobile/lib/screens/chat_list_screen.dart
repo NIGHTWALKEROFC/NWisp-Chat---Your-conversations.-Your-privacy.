@@ -37,6 +37,8 @@ import 'groups/group_invites_screen.dart';
 import 'security/chat_pin_guard.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
+import 'browser/in_app_browser_screen.dart';
+import 'secret/secret_chat_screen.dart';
 import 'settings/settings_screen.dart';
 import 'starred_messages_screen.dart';
 import '../services/chat_wallpaper_service.dart';
@@ -607,6 +609,63 @@ class _ChatListScreenState extends State<ChatListScreen> {
     Navigator.push(context, MaterialPageRoute(builder: (_) => EditProfileScreen(currentUsername: username)));
   }
 
+  /// Feature: secret chat from the home screen — asks which chat to start it
+  /// with, then shows the rules and sends the request.
+  Future<void> _pickSecretChat() async {
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid == null) return;
+    final peers = _mergedRows(myUid)
+        .where((r) => !r.isGroup && r.peerUid.isNotEmpty && r.peerUid != myUid)
+        .map((r) => r.peerUid)
+        .toSet()
+        .toList();
+    if (peers.isEmpty) {
+      _snack('Start a normal chat with someone first, then you can open a secret chat with them.');
+      return;
+    }
+    final names = <String, String>{for (final u in peers) u: await _usernameFor(u)};
+    if (!mounted) return;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Secret chat with…', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                ),
+              ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final u in peers)
+                      ListTile(
+                        leading: UserAvatar(uid: u, name: names[u] ?? '', radius: 22),
+                        title: Text(names[u] ?? 'Unknown'),
+                        trailing: const Icon(Icons.lock_clock_outlined),
+                        onTap: () => Navigator.pop(ctx, u),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked != null && mounted) {
+      await startSecretChatWith(context, peerUid: picked, peerName: names[picked] ?? 'Unknown');
+    }
+  }
+
   void _onMenuSelected(String value) {
     switch (value) {
       case 'new_chat':
@@ -626,6 +685,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
         break;
       case 'settings':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+        break;
+      case 'secret_chat':
+        _pickSecretChat();
+        break;
+      case 'private_browser':
+        openInAppBrowser(context);
         break;
       case 'global_search':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const GlobalSearchScreen()));
@@ -756,8 +821,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 child: ListTile(leading: Icon(Icons.groups_rounded), title: Text('New group'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuItem(
-                value: 'broadcast_lists',
-                child: ListTile(leading: Icon(Icons.campaign_outlined), title: Text('Broadcast lists'), contentPadding: EdgeInsets.zero),
+                value: 'secret_chat',
+                child: ListTile(leading: Icon(Icons.lock_clock_outlined), title: Text('Secret chat'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuDivider(),
               PopupMenuItem(
@@ -769,33 +834,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 child: ListTile(leading: Icon(Icons.star_border), title: Text('Starred messages'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuItem(
-                value: 'folders',
-                child: ListTile(leading: Icon(Icons.folder_outlined), title: Text('Chat folders'), contentPadding: EdgeInsets.zero),
-              ),
-              PopupMenuItem(
-                value: 'note_to_self',
-                child: ListTile(leading: Icon(Icons.edit_note), title: Text('Note to self'), contentPadding: EdgeInsets.zero),
-              ),
-              PopupMenuItem(
-                value: 'scheduled',
-                child: ListTile(leading: Icon(Icons.schedule), title: Text('Scheduled messages'), contentPadding: EdgeInsets.zero),
-              ),
-              PopupMenuItem(
-                value: 'media_vault',
-                child: ListTile(leading: Icon(Icons.enhanced_encryption_outlined), title: Text('Media vault'), contentPadding: EdgeInsets.zero),
-              ),
-              PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'profile',
-                child: ListTile(leading: Icon(Icons.person_outline), title: Text('Profile'), contentPadding: EdgeInsets.zero),
-              ),
-              PopupMenuItem(
-                value: 'login_activity',
-                child: ListTile(leading: Icon(Icons.security_outlined), title: Text('Login activity'), contentPadding: EdgeInsets.zero),
-              ),
-              PopupMenuItem(
-                value: 'settings',
-                child: ListTile(leading: Icon(Icons.settings_outlined), title: Text('Settings'), contentPadding: EdgeInsets.zero),
+                value: 'private_browser',
+                child: ListTile(leading: Icon(Icons.shield_moon_outlined), title: Text('Private browser'), contentPadding: EdgeInsets.zero),
               ),
             ],
           ),
