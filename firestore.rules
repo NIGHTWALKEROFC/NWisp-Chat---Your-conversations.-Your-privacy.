@@ -96,6 +96,14 @@ service cloud.firestore {
       // meant to be public by design (that's how X3DH lets you message
       // someone who's offline right now), same trust model as the
       // publicKey field above.
+      // Feature: post-quantum layer — this phone's ML-KEM public key, signed
+      // by the Signal identity key (see PostQuantumService). Public by
+      // design; only the owner can publish or replace it.
+      match /signal/pq {
+        allow read: if isSignedIn();
+        allow write: if isOwner(uid);
+      }
+
       match /signal/bundle {
         allow read: if isSignedIn();
         allow write: if isOwner(uid);
@@ -580,6 +588,92 @@ service cloud.firestore {
       // not an update — keeps initiatedBy/createdAt honest for whichever
       // person starts the NEW one.
       allow update: if false;
+    }
+
+    // Feature: voice calls (see CallService). A call document carries the
+    // small WebRTC "signalling" notes two phones swap to find each other —
+    // never any audio. Only the two people on the call can read or change
+    // it, a call can only be started inside a chat that already exists
+    // between the two people, and either side can delete it afterwards.
+    match /calls/{callId} {
+      function callParticipant() {
+        return isSignedIn() &&
+          (request.auth.uid == resource.data.callerUid || request.auth.uid == resource.data.calleeUid);
+      }
+      function callParticipantOf(id) {
+        let c = get(/databases/$(database)/documents/calls/$(id)).data;
+        return isSignedIn() && (request.auth.uid == c.callerUid || request.auth.uid == c.calleeUid);
+      }
+      allow read: if callParticipant();
+      allow create: if isSignedIn()
+        && request.resource.data.callerUid == request.auth.uid
+        && request.resource.data.calleeUid is string
+        && request.resource.data.calleeUid != request.auth.uid
+        && request.resource.data.status == 'ringing'
+        && exists(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId))
+        && request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants
+        && request.resource.data.calleeUid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants;
+      allow update: if callParticipant()
+        && request.resource.data.callerUid == resource.data.callerUid
+        && request.resource.data.calleeUid == resource.data.calleeUid;
+      allow delete: if callParticipant();
+
+      match /callerCandidates/{id} {
+        allow read: if callParticipantOf(callId);
+        allow create: if callParticipantOf(callId)
+          && request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.callerUid;
+        allow delete: if callParticipantOf(callId);
+        allow update: if false;
+      }
+      match /calleeCandidates/{id} {
+        allow read: if callParticipantOf(callId);
+        allow create: if callParticipantOf(callId)
+          && request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.calleeUid;
+        allow delete: if callParticipantOf(callId);
+        allow update: if false;
+      }
+    }
+
+    // Feature: secret chats (see SecretChatService). This document only
+    // ever holds the public halves of the handshake, a heartbeat, and — in
+    // the msgs subcollection — encrypted blobs that the receiver deletes as
+    // soon as it has opened them. Only the two people involved can touch it.
+    match /secretChats/{chatId} {
+      function scParticipant() {
+        return isSignedIn() && request.auth.uid in resource.data.participants;
+      }
+      // The invitee's "who is asking me?" query filters on the invitee
+      // field, which Firestore can prove; it can't prove array membership.
+      function scCanRead() {
+        return isSignedIn() &&
+          (request.auth.uid in resource.data.participants || request.auth.uid == resource.data.invitee);
+      }
+      function scParticipantOf(id) {
+        return isSignedIn() &&
+          request.auth.uid in get(/databases/$(database)/documents/secretChats/$(id)).data.participants;
+      }
+      allow read: if scCanRead();
+      allow create: if isSignedIn()
+        && request.resource.data.initiator == request.auth.uid
+        && request.resource.data.participants.size() == 2
+        && request.auth.uid in request.resource.data.participants
+        && request.resource.data.invitee in request.resource.data.participants
+        && request.resource.data.invitee != request.auth.uid
+        && request.resource.data.status == 'requested';
+      allow update: if scParticipant()
+        && request.resource.data.participants == resource.data.participants
+        && request.resource.data.initiator == resource.data.initiator;
+      allow delete: if scParticipant();
+
+      match /msgs/{msgId} {
+        allow read: if scParticipantOf(chatId) && request.auth.uid == resource.data.to;
+        allow create: if scParticipantOf(chatId)
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.to in get(/databases/$(database)/documents/secretChats/$(chatId)).data.participants
+          && request.resource.data.to != request.auth.uid;
+        allow delete: if scParticipantOf(chatId);
+        allow update: if false;
+      }
     }
 
     match /reports/{reportId} {
