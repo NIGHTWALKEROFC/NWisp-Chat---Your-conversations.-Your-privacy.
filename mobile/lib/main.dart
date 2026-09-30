@@ -175,6 +175,10 @@ void _handleNotificationData(Map<String, dynamic> data) {
     _openSecurityChat();
     return;
   }
+  // Feature: voice calls — tapping an "Incoming voice call" notification
+  // just opens the app; HomeShell then shows the ringing screen if the call
+  // is still ringing, so there is nothing to navigate to here.
+  if (data['type'] == 'incoming_call') return;
   if (data['type'] == 'login_approval') {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final requestId = data['requestId'] as String?;
