@@ -11,6 +11,7 @@ import '../notes/note_to_self_screen.dart';
 import '../starred_messages_screen.dart';
 import '../vault/media_vault_screen.dart';
 import 'account_security_screen.dart';
+import '../../services/incoming_call_notifier.dart';
 import 'encryption_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
@@ -104,6 +105,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// A row that runs an action instead of opening a screen.
+  Widget _rowAction(IconData icon, String title, String subtitle, VoidCallback onTap) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(color: scheme.primary.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(12)),
+        child: Icon(icon, color: scheme.primary, size: 20),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12.5)),
+      onTap: onTap,
+    );
+  }
+
   /// Like [_row] but for a screen that needs its own route settings.
   Widget _rowRoute(IconData icon, String title, String subtitle, Route<void> Function() route) {
     final scheme = Theme.of(context).colorScheme;
@@ -182,6 +199,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _row(Icons.encrypted_outlined, 'Encryption & quantum safety', 'Post-quantum protection, strict mode', const EncryptionScreen()),
                   _row(Icons.shield_moon_outlined, 'Private browser', 'In-app browser, tracker blocking, search engine', const BrowserSettingsScreen()),
                   _row(Icons.security_outlined, 'Login activity', 'Devices and sign-ins on your account', const AccountSecurityScreen()),
+                  _rowAction(
+                    Icons.phone_callback_outlined,
+                    'Full-screen call alerts',
+                    'Lets incoming calls ring over the lock screen, even when NWisp is closed',
+                    () async {
+                      final ok = await IncomingCallNotifier.requestFullScreenPermission();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(ok == false
+                            ? 'Not allowed yet — switch on "Full-screen notifications" for NWisp in the page that opened.'
+                            : 'Full-screen call alerts are allowed.'),
+                      ));
+                    },
+                  ),
                 ]),
                 const SizedBox(height: 14),
                 _group([
