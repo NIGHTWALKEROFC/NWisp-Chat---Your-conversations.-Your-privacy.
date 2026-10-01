@@ -634,6 +634,48 @@ service cloud.firestore {
       }
     }
 
+    // Feature: group voice calls (see GroupCallService). Like a 1:1 call
+    // document, this only carries the small signalling notes phones swap to
+    // find each other — never audio. Only members of the call's member list
+    // can read it, and that list can only contain people who are really in
+    // the group.
+    match /groupCalls/{callId} {
+      function gcMember() {
+        return isSignedIn() && request.auth.uid in resource.data.members;
+      }
+      function gcMembersOf(id) {
+        return get(/databases/$(database)/documents/groupCalls/$(id)).data.members;
+      }
+      allow read: if gcMember();
+      allow create: if isSignedIn()
+        && request.resource.data.starterUid == request.auth.uid
+        && request.resource.data.status == 'active'
+        && request.resource.data.members.size() <= 40
+        && request.auth.uid in request.resource.data.members
+        && request.resource.data.joined.size() == 1
+        && request.resource.data.joined[0] == request.auth.uid
+        && request.auth.uid in get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.members
+        && request.resource.data.members.hasOnly(get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.members);
+      allow update: if gcMember()
+        && request.resource.data.members == resource.data.members
+        && request.resource.data.starterUid == resource.data.starterUid
+        && request.resource.data.groupId == resource.data.groupId
+        && request.resource.data.joined.size() <= 6
+        && request.resource.data.joined.hasOnly(resource.data.members);
+      allow delete: if gcMember();
+
+      match /signals/{signalId} {
+        allow read: if isSignedIn() && request.auth.uid == resource.data.to;
+        allow create: if isSignedIn()
+          && request.resource.data.from == request.auth.uid
+          && request.auth.uid in gcMembersOf(callId)
+          && request.resource.data.to in gcMembersOf(callId);
+        allow delete: if isSignedIn()
+          && (request.auth.uid == resource.data.to || request.auth.uid == resource.data.from);
+        allow update: if false;
+      }
+    }
+
     // Feature: secret chats (see SecretChatService). This document only
     // ever holds the public halves of the handshake, a heartbeat, and — in
     // the msgs subcollection — encrypted blobs that the receiver deletes as
