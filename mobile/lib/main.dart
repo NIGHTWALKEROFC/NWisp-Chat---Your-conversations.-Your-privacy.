@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'firebase_options.dart';
 import 'services/theme_service.dart';
+import 'services/incoming_call_notifier.dart';
 import 'services/branding_service.dart';
 import 'services/app_badge_service.dart';
 import 'services/auth_service.dart';
@@ -149,9 +150,17 @@ Future<void> _setUpLocalNotifications() async {
   const iosInit = DarwinInitializationSettings();
   await _localNotifications.initialize(
     const InitializationSettings(android: androidInit, iOS: iosInit),
+    // Feature: "Decline" pressed on a call notification while NWisp is closed.
+    onDidReceiveBackgroundNotificationResponse: nwispCallActionBackground,
     onDidReceiveNotificationResponse: (response) {
       final payload = response.payload;
       if (payload == null || payload.isEmpty) return;
+      // Feature: call notification (tap / Answer / Decline) — HomeShell does
+      // the rest once the matching ringing call shows up.
+      if (IncomingCallNotifier.isCallPayload(payload)) {
+        IncomingCallNotifier.handleResponse(response);
+        return;
+      }
       if (payload == 'security_event') {
         _openSecurityChat();
         return;
@@ -167,6 +176,16 @@ Future<void> _setUpLocalNotifications() async {
   // Feature: custom notification sound — re-create the person's chosen
   // channel too (no-op if they never picked one, or it already exists).
   await NotificationSoundService.instance.ensureChannel();
+  // Feature: full-screen ringing — the "Incoming calls" and "Ongoing call"
+  // channels, and "Answer" pressed while the app was fully closed.
+  await IncomingCallNotifier.createChannels(
+    _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>(),
+  );
+  final launch = await _localNotifications.getNotificationAppLaunchDetails();
+  final launchResponse = launch?.notificationResponse;
+  if (launch?.didNotificationLaunchApp == true && launchResponse != null && IncomingCallNotifier.isCallPayload(launchResponse.payload)) {
+    await IncomingCallNotifier.handleResponse(launchResponse);
+  }
 }
 
 void _handleNotificationData(Map<String, dynamic> data) {
@@ -178,7 +197,7 @@ void _handleNotificationData(Map<String, dynamic> data) {
   // Feature: voice calls — tapping an "Incoming voice call" notification
   // just opens the app; HomeShell then shows the ringing screen if the call
   // is still ringing, so there is nothing to navigate to here.
-  if (data['type'] == 'incoming_call') return;
+  if (data['type'] == 'incoming_call' || data['type'] == 'incoming_group_call' || data['type'] == 'secret_invite') return;
   if (data['type'] == 'login_approval') {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final requestId = data['requestId'] as String?;
@@ -506,6 +525,9 @@ void _watchForIncomingLoginApprovals(String uid) {
 }
 
 void _setUpPushNotifications() {
+  // Feature: full-screen ringing — call pushes are data-only and are turned
+  // into a ringing notification by this handler even with NWisp closed.
+  FirebaseMessaging.onBackgroundMessage(nwispFirebaseBackgroundHandler);
   FirebaseMessaging.instance.requestPermission();
 
   // Register this device's token whenever we're signed in, AND whenever
@@ -548,6 +570,9 @@ void _setUpPushNotifications() {
     // foregrounded — showing a system notification for it too here would
     // just be a redundant second alert for the same thing.
     if (data['type'] == 'login_approval') return;
+    // Calls and secret-chat requests are shown by their own live listeners
+    // (HomeShell) while NWisp is open — no second system notification.
+    if (data['type'] == 'incoming_call' || data['type'] == 'incoming_group_call' || data['type'] == 'secret_invite') return;
     final notification = message.notification;
     if (notification == null) return;
     // Feature: mute by keyword. Best-effort — see KeywordMuteService's
