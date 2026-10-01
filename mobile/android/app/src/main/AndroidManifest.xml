@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <!-- Feature: full-screen ringing + "on a call" foreground service -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.VIBRATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <!-- Required on Android 13+ (API 33) for any notification to show at
          all, including FCM's own background/terminated notifications and
          the foreground ones flutter_local_notifications shows. -->
@@ -103,5 +109,10 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Feature: keeps the microphone alive during a call while NWisp is in the background -->
+        <service
+            android:name="com.dexterous.flutterlocalnotifications.ForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"/>
     </application>
 </manifest>
