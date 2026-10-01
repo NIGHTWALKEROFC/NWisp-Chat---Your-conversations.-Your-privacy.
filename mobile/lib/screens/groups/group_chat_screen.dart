@@ -29,6 +29,7 @@ import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import '../chat/chat_detail_screen.dart';
+import '../call/call_screens.dart';
 import '../chat/chat_search_screen.dart';
 import '../security/chat_pin_guard.dart';
 import '../security/safety_number_screen.dart';
@@ -1563,6 +1564,17 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
           ),
         ),
         actions: [
+          // Feature: group voice call — starts one, or joins the one going on.
+          IconButton(
+            icon: const Icon(Icons.call_outlined),
+            tooltip: 'Group voice call',
+            onPressed: () => startOrJoinGroupCall(
+              context,
+              groupId: widget.groupId,
+              groupName: _groupName,
+              memberUids: List<String>.from(_memberUids),
+            ),
+          ),
           IconButton(icon: const Icon(Icons.search), tooltip: 'Search in chat', onPressed: _openSearch),
         ],
       ),
