@@ -160,7 +160,7 @@ class CallService {
           .post(
             Uri.parse('$base/functions/v1/send-call-push'),
             headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-            body: jsonEncode({'callId': callId, 'calleeUid': calleeUid}),
+            body: jsonEncode({'kind': 'call', 'callId': callId, 'calleeUid': calleeUid}),
           )
           .timeout(const Duration(seconds: 8));
     } catch (_) {}
