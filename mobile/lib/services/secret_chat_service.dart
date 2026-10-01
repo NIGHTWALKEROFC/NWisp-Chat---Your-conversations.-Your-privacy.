@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'mlkem768.dart';
 import 'signal_session_service.dart';
 
@@ -214,6 +215,10 @@ class SecretChatSession extends ChangeNotifier {
       'expireAt': Timestamp.fromDate(DateTime.now().add(const Duration(hours: 2))),
     });
     _docSub = ref.snapshots().listen(_onDoc, onError: (_) => _fail('Connection problem.'));
+    // Feature: secret-chat invite push — lets the other phone show "Secret
+    // chat request" even with NWisp closed. The text deliberately leaves the
+    // name out so it can't be read on a lock screen.
+    _pushInvite();
     _requestTimeout = Timer(const Duration(seconds: 60), () {
       if (phase == SecretPhase.waiting) {
         ref.update({'status': 'ended'}).catchError((_) {});
@@ -221,6 +226,22 @@ class SecretChatSession extends ChangeNotifier {
         _teardown(deleteDoc: true);
       }
     });
+  }
+
+  Future<void> _pushInvite() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final token = await user.getIdToken();
+      final base = const String.fromEnvironment('SUPABASE_URL');
+      await http
+          .post(
+            Uri.parse('$base/functions/v1/send-call-push'),
+            headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+            body: jsonEncode({'kind': 'secret_invite', 'chatId': ref.id, 'inviteeUid': peerUid}),
+          )
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {}
   }
 
   Future<void> _accept() async {
