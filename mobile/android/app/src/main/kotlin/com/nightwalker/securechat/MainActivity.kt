@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterFragmentActivity
@@ -57,6 +58,50 @@ class MainActivity : FlutterFragmentActivity() {
     private var screenCaptureCallback: Activity.ScreenCaptureCallback? = null
 
     private val soundChannelName = "com.nightwalker.securechat/notification_sound"
+    // Feature: full-screen ringing. While a call is ringing or in progress the
+    // window may show over the lock screen and light the display; it is
+    // switched back off the moment the call is over (and whenever the app
+    // goes out of view), so NWisp never stays visible on a locked phone.
+    private val callWindowChannelName = "com.nightwalker.securechat/call_window"
+
+    private fun setCallWindow(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(on)
+            setTurnScreenOn(on)
+        } else {
+            @Suppress("DEPRECATION")
+            if (on) {
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                )
+            } else {
+                window.clearFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                )
+            }
+        }
+    }
+
+    // The call notification's full-screen intent carries a payload like
+    // "call|<id>" / "gcall|<id>". Seeing it here lets the window appear over
+    // the lock screen even before the Dart side has started.
+    private fun applyCallIntent(intent: Intent?) {
+        val payload = intent?.getStringExtra("payload") ?: return
+        if (payload.startsWith("call|") || payload.startsWith("gcall|")) setCallWindow(true)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        applyCallIntent(intent)
+        super.onCreate(savedInstanceState)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        applyCallIntent(intent)
+    }
+
     private val soundRequestCode = 4711
     private var pendingSoundResult: MethodChannel.Result? = null
 
@@ -89,6 +134,17 @@ class MainActivity : FlutterFragmentActivity() {
                     } else {
                         result.success(false)
                     }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, callWindowChannelName).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "show" -> {
+                    val on = call.argument<Boolean>("on") ?: false
+                    runOnUiThread { setCallWindow(on) }
+                    result.success(null)
                 }
                 else -> result.notImplemented()
             }
@@ -177,6 +233,8 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Feature: full-screen ringing — never stay visible over the lock screen.
+        setCallWindow(false)
         if (Build.VERSION.SDK_INT >= 34) {
             screenCaptureCallback?.let {
                 try {
