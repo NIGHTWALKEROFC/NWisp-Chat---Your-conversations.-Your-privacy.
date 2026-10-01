@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import '../../services/browser_data_service.dart';
 import '../../services/browser_settings_service.dart';
 import '../../widgets/nwisp_ui.dart';
+import 'browser_library_screen.dart';
 
 /// Shows the warning that must be accepted before the in-app browser is
 /// turned off. Returns true if the person still wants to turn it off.
@@ -153,6 +155,24 @@ class _BrowserSettingsScreenState extends State<BrowserSettingsScreen> {
                       _switch(s.javascript, 'JavaScript', 'Turn off for maximum privacy — many sites will break', s.setJavascript, icon: Icons.code_rounded),
                       const Divider(height: 1, indent: 56),
                       _switch(s.desktopMode, 'Desktop site', 'Ask sites for their desktop version', s.setDesktopMode, icon: Icons.desktop_windows_outlined),
+                      const Divider(height: 1, indent: 56),
+                      _switch(s.saveHistory, 'Save browsing history', 'Off by default. If on, pages you visit are listed (on this phone only, encrypted)', s.setSaveHistory, icon: Icons.history_rounded),
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                        leading: const Icon(Icons.bookmarks_outlined),
+                        title: const Text('Bookmarks & history', style: TextStyle(fontWeight: FontWeight.w600)),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BrowserLibraryScreen())),
+                      ),
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                        leading: Icon(Icons.delete_outline, color: scheme.error),
+                        title: const Text('Clear browsing history now', style: TextStyle(fontWeight: FontWeight.w600)),
+                        onTap: () async {
+                          await BrowserDataService.instance.clearHistory();
+                          if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('History cleared')));
+                        },
+                      ),
                     ],
                   ),
                 ),
