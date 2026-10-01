@@ -15,6 +15,7 @@ class BrowserSettingsService {
   static const _kJs = 'br_javascript';
   static const _kDesktop = 'br_desktop_mode';
   static const _kBlocked = 'br_blocked_count';
+  static const _kHistory = 'br_save_history';
 
   /// Links open inside NWisp. On by default.
   final enabled = ValueNotifier<bool>(true);
@@ -25,6 +26,9 @@ class BrowserSettingsService {
   final clearOnExit = ValueNotifier<bool>(true);
   final javascript = ValueNotifier<bool>(true);
   final desktopMode = ValueNotifier<bool>(false);
+
+  /// Remember visited pages (local, encrypted). Off by default.
+  final saveHistory = ValueNotifier<bool>(false);
   int trackersBlockedTotal = 0;
   bool _loaded = false;
 
@@ -51,6 +55,7 @@ class BrowserSettingsService {
     clearOnExit.value = p.getBool(_kClearExit) ?? true;
     javascript.value = p.getBool(_kJs) ?? true;
     desktopMode.value = p.getBool(_kDesktop) ?? false;
+    saveHistory.value = p.getBool(_kHistory) ?? false;
     trackersBlockedTotal = p.getInt(_kBlocked) ?? 0;
     _loaded = true;
   }
@@ -67,6 +72,7 @@ class BrowserSettingsService {
   Future<void> setClearOnExit(bool v) => _setBool(_kClearExit, clearOnExit, v);
   Future<void> setJavascript(bool v) => _setBool(_kJs, javascript, v);
   Future<void> setDesktopMode(bool v) => _setBool(_kDesktop, desktopMode, v);
+  Future<void> setSaveHistory(bool v) => _setBool(_kHistory, saveHistory, v);
 
   Future<void> setSearchEngine(String id) async {
     if (!engines.containsKey(id)) return;
