@@ -1,9 +1,13 @@
 import * as jose from "https://esm.sh/jose@5";
 
-// Feature: voice calls. When someone starts a call, the app calls this
-// function so the other person's phone shows an "Incoming voice call"
-// notification even if NWisp is closed. Tapping it opens the app, which then
-// shows the ringing screen (as long as the call is still ringing).
+// Feature: voice calls, group calls and secret-chat requests. When someone
+// starts one, the app calls this function so the other phone(s) react even
+// if NWisp is closed:
+//   kind "call"          1:1 call   -> DATA-ONLY push; the app turns it into a
+//                                      full-screen ringing notification
+//   kind "group_call"    group call -> same, sent to every group member
+//   kind "secret_invite" secret chat request -> ordinary notification with
+//                                      no name in it (lock-screen safe)
 //
 // Same free-tier pieces as send-security-push: this Edge Function + the FCM
 // HTTP v1 API. No Firebase Cloud Functions, no Blaze plan.
@@ -98,59 +102,109 @@ async function removeStaleToken(uid: string, deadToken: string, accessToken: str
   } catch (_) {}
 }
 
+async function tokensOf(uid: string, accessToken: string): Promise<string[]> {
+  const profile = (await getDoc(`users/${uid}/private/profile`, accessToken)) ?? {};
+  return profile.fcmTokens ?? [];
+}
+
+async function sendFcm(uid: string, token: string, message: Record<string, unknown>, accessToken: string): Promise<boolean> {
+  const res = await fetch(`https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ message: { token, ...message } }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    if (errText.includes("UNREGISTERED") || errText.includes("NOT_FOUND")) {
+      await removeStaleToken(uid, token, accessToken);
+    }
+  }
+  return res.ok;
+}
+
+const ID = /^[A-Za-z0-9_-]{10,80}$/;
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: CORS });
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
     const callerUid = await verifyIdToken(req);
     const body = await req.json();
-    const callId = String(body.callId ?? "");
-    const calleeUid = String(body.calleeUid ?? "");
-    if (!/^[A-Za-z0-9]{10,40}$/.test(callId) || !/^[A-Za-z0-9]{10,40}$/.test(calleeUid)) {
-      return new Response(JSON.stringify({ error: "Bad request" }), { status: 400, headers: CORS });
-    }
-
+    const kind = String(body.kind ?? "call");
     const accessToken = await getAccessToken();
-    const call = await getDoc(`calls/${callId}`, accessToken);
-    if (!call || call.callerUid !== callerUid || call.calleeUid !== calleeUid || call.status !== "ringing") {
-      return new Response(JSON.stringify({ error: "No such ringing call" }), { status: 403, headers: CORS });
-    }
-    const callerName = String(call.callerName ?? "Someone").slice(0, 40);
 
-    const profile = (await getDoc(`users/${calleeUid}/private/profile`, accessToken)) ?? {};
-    const tokens: string[] = profile.fcmTokens ?? [];
-    if (tokens.length === 0) {
-      return new Response(JSON.stringify({ sent: 0, total: 0 }), { status: 200, headers: CORS });
+    // ---------------------------------------------------------- 1:1 call
+    if (kind === "call") {
+      const callId = String(body.callId ?? "");
+      const calleeUid = String(body.calleeUid ?? "");
+      if (!ID.test(callId) || !ID.test(calleeUid)) return json({ error: "Bad request" }, 400);
+      const call = await getDoc(`calls/${callId}`, accessToken);
+      if (!call || call.callerUid !== callerUid || call.calleeUid !== calleeUid || call.status !== "ringing") {
+        return json({ error: "No such ringing call" }, 403);
+      }
+      const callerName = String(call.callerName ?? "Someone").slice(0, 40);
+      const tokens = await tokensOf(calleeUid, accessToken);
+      const results = await Promise.all(tokens.map((t) =>
+        sendFcm(calleeUid, t, {
+          // Data only: no "notification" block, so the app's own code runs
+          // and can ring full-screen.
+          data: { type: "incoming_call", callId, callerName, callerUid },
+          android: { priority: "high", ttl: "30s" },
+        }, accessToken)
+      ));
+      return json({ sent: results.filter(Boolean).length, total: tokens.length });
     }
 
-    const results = await Promise.all(
-      tokens.map(async (token) => {
-        const res = await fetch(`https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: {
-              token,
-              notification: { title: "Incoming voice call", body: `${callerName} is calling you on NWisp` },
-              data: { type: "incoming_call", callId },
-              android: { priority: "high", ttl: "30s" },
-              apns: { headers: { "apns-priority": "10" } },
-            },
-          }),
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          if (errText.includes("UNREGISTERED") || errText.includes("NOT_FOUND")) {
-            await removeStaleToken(calleeUid, token, accessToken);
-          }
-        }
-        return res.ok;
-      }),
-    );
-    return new Response(JSON.stringify({ sent: results.filter(Boolean).length, total: tokens.length }), {
-      status: 200,
-      headers: CORS,
-    });
+    // -------------------------------------------------------- group call
+    if (kind === "group_call") {
+      const callId = String(body.callId ?? "");
+      if (!ID.test(callId)) return json({ error: "Bad request" }, 400);
+      const call = await getDoc(`groupCalls/${callId}`, accessToken);
+      if (!call || call.starterUid !== callerUid || call.status !== "active") {
+        return json({ error: "No such group call" }, 403);
+      }
+      const members: string[] = (call.members ?? []).filter((m: string) => m !== callerUid).slice(0, 40);
+      const callerName = String(call.starterName ?? "Someone").slice(0, 40);
+      const groupName = String(call.groupName ?? "a group").slice(0, 40);
+      let sent = 0;
+      let total = 0;
+      await Promise.all(members.map(async (uid) => {
+        const tokens = await tokensOf(uid, accessToken);
+        total += tokens.length;
+        const r = await Promise.all(tokens.map((t) =>
+          sendFcm(uid, t, {
+            data: { type: "incoming_group_call", callId, callerName, groupName },
+            android: { priority: "high", ttl: "30s" },
+          }, accessToken)
+        ));
+        sent += r.filter(Boolean).length;
+      }));
+      return json({ sent, total });
+    }
+
+    // ------------------------------------------------------ secret chat
+    if (kind === "secret_invite") {
+      const chatId = String(body.chatId ?? "");
+      const inviteeUid = String(body.inviteeUid ?? "");
+      if (!ID.test(chatId) || !ID.test(inviteeUid)) return json({ error: "Bad request" }, 400);
+      const chat = await getDoc(`secretChats/${chatId}`, accessToken);
+      if (!chat || chat.initiator !== callerUid || chat.invitee !== inviteeUid || chat.status !== "requested") {
+        return json({ error: "No such secret chat request" }, 403);
+      }
+      const tokens = await tokensOf(inviteeUid, accessToken);
+      const results = await Promise.all(tokens.map((t) =>
+        sendFcm(inviteeUid, t, {
+          // No name, on purpose: this can show on a locked screen.
+          notification: { title: "NWisp", body: "Secret chat request — open NWisp to see who." },
+          data: { type: "secret_invite", chatId },
+          android: { priority: "high", ttl: "60s" },
+        }, accessToken)
+      ));
+      return json({ sent: results.filter(Boolean).length, total: tokens.length });
+    }
+
+    return json({ error: "Unknown kind" }, 400);
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), { status: 401, headers: CORS });
+    return json({ error: String(err) }, 401);
   }
 });
