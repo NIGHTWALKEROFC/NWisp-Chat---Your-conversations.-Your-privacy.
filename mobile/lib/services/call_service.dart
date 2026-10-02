@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'call_log_service.dart';
+import 'call_privacy_service.dart';
 import 'incoming_call_notifier.dart';
 
 /// Feature: voice calls (audio only — no video, so very little data).
@@ -31,12 +32,19 @@ class CallService {
   static const _turnUser = String.fromEnvironment('TURN_USER');
   static const _turnPass = String.fromEnvironment('TURN_PASS');
 
+  /// Whether this build of the app knows a relay (TURN) server. Needed for
+  /// "Protect IP address in calls" — see CallPrivacyService.
+  static bool get isTurnConfigured => _turnUrl.isNotEmpty;
+
   static Map<String, dynamic> get rtcConfig => {
         'sdpSemantics': 'unified-plan',
         'iceServers': [
           {'urls': ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']},
           if (_turnUrl.isNotEmpty) {'urls': _turnUrl.split(','), 'username': _turnUser, 'credential': _turnPass},
         ],
+        // "relay" = never offer this phone's own address, only the relay's.
+        // Only when a relay server exists, otherwise the call couldn't connect.
+        if (CallPrivacyService.relayOnly && isTurnConfigured) 'iceTransportPolicy': 'relay',
       };
 
   // ------------------------------------------------------------ incoming
