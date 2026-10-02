@@ -3,9 +3,11 @@ import 'package:provider/provider.dart';
 import '../../l10n/app_strings.dart';
 import '../../l10n/languages.dart';
 import '../../services/auth_service.dart';
+import '../../services/nearby_service.dart';
 import '../../services/locale_service.dart';
 import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
+import '../bots/bots_hub_screen.dart';
 import '../broadcast/broadcast_lists_screen.dart';
 import '../browser/browser_settings_screen.dart';
 import '../chat/scheduled_messages_screen.dart';
@@ -69,6 +71,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _logout() async {
+    // Feature: Nearby chat — close any connections and forget everything.
+    await NearbyService.instance.reset();
     await _authService.logout();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
@@ -205,7 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 14),
                 // Feature: moved here from the Chats 3-dot menu.
                 _group([
-                  _row(Icons.encrypted_outlined, 'Encryption & quantum safety', 'Post-quantum protection, strict mode', const EncryptionScreen()),
+                  _row(Icons.enhanced_encryption_outlined, 'Encryption & quantum safety', 'Post-quantum protection, strict mode', const EncryptionScreen()),
                   _row(Icons.shield_moon_outlined, 'Private browser', 'In-app browser, tracker blocking, search engine', const BrowserSettingsScreen()),
                   _row(Icons.security_outlined, 'Login activity', 'Devices and sign-ins on your account', const AccountSecurityScreen()),
                   _rowAction(
@@ -225,6 +229,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ]),
                 const SizedBox(height: 14),
                 _group([
+                  _row(Icons.smart_toy_outlined, 'Bots', 'Create and manage your bots, or open one', const BotsHubScreen()),
                   _row(Icons.campaign_outlined, 'Broadcast lists', 'Send one message to many people', const BroadcastListsScreen()),
                   _row(Icons.folder_outlined, 'Chat folders', 'Organise your chats', const ChatFoldersScreen()),
                   _row(Icons.edit_note, 'Note to self', 'A private notepad on this phone', const NoteToSelfScreen()),
