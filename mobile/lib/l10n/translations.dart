@@ -203,6 +203,20 @@ const Map<String, String> _hi = {
       'कम्युनिटी',
   'Phone language':
       'फ़ोन की भाषा',
+  'Nearby':
+      'आस-पास',
+  'Low-data mode':
+      'कम डेटा मोड',
+  'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.':
+      'वॉइस कॉल पर लगभग आधा डेटा इस्तेमाल होता है (करीब 0.12 MB प्रति मिनट)। आवाज़ थोड़ी पतली लगती है। कमज़ोर या महँगे कनेक्शन के लिए अच्छा।',
+  'Recording alerts':
+      'रिकॉर्डिंग अलर्ट',
+  'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.':
+      'अगर कॉल के दौरान इस फ़ोन का कोई दूसरा ऐप आवाज़ रिकॉर्ड करना शुरू करे, तो दूसरे व्यक्ति को बताएँ। जब उनका फ़ोन रिकॉर्ड करे तो आपको हमेशा चेतावनी मिलती है। यह किसी दूसरे डिवाइस पर हो रही रिकॉर्डिंग नहीं पकड़ सकता।',
+  'Bots':
+      'बॉट',
+  'Create and manage your bots, or open one':
+      'अपने बॉट बनाएँ और प्रबंधित करें, या कोई बॉट खोलें',
 };
 
 // Malayalam
@@ -389,6 +403,20 @@ const Map<String, String> _ml = {
       'കമ്മ്യൂണിറ്റി',
   'Phone language':
       'ഫോണിന്റെ ഭാഷ',
+  'Nearby':
+      'സമീപത്ത്',
+  'Low-data mode':
+      'കുറഞ്ഞ ഡാറ്റ മോഡ്',
+  'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.':
+      'വോയ്‌സ് കോളുകളിൽ ഏകദേശം പകുതി ഡാറ്റ മതി (മിനിറ്റിന് ഏകദേശം 0.12 MB). ശബ്ദം അല്പം നേർത്തതായി തോന്നാം. ദുർബലമോ ചെലവേറിയതോ ആയ കണക്ഷന് നല്ലത്.',
+  'Recording alerts':
+      'റെക്കോർഡിംഗ് അലേർട്ടുകൾ',
+  'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.':
+      'കോളിനിടെ ഈ ഫോണിലെ മറ്റൊരു ആപ്പ് ശബ്ദം റെക്കോർഡ് ചെയ്യാൻ തുടങ്ങിയാൽ മറ്റേയാളെ അറിയിക്കുക. അവരുടെ ഫോൺ റെക്കോർഡ് ചെയ്താൽ നിങ്ങൾക്ക് എപ്പോഴും മുന്നറിയിപ്പ് ലഭിക്കും. മറ്റൊരു ഉപകരണത്തിൽ നടക്കുന്ന റെക്കോർഡിംഗ് ഇത് കണ്ടെത്തില്ല.',
+  'Bots':
+      'ബോട്ടുകൾ',
+  'Create and manage your bots, or open one':
+      'നിങ്ങളുടെ ബോട്ടുകൾ സൃഷ്ടിച്ച് നിയന്ത്രിക്കുക, അല്ലെങ്കിൽ ഒന്ന് തുറക്കുക',
 };
 
 // Arabic
@@ -575,6 +603,20 @@ const Map<String, String> _ar = {
       'المجتمع',
   'Phone language':
       'لغة الهاتف',
+  'Nearby':
+      'بالقرب',
+  'Low-data mode':
+      'وضع البيانات المنخفضة',
+  'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.':
+      'يستهلك نحو نصف البيانات في المكالمات الصوتية (حوالي 0.12 ميغابايت في الدقيقة). يبدو الصوت أنحف قليلًا. مناسب للاتصالات الضعيفة أو المكلفة.',
+  'Recording alerts':
+      'تنبيهات التسجيل',
+  'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.':
+      'أبلغ الطرف الآخر إذا بدأ تطبيق آخر على هذا الهاتف بتسجيل الصوت أثناء المكالمة. يصلك تحذير دائمًا عندما يسجّل هاتفه. لا يمكنه اكتشاف تسجيل يتم على جهاز آخر.',
+  'Bots':
+      'الروبوتات',
+  'Create and manage your bots, or open one':
+      'أنشئ روبوتاتك وأدرها، أو افتح أحدها',
 };
 
 // Spanish
@@ -761,6 +803,20 @@ const Map<String, String> _es = {
       'Comunidad',
   'Phone language':
       'Idioma del teléfono',
+  'Nearby':
+      'Cerca',
+  'Low-data mode':
+      'Modo de bajo consumo de datos',
+  'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.':
+      'Usa aproximadamente la mitad de datos en las llamadas de voz (unos 0,12 MB por minuto). Las voces suenan algo más finas. Útil con conexiones débiles o caras.',
+  'Recording alerts':
+      'Alertas de grabación',
+  'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.':
+      'Avisa a la otra persona si otra app de este teléfono empieza a grabar sonido durante una llamada. A ti siempre se te avisa cuando lo hace su teléfono. No puede detectar una grabación hecha en otro dispositivo.',
+  'Bots':
+      'Bots',
+  'Create and manage your bots, or open one':
+      'Crea y gestiona tus bots, o abre uno',
 };
 
 // French
@@ -947,6 +1003,20 @@ const Map<String, String> _fr = {
       'Communauté',
   'Phone language':
       'Langue du téléphone',
+  'Nearby':
+      'À proximité',
+  'Low-data mode':
+      'Mode économie de données',
+  'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.':
+      'Utilise environ moitié moins de données pendant les appels vocaux (environ 0,12 Mo par minute). Les voix sonnent un peu plus fines. Pratique avec une connexion faible ou coûteuse.',
+  'Recording alerts':
+      'Alertes d\'enregistrement',
+  'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.':
+      'Prévient l\'autre personne si une autre application de ce téléphone commence à enregistrer le son pendant un appel. Vous êtes toujours averti lorsque c\'est son téléphone. Impossible de détecter un enregistrement fait sur un autre appareil.',
+  'Bots':
+      'Bots',
+  'Create and manage your bots, or open one':
+      'Créez et gérez vos bots, ou ouvrez-en un',
 };
 
 // Portuguese (Brazil)
@@ -1133,4 +1203,18 @@ const Map<String, String> _pt = {
       'Comunidade',
   'Phone language':
       'Idioma do celular',
+  'Nearby':
+      'Por perto',
+  'Low-data mode':
+      'Modo de economia de dados',
+  'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.':
+      'Usa cerca de metade dos dados nas chamadas de voz (aproximadamente 0,12 MB por minuto). As vozes soam um pouco mais finas. Bom para conexões fracas ou caras.',
+  'Recording alerts':
+      'Alertas de gravação',
+  'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.':
+      'Avisa a outra pessoa se outro app deste celular começar a gravar som durante uma chamada. Você sempre é avisado quando é o celular dela. Não detecta uma gravação feita em outro dispositivo.',
+  'Bots':
+      'Bots',
+  'Create and manage your bots, or open one':
+      'Crie e gerencie seus bots, ou abra um',
 };
