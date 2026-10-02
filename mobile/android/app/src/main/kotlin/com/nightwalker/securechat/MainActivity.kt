@@ -78,6 +78,38 @@ class MainActivity : FlutterFragmentActivity() {
     // goes out of view), so NWisp never stays visible on a locked phone.
     private val callWindowChannelName = "com.nightwalker.securechat/call_window"
 
+    // Feature: call recording alerts. While a call is on, Dart asks us to
+    // watch for OTHER apps recording sound. NWisp's own microphone is one
+    // recording, so more than one active recording means another app is
+    // recording too. Best-effort only: it can't see other devices.
+    private val callRecordingChannelName = "com.nightwalker.securechat/call_recording"
+    private var callRecordingChannel: MethodChannel? = null
+    private var recordingCallback: android.media.AudioManager.AudioRecordingCallback? = null
+
+    private fun startRecordingWatch() {
+        if (Build.VERSION.SDK_INT < 24 || recordingCallback != null) return
+        val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val cb = object : android.media.AudioManager.AudioRecordingCallback() {
+            override fun onRecordingConfigChanged(configs: MutableList<android.media.AudioRecordingConfiguration>?) {
+                val others = (configs?.size ?: 0) - 1
+                runOnUiThread { callRecordingChannel?.invokeMethod("state", others > 0) }
+            }
+        }
+        recordingCallback = cb
+        am.registerAudioRecordingCallback(cb, android.os.Handler(android.os.Looper.getMainLooper()))
+    }
+
+    private fun stopRecordingWatch() {
+        if (Build.VERSION.SDK_INT < 24) return
+        val cb = recordingCallback ?: return
+        try {
+            (getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).unregisterAudioRecordingCallback(cb)
+        } catch (e: Exception) {
+            // Already unregistered.
+        }
+        recordingCallback = null
+    }
+
     // Feature: "Report a problem" (Settings). Three small jobs for the Dart side:
     //  * deviceDetails  - phone / Android / app / battery / storage / network
     //                     facts that help fix a bug. Nothing personal: no
@@ -344,6 +376,21 @@ class MainActivity : FlutterFragmentActivity() {
                     result.success(composeEmail(to, subject, body))
                 }
                 "takeNativeCrash" -> result.success(takeNativeCrash())
+                else -> result.notImplemented()
+            }
+        }
+
+        callRecordingChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, callRecordingChannelName)
+        callRecordingChannel!!.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    runOnUiThread { startRecordingWatch() }
+                    result.success(null)
+                }
+                "stop" -> {
+                    runOnUiThread { stopRecordingWatch() }
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
