@@ -165,6 +165,33 @@ Deno.serve(async (req) => {
     const tokens: string[] = recipientProfile?.fcmTokens ?? [];
     if (tokens.length === 0) return new Response("No tokens", { status: 200 });
 
+    // Feature: Do Not Disturb (quiet hours). The app saves the schedule on the
+    // person's private profile together with their phone's UTC offset (see
+    // QuietHoursService). While "now" - in THEIR local time - falls inside it,
+    // no push is sent at all. The message itself is untouched: it's waiting
+    // in the chat when they open the app. Account security alerts and calls
+    // go through other functions and are deliberately not affected.
+    const quiet = recipientProfile?.quietHours as
+      | { enabled?: boolean; startMin?: number; endMin?: number; utcOffsetMin?: number }
+      | undefined;
+    if (
+      quiet?.enabled === true &&
+      typeof quiet.startMin === "number" &&
+      typeof quiet.endMin === "number" &&
+      quiet.startMin !== quiet.endMin
+    ) {
+      const nowUtc = new Date();
+      const utcMinutes = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
+      const offset = typeof quiet.utcOffsetMin === "number" ? quiet.utcOffsetMin : 0;
+      const localMinutes = (((utcMinutes + offset) % 1440) + 1440) % 1440;
+      // A window like 23:00 -> 07:00 wraps past midnight.
+      const inQuietHours =
+        quiet.startMin < quiet.endMin
+          ? localMinutes >= quiet.startMin && localMinutes < quiet.endMin
+          : localMinutes >= quiet.startMin || localMinutes < quiet.endMin;
+      if (inQuietHours) return new Response("Quiet hours", { status: 200 });
+    }
+
     const senderUsername = (sender?.username as string | undefined) ?? "Someone";
     // Feature: "Hide name in notifications" — settable globally
     // (notificationPrivacyGlobal on the recipient's own private/profile)
