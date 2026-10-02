@@ -7,7 +7,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 //
 // Methods: getMe, getUpdates, sendMessage, sendPhoto, editMessageText,
 // deleteMessage, sendChatAction, answerCallbackQuery, setWebhook,
-// deleteWebhook, getWebhookInfo, setMyCommands, getMyCommands.
+// deleteWebhook, getWebhookInfo, setMyCommands, getMyCommands, blockUser,
+// unblockUser, leaveChat, getChat. Group chats have NEGATIVE chat ids.
 //
 // Send parameters either as a JSON body or in the query string. Every answer
 // is JSON: { ok: true, result: … } or { ok: false, error_code, description }.
@@ -108,11 +109,44 @@ Deno.serve(async (req) => {
     const need = (rule: string, label: string) =>
       rules[rule] ? null : fail(403, `${label} is turned off for this bot. Turn on "${rule}" in NWisp > Bots > ${bot.name} > Rules.`);
 
-    // Find the person behind a chat_id — only people who started THIS bot.
-    const chatUser = async (chat_id: unknown) => {
-      const { data } = await db.from("bot_users").select("user_uid, blocked, chat_id").eq("bot", bot.username).eq("chat_id", Number(chat_id)).maybeSingle();
-      return data;
+    // A suspended or banned bot can't do anything.
+    if (bot.status && bot.status !== "active") {
+      return fail(403, `This bot is ${bot.status}. ${bot.status_reason ?? ""}`.trim());
+    }
+
+    // ---- chats --------------------------------------------------------
+    // A positive chat_id is a person who started the bot; a NEGATIVE chat_id
+    // is a group the bot was added to (like Telegram).
+    type Target =
+      | { kind: "private"; userUid: string; chatId: number; blocked: boolean; ownerBlocked: boolean; startedPrivate: boolean }
+      | { kind: "group"; groupId: string; chatId: number; groupName: string };
+    const resolveChat = async (chat_id: unknown): Promise<Target | null> => {
+      const id = Number(chat_id);
+      if (!Number.isFinite(id) || id === 0) return null;
+      if (id < 0) {
+        const { data } = await db.from("bot_groups").select("group_id, group_name, chat_id").eq("bot", bot.username).eq("chat_id", -id).maybeSingle();
+        return data ? { kind: "group", groupId: data.group_id, chatId: -data.chat_id, groupName: data.group_name } : null;
+      }
+      const { data } = await db.from("bot_users").select("user_uid, blocked, owner_blocked, started_private, chat_id").eq("bot", bot.username).eq("chat_id", id).maybeSingle();
+      return data ? { kind: "private", userUid: data.user_uid, chatId: data.chat_id, blocked: data.blocked, ownerBlocked: data.owner_blocked, startedPrivate: data.started_private } : null;
     };
+    /** Resolves a chat and checks the bot may write there. Returns a Target or a ready error response. */
+    const writableChat = async (chat_id: unknown): Promise<Target | Response> => {
+      const t = await resolveChat(chat_id);
+      if (!t) return fail(400, "Chat not found. A person has to start the bot first (or the bot has to be added to the group).");
+      if (t.kind === "private") {
+        if (t.blocked) return fail(403, "The user blocked the bot.");
+        if (t.ownerBlocked) return fail(403, "You blocked this user.");
+        if (!t.startedPrivate) return fail(403, "This person hasn't started the bot privately yet.");
+      } else if (!rules.groups) {
+        return need("groups", "Groups") as Response;
+      }
+      return t;
+    };
+    const rowFor = (t: Target) =>
+      t.kind === "private" ? { user_uid: t.userUid, group_id: null } : { user_uid: "", group_id: t.groupId };
+    const chatInfo = (t: Target) =>
+      t.kind === "private" ? { id: t.chatId, type: "private" } : { id: t.chatId, type: "group", title: t.groupName };
 
     // Per-bot send limit: 300 outgoing messages a minute.
     const checkSendLimit = async () => {
@@ -122,10 +156,29 @@ Deno.serve(async (req) => {
       return (count ?? 0) >= 300 ? fail(429, "Too many messages. Slow down.", { parameters: { retry_after: 10 } }) : null;
     };
 
-    const messageOut = (r: any, chatId: number, text: string) => ({
-      message_id: r.id, chat: { id: chatId, type: "private" }, date: Math.floor(new Date(r.created_at).getTime() / 1000), text,
+    const messageOut = (r: any, t: Target, text: string) => ({
+      message_id: r.id, chat: chatInfo(t), date: Math.floor(new Date(r.created_at).getTime() / 1000), text,
       from: { id: bot.bot_id, is_bot: true, username: bot.username, first_name: bot.name },
     });
+
+    /** Turns reply_markup into what the app stores: inline buttons and/or a reply keyboard. */
+    const markupExtra = (raw: unknown): Record<string, unknown> | Response => {
+      if (!raw) return {};
+      if (!rules.buttons) return need("buttons", "Buttons") as Response;
+      let markup: any = raw;
+      if (typeof markup === "string") { try { markup = JSON.parse(markup); } catch (_) { return {}; } }
+      const extra: Record<string, unknown> = {};
+      const inline = sanitizeKeyboard(markup);
+      if (inline && inline.length) extra.buttons = inline;
+      if (Array.isArray(markup?.keyboard)) {
+        const rows = markup.keyboard.slice(0, 8)
+          .map((row: any) => (Array.isArray(row) ? row : []).slice(0, 4).map((b: any) => String(typeof b === "string" ? b : b?.text ?? "").slice(0, 40)).filter(Boolean))
+          .filter((r: string[]) => r.length);
+        extra.keyboard = rows;
+      }
+      if (markup?.remove_keyboard === true) extra.keyboard = [];
+      return extra;
+    };
 
     switch (method) {
       case "getMe":
@@ -145,22 +198,34 @@ Deno.serve(async (req) => {
         const started = Date.now();
         while (true) {
           const { data } = await db.from("bot_messages").select("*").eq("bot", bot.username).eq("direction", "in")
+            .eq("visible_to_bot", true).neq("kind", "system")
             .gt("id", bot.update_cursor).order("id", { ascending: true }).limit(limit);
           if ((data ?? []).length > 0 || Date.now() - started >= waitMs) {
-            const users = new Map<string, number>();
+            const people = new Map<string, number>();
+            const groups = new Map<string, { chat_id: number; name: string }>();
             const updates = [];
             for (const m of data ?? []) {
-              if (!users.has(m.user_uid)) {
+              if (!people.has(m.user_uid)) {
                 const { data: bu } = await db.from("bot_users").select("chat_id").eq("bot", bot.username).eq("user_uid", m.user_uid).maybeSingle();
-                users.set(m.user_uid, bu?.chat_id ?? 0);
+                people.set(m.user_uid, bu?.chat_id ?? 0);
               }
-              const chatId = users.get(m.user_uid)!;
-              const from: Record<string, unknown> = { id: chatId, is_bot: false, first_name: "User" };
+              const senderId = people.get(m.user_uid)!;
+              const from: Record<string, unknown> = { id: senderId, is_bot: false, first_name: "User" };
               if (m.extra?.username) { from.username = m.extra.username; from.first_name = m.extra.username; }
+              let chat: Record<string, unknown> = { id: senderId, type: "private" };
+              if (m.group_id) {
+                if (!groups.has(m.group_id)) {
+                  const { data: g } = await db.from("bot_groups").select("chat_id, group_name").eq("bot", bot.username).eq("group_id", m.group_id).maybeSingle();
+                  groups.set(m.group_id, { chat_id: g?.chat_id ?? 0, name: g?.group_name ?? "" });
+                }
+                const g = groups.get(m.group_id)!;
+                chat = { id: -g.chat_id, type: "group", title: g.name };
+                if (bot.rules?.shareUsername && m.extra?.name) { from.username = m.extra.name; from.first_name = m.extra.name; }
+              }
               updates.push(
                 m.kind === "callback"
-                  ? { update_id: m.id, callback_query: { id: String(m.id), from, data: m.extra?.data, message: { message_id: m.extra?.messageId, chat: { id: chatId } } } }
-                  : { update_id: m.id, message: { message_id: m.id, from, chat: { id: chatId, type: "private" }, date: Math.floor(new Date(m.created_at).getTime() / 1000), text: m.body } },
+                  ? { update_id: m.id, callback_query: { id: String(m.id), from, data: m.extra?.data, message: { message_id: m.extra?.messageId, chat } } }
+                  : { update_id: m.id, message: { message_id: m.id, from, chat, date: Math.floor(new Date(m.created_at).getTime() / 1000), text: m.body, ...(m.extra?.replyTo ? { reply_to_message: { message_id: m.extra.replyTo } } : {}) } },
               );
             }
             return ok(updates);
@@ -171,54 +236,41 @@ Deno.serve(async (req) => {
 
       // --------------------------------------------------------- sendMessage
       case "sendMessage": {
-        const cu = await chatUser(params.chat_id);
-        if (!cu) return fail(400, "Chat not found. A person has to start the bot first.");
-        if (cu.blocked) return fail(403, "The user blocked the bot.");
+        const t = await writableChat(params.chat_id);
+        if (t instanceof Response) return t;
         const limited = await checkSendLimit();
         if (limited) return limited;
-        let text = String(params.text ?? "");
+        const text = String(params.text ?? "");
         if (!text) return fail(400, "Message text is empty.");
         const max = rules.longMessages ? 4000 : 1000;
         if (text.length > max) {
           return fail(400, `Message is too long (limit ${max}). ${rules.longMessages ? "" : 'Turn on "longMessages" to allow 4000.'}`);
         }
-        const extra: Record<string, unknown> = {};
-        if (params.reply_markup) {
-          const denied = need("buttons", "Inline buttons");
-          if (denied) return denied;
-          let markup = params.reply_markup;
-          if (typeof markup === "string") { try { markup = JSON.parse(markup); } catch (_) { markup = null; } }
-          const kb = sanitizeKeyboard(markup);
-          if (kb) extra.buttons = kb;
-        }
+        const extra = markupExtra(params.reply_markup);
+        if (extra instanceof Response) return extra;
         if (params.parse_mode) extra.format = rules.formatting ? true : false; // ignored (plain text) unless allowed
         const { data: row, error } = await db.from("bot_messages")
-          .insert({ bot: bot.username, user_uid: cu.user_uid, direction: "out", body: text, extra }).select().single();
+          .insert({ bot: bot.username, ...rowFor(t), direction: "out", body: text, extra }).select().single();
         if (error) return fail(500, "Couldn't send.");
-        return ok(messageOut(row, cu.chat_id, text));
+        return ok(messageOut(row, t, text));
       }
 
       // ----------------------------------------------------------- sendPhoto
       case "sendPhoto": {
         const denied = need("media", "Sending photos");
         if (denied) return denied;
-        const cu = await chatUser(params.chat_id);
-        if (!cu) return fail(400, "Chat not found. A person has to start the bot first.");
-        if (cu.blocked) return fail(403, "The user blocked the bot.");
+        const t = await writableChat(params.chat_id);
+        if (t instanceof Response) return t;
         if (!safeHttps(params.photo)) return fail(400, "photo must be a public https:// link to an image.");
         const limited = await checkSendLimit();
         if (limited) return limited;
         const caption = String(params.caption ?? "").slice(0, 1000);
-        const extra: Record<string, unknown> = { photo: params.photo };
-        if (params.reply_markup && rules.buttons) {
-          let markup = params.reply_markup;
-          if (typeof markup === "string") { try { markup = JSON.parse(markup); } catch (_) { markup = null; } }
-          const kb = sanitizeKeyboard(markup);
-          if (kb) extra.buttons = kb;
-        }
+        const extra = markupExtra(params.reply_markup);
+        if (extra instanceof Response) return extra;
+        extra.photo = params.photo;
         const { data: row } = await db.from("bot_messages")
-          .insert({ bot: bot.username, user_uid: cu.user_uid, direction: "out", kind: "photo", body: caption, extra }).select().single();
-        return ok(messageOut(row, cu.chat_id, caption));
+          .insert({ bot: bot.username, ...rowFor(t), direction: "out", kind: "photo", body: caption, extra }).select().single();
+        return ok(messageOut(row, t, caption));
       }
 
       // ----------------------------------------------- editMessageText / delete
@@ -226,10 +278,11 @@ Deno.serve(async (req) => {
       case "deleteMessage": {
         const denied = need("editDelete", "Editing and deleting messages");
         if (denied) return denied;
-        const cu = await chatUser(params.chat_id);
-        if (!cu) return fail(400, "Chat not found.");
-        const { data: msg } = await db.from("bot_messages").select("id").eq("id", Number(params.message_id))
-          .eq("bot", bot.username).eq("user_uid", cu.user_uid).eq("direction", "out").maybeSingle();
+        const t = await resolveChat(params.chat_id);
+        if (!t) return fail(400, "Chat not found.");
+        let q = db.from("bot_messages").select("id").eq("id", Number(params.message_id)).eq("bot", bot.username).eq("direction", "out");
+        q = t.kind === "private" ? q.eq("user_uid", t.userUid).is("group_id", null) : q.eq("group_id", t.groupId);
+        const { data: msg } = await q.maybeSingle();
         if (!msg) return fail(400, "Message not found (a bot can only change its own messages).");
         if (method === "deleteMessage") {
           await db.from("bot_messages").update({ deleted: true, body: "", extra: {}, updated_at: new Date().toISOString() }).eq("id", msg.id);
@@ -238,11 +291,10 @@ Deno.serve(async (req) => {
         const text = String(params.text ?? "");
         if (!text || text.length > (rules.longMessages ? 4000 : 1000)) return fail(400, "Bad text length.");
         const patch: Record<string, unknown> = { body: text, edited: true, updated_at: new Date().toISOString() };
-        if (params.reply_markup && rules.buttons) {
-          let markup = params.reply_markup;
-          if (typeof markup === "string") { try { markup = JSON.parse(markup); } catch (_) { markup = null; } }
-          const kb = sanitizeKeyboard(markup);
-          patch.extra = kb ? { buttons: kb } : {};
+        if (params.reply_markup) {
+          const extra = markupExtra(params.reply_markup);
+          if (extra instanceof Response) return extra;
+          patch.extra = extra;
         }
         await db.from("bot_messages").update(patch).eq("id", msg.id);
         return ok(true);
@@ -252,11 +304,33 @@ Deno.serve(async (req) => {
       case "sendChatAction": {
         const denied = need("typing", "The typing indicator");
         if (denied) return denied;
-        const cu = await chatUser(params.chat_id);
-        if (!cu) return fail(400, "Chat not found.");
-        await db.from("bot_users").update({ typing_until: new Date(Date.now() + 5000).toISOString() })
-          .eq("bot", bot.username).eq("user_uid", cu.user_uid);
+        const t = await resolveChat(params.chat_id);
+        if (!t) return fail(400, "Chat not found.");
+        if (t.kind === "private") {
+          await db.from("bot_users").update({ typing_until: new Date(Date.now() + 5000).toISOString() })
+            .eq("bot", bot.username).eq("user_uid", t.userUid);
+        }
         return ok(true);
+      }
+
+      // ------------------------------------------------- moderation by the owner
+      case "blockUser":
+      case "unblockUser": {
+        const t = await resolveChat(params.chat_id);
+        if (!t || t.kind !== "private") return fail(400, "chat_id must be a person's chat id.");
+        await db.from("bot_users").update({ owner_blocked: method === "blockUser" }).eq("bot", bot.username).eq("user_uid", t.userUid);
+        return ok(true);
+      }
+      case "leaveChat": {
+        const t = await resolveChat(params.chat_id);
+        if (!t || t.kind !== "group") return fail(400, "chat_id must be a group.");
+        await db.from("bot_groups").delete().eq("bot", bot.username).eq("group_id", t.groupId);
+        return ok(true);
+      }
+      case "getChat": {
+        const t = await resolveChat(params.chat_id);
+        if (!t) return fail(400, "Chat not found.");
+        return ok(chatInfo(t));
       }
 
       case "answerCallbackQuery": {
