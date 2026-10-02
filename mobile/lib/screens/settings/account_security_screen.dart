@@ -28,6 +28,8 @@ class AccountSecurityScreen extends StatelessWidget {
         return Icons.login;
       case 'password_changed':
         return Icons.password_outlined;
+      case 'other_devices_signed_out':
+        return Icons.devices_other_outlined;
       case 'totp_enabled':
         return Icons.verified_user_outlined;
       case 'totp_disabled':
@@ -48,6 +50,8 @@ class AccountSecurityScreen extends StatelessWidget {
         return 'Signed in on $deviceWithExtras';
       case 'password_changed':
         return 'Password changed from $deviceWithExtras';
+      case 'other_devices_signed_out':
+        return 'Other devices signed out from $deviceWithExtras';
       case 'totp_enabled':
         return 'Two-factor authentication turned on from $deviceWithExtras';
       case 'totp_disabled':
