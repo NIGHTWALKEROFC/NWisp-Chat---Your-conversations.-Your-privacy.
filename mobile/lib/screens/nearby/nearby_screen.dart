@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/nearby_service.dart';
+import 'mesh_screen.dart';
 import 'nearby_chat_screen.dart';
 
 /// The "Nearby" tab: find people close by (Bluetooth + Wi-Fi, no internet),
@@ -76,7 +77,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final all = _service.peers.values.toList();
+    // Relay links of the mesh are not chats; they show in the Mesh card instead.
+    final all = _service.peers.values.where((p) => !p.mesh).toList();
     final connected = all.where((p) => p.state == PeerState.connected).toList();
     final pending = all.where((p) => p.state == PeerState.requesting || p.state == PeerState.connecting || p.state == PeerState.incoming).toList();
     final found = all.where((p) => p.state == PeerState.found || p.state == PeerState.declined).toList();
@@ -148,6 +150,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
                 child: Text(_service.error!, style: TextStyle(color: scheme.onErrorContainer, fontSize: 13)),
               ),
             ),
+          const MeshSection(),
           if (_service.scanning)
             Padding(
               padding: const EdgeInsets.only(top: 10),
