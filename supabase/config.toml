@@ -47,3 +47,11 @@ verify_jwt = false
 
 [functions.verify-password-reset-otp]
 verify_jwt = false
+
+# Feature: NWisp Bots. The app-facing function checks the person's Firebase
+# token itself; the Bot API is called by bots with their own token.
+[functions.nwisp-bot-manage]
+verify_jwt = false
+
+[functions.nwisp-bot-api]
+verify_jwt = false
