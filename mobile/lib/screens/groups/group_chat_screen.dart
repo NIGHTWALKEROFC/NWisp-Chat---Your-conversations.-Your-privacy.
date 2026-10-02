@@ -29,6 +29,7 @@ import '../../widgets/view_once_media_screen.dart';
 import '../../widgets/voice_message_bubble.dart';
 import '../../widgets/voice_recording_bar.dart';
 import '../chat/chat_detail_screen.dart';
+import '../bots/group_bots_screen.dart';
 import '../call/call_screens.dart';
 import '../chat/chat_search_screen.dart';
 import '../security/chat_pin_guard.dart';
@@ -1697,6 +1698,15 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
               groupId: widget.groupId,
               groupName: _groupName,
               memberUids: List<String>.from(_memberUids),
+            ),
+          ),
+          // Feature: bots in groups — each bot gets a shared room for the group.
+          IconButton(
+            icon: const Icon(Icons.smart_toy_outlined),
+            tooltip: 'Group bots',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => GroupBotsScreen(groupId: widget.groupId, groupName: _groupName)),
             ),
           ),
           IconButton(icon: const Icon(Icons.search), tooltip: 'Search in chat', onPressed: _openSearch),
