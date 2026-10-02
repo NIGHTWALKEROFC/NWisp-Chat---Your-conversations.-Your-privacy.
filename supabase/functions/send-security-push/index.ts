@@ -43,6 +43,7 @@ const EVENT_TEXT: Record<string, (device: string) => string> = {
   password_changed: (d) => `Your password was changed from ${d}. If this wasn't you, act now.`,
   totp_enabled: () => "Two-step verification was turned on for your account.",
   totp_disabled: () => "Two-step verification was turned OFF for your account. If this wasn't you, act now.",
+  other_devices_signed_out: (d) => `Your other devices were signed out from ${d}.`,
 };
 
 let cachedToken: { token: string; expiresAt: number } | null = null;
