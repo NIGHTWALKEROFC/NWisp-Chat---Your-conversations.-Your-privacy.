@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../services/bot_service.dart';
 import '../../widgets/bot_badge.dart';
 import 'bot_chat_screen.dart';
+import 'bot_commands_screen.dart';
 import 'bot_token_screen.dart';
 
 /// Manage one of my bots: edit its name / description / picture, switch its
@@ -160,6 +161,22 @@ class _ManageBotScreenState extends State<ManageBotScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
+          if (_bot.status != 'active')
+            Container(
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: scheme.errorContainer, borderRadius: BorderRadius.circular(12)),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(Icons.gpp_maybe_outlined, color: scheme.onErrorContainer),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'This bot is ${_bot.status}. ${_bot.statusReason ?? ''}\nIt can\'t send or receive messages and doesn\'t show up for other people.',
+                    style: TextStyle(color: scheme.onErrorContainer, height: 1.35),
+                  ),
+                ),
+              ]),
+            ),
           Center(child: BotAvatar(photoData: _bot.photoData, name: _bot.name, radius: 46)),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -203,7 +220,23 @@ class _ManageBotScreenState extends State<ManageBotScreen> {
             icon: const Icon(Icons.chat_bubble_outline_rounded),
             label: const Text('Open chat with my bot'),
           ),
-          const SizedBox(height: 22),
+          const SizedBox(height: 8),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.terminal),
+            title: const Text('Command menu', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(_bot.commands.isEmpty ? 'No commands yet' : _bot.commands.map((c) => '/${c.command}').take(4).join('  ')),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () async {
+              final changed = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => BotCommandsScreen(bot: _bot)));
+              if (changed == true) {
+                final mine = await BotService.instance.listMine();
+                final fresh = mine.where((b) => b.username == _bot.username);
+                if (fresh.isNotEmpty && mounted) setState(() => _bot = fresh.first);
+              }
+            },
+          ),
+          const SizedBox(height: 14),
           const Row(children: [Icon(Icons.tune_rounded, size: 20), SizedBox(width: 8), Text('Bot rules', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16))]),
           const SizedBox(height: 4),
           const Text('Changes apply straight away.', style: TextStyle(fontSize: 12.5)),
