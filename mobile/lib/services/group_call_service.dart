@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'call_log_service.dart';
+import 'call_quality_service.dart';
+import 'call_recording_watcher.dart';
 import 'call_service.dart';
 import 'incoming_call_notifier.dart';
 
@@ -248,6 +250,11 @@ class GroupCallSession extends ChangeNotifier {
   String endReason = '';
   String? notice;
 
+  /// Recording alerts: people (other than me) whose phone may be recording, and me.
+  final Set<String> recordingUids = {};
+  bool iRecording = false;
+  Timer? _recDebounce;
+
   /// Everyone currently in the call except me, uid -> connected?
   final Map<String, bool> participants = {};
   final Map<String, String> names = {};
@@ -261,7 +268,18 @@ class GroupCallSession extends ChangeNotifier {
   bool _wasConnected = false;
   List<String> _joined = [];
 
+  void _onLocalRecording(bool recording) {
+    _recDebounce?.cancel();
+    _recDebounce = Timer(Duration(seconds: recording ? 2 : 0), () {
+      if (_closed || iRecording == recording) return;
+      iRecording = recording;
+      notifyListeners();
+      ref.update({'rec.$myUid': recording}).catchError((_) {});
+    });
+  }
+
   Future<void> _begin({Map<String, dynamic>? create}) async {
+    await CallQualityService.load();
     _local = await navigator.mediaDevices.getUserMedia({
       'audio': {'echoCancellation': true, 'noiseSuppression': true, 'autoGainControl': true},
       'video': false,
@@ -285,6 +303,7 @@ class GroupCallSession extends ChangeNotifier {
       });
     }
     IncomingCallNotifier.startOngoing('Group call · $groupName');
+    if (CallQualityService.recordingAlerts) CallRecordingWatcher.start(_onLocalRecording);
     _sigSub = ref.collection('signals').where('to', isEqualTo: myUid).snapshots().listen(_onSignals, onError: (_) {});
     _docSub = ref.snapshots().listen(_onDoc, onError: (_) {});
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -302,6 +321,10 @@ class GroupCallSession extends ChangeNotifier {
       return;
     }
     _joined = List<String>.from(data['joined'] ?? const []);
+    final rec = data['rec'];
+    recordingUids
+      ..clear()
+      ..addAll(rec is Map ? rec.entries.where((e) => e.value == true && e.key != myUid && _joined.contains(e.key)).map((e) => e.key as String) : const <String>[]);
     final others = _joined.where((u) => u != myUid).toSet();
     // Someone left.
     for (final gone in _peers.keys.where((u) => !others.contains(u)).toList()) {
@@ -350,7 +373,8 @@ class GroupCallSession extends ChangeNotifier {
 
   Future<void> _offerTo(String uid) async {
     final peer = await _newPeer(uid);
-    final offer = await peer.pc!.createOffer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+    final rawOffer = await peer.pc!.createOffer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+    final offer = RTCSessionDescription(CallQualityService.tune(rawOffer.sdp), rawOffer.type);
     await peer.pc!.setLocalDescription(offer);
     await _signal(uid, {'kind': 'offer', 'sdp': offer.sdp, 'type': offer.type});
   }
@@ -379,13 +403,14 @@ class GroupCallSession extends ChangeNotifier {
             // A fresh offer replaces any half-finished attempt.
             if (_peers.containsKey(from)) await _dropPeer(from);
             final peer = await _newPeer(from);
-            await peer.pc!.setRemoteDescription(RTCSessionDescription(d['sdp'] as String?, d['type'] as String?));
+            await peer.pc!.setRemoteDescription(RTCSessionDescription(CallQualityService.tune(d['sdp'] as String?), d['type'] as String?));
             peer.remoteSet = true;
             for (final c in peer.pending) {
               await peer.pc!.addCandidate(c);
             }
             peer.pending.clear();
-            final answer = await peer.pc!.createAnswer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+            final rawAnswer = await peer.pc!.createAnswer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+            final answer = RTCSessionDescription(CallQualityService.tune(rawAnswer.sdp), rawAnswer.type);
             await peer.pc!.setLocalDescription(answer);
             await _signal(from, {'kind': 'answer', 'sdp': answer.sdp, 'type': answer.type});
             participants.putIfAbsent(from, () => false);
@@ -393,7 +418,7 @@ class GroupCallSession extends ChangeNotifier {
           case 'answer':
             final peer = _peers[from];
             if (peer?.pc == null) break;
-            await peer!.pc!.setRemoteDescription(RTCSessionDescription(d['sdp'] as String?, d['type'] as String?));
+            await peer!.pc!.setRemoteDescription(RTCSessionDescription(CallQualityService.tune(d['sdp'] as String?), d['type'] as String?));
             peer.remoteSet = true;
             for (final c in peer.pending) {
               await peer.pc!.addCandidate(c);
@@ -447,6 +472,8 @@ class GroupCallSession extends ChangeNotifier {
     _closed = true;
     endReason = reason;
     _ticker?.cancel();
+    _recDebounce?.cancel();
+    CallRecordingWatcher.stop();
     IncomingCallNotifier.stopOngoing();
     IncomingCallNotifier.showOverLockScreen(false);
     await _docSub?.cancel();
