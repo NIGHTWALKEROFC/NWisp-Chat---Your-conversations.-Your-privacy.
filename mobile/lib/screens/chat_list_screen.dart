@@ -37,6 +37,7 @@ import 'groups/group_invites_screen.dart';
 import 'security/chat_pin_guard.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
+import 'bots/create_bot_screen.dart';
 import 'browser/in_app_browser_screen.dart';
 import 'secret/secret_chat_screen.dart';
 import 'settings/settings_screen.dart';
@@ -686,6 +687,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
       case 'settings':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
         break;
+      case 'new_bot':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateBotScreen()));
+        break;
       case 'secret_chat':
         _pickSecretChat();
         break;
@@ -819,6 +823,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
               PopupMenuItem(
                 value: 'new_group',
                 child: ListTile(leading: Icon(Icons.groups_rounded), title: Text('New group'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'new_bot',
+                child: ListTile(leading: Icon(Icons.smart_toy_outlined), title: Text('New bot'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuItem(
                 value: 'secret_chat',
