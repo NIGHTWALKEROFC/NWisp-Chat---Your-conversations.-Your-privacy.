@@ -604,6 +604,54 @@ class DeviceSessionService {
     unawaited(_sendSecurityAlert(event, label, location, ip));
   }
 
+  /// Feature: "Sign out all other devices" (Manage devices). Removes every
+  /// device entry except this one, which signs those devices out immediately
+  /// (each one is watching its own entry — see [watchForRevocation]). Returns
+  /// how many were removed.
+  ///
+  /// The primary device is the one that sends and receives messages, so it
+  /// can't be signed out from a device that ISN'T primary — doing so would
+  /// leave the account with nowhere to deliver messages. In that case this
+  /// throws, and the screen tells the person to make this device primary
+  /// first (an existing action in the same screen).
+  Future<int> signOutOtherDevices(String uid) async {
+    final myId = await _localDeviceId();
+    final session = (await _sessionRef(uid).get()).data();
+    final primary = session?['primaryDeviceId'] as String?;
+    final all = await _devicesRef(uid).get();
+    final others = all.docs.where((d) => d.id != myId).toList();
+    if (others.isEmpty) return 0;
+    if (primary != null && primary != myId && others.any((d) => d.id == primary)) {
+      throw StateError('Another device is your primary one. Make this device primary first, then sign out the others.');
+    }
+    final batch = FirebaseFirestore.instance.batch();
+    for (final d in others) {
+      batch.delete(d.reference);
+    }
+    await batch.commit();
+
+    // Shows up in the Account Security history and in NWisp Chat Notifications.
+    try {
+      final label = await _realDeviceLabel();
+      final location = await _locationLabel();
+      final ip = await _realIp();
+      await _historyRef(uid).add({
+        'event': 'other_devices_signed_out',
+        'deviceId': myId,
+        'deviceLabel': label,
+        'location': location,
+        'ip': ip,
+        'count': others.length,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+      unawaited(_sendSecurityAlert('other_devices_signed_out', label, location, ip));
+    } catch (_) {
+      // The devices are already signed out; a failed log entry mustn't
+      // make that look like it failed.
+    }
+    return others.length;
+  }
+
   Future<void> _claimThisDevice(String uid) async {
     if (await isMultiDeviceEnabled(uid)) {
       await _claimThisDeviceMultiDevice(uid);
