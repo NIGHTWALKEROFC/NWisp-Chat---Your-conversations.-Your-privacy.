@@ -25,7 +25,7 @@ class RegisterScreen extends StatefulWidget {
   State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-enum _UsernameCheck { idle, checking, available, taken, invalid }
+enum _UsernameCheck { idle, checking, available, taken, invalid, botName }
 
 enum _EmailCheck { idle, checking, looksNew, looksTaken, invalid }
 
@@ -104,6 +104,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() => _usernameCheck = _UsernameCheck.invalid);
       return;
     }
+    // Feature: NWisp Bots — names ending in a single _bot are reserved for bots.
+    if (AuthService.isBotStyleUsername(trimmed)) {
+      setState(() => _usernameCheck = _UsernameCheck.botName);
+      return;
+    }
     setState(() => _usernameCheck = _UsernameCheck.checking);
     final myRequestId = ++_usernameRequestId;
     _usernameDebounce = Timer(const Duration(milliseconds: 450), () async {
@@ -135,6 +140,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
           const SizedBox(width: 6),
           Text('Already taken', style: TextStyle(color: scheme.error)),
         ]);
+      case _UsernameCheck.botName:
+        return Text(
+          AuthService.botNameMessage,
+          style: TextStyle(color: scheme.error, fontSize: 12.5),
+        );
       case _UsernameCheck.invalid:
         return Text(
           'At least 3 characters — lowercase letters, numbers, and underscores only',
