@@ -37,6 +37,9 @@ class BotInfo {
   final bool isOwner;
   final bool webhook;
   final bool blocked;
+  /// active | suspended | banned (only ever shown to the bot's owner).
+  final String status;
+  final String? statusReason;
   const BotInfo({
     required this.username,
     required this.name,
@@ -47,6 +50,8 @@ class BotInfo {
     required this.isOwner,
     this.webhook = false,
     this.blocked = false,
+    this.status = 'active',
+    this.statusReason,
   });
 
   bool rule(String key) => rules[key] == true;
@@ -64,6 +69,22 @@ class BotInfo {
         isOwner: j['isOwner'] == true,
         webhook: j['webhook'] == true,
         blocked: j['blocked'] == true,
+        status: (j['status'] as String?) ?? 'active',
+        statusReason: j['statusReason'] as String?,
+      );
+
+  BotInfo copyWith({bool? blocked, List<BotCommand>? commands}) => BotInfo(
+        username: username,
+        name: name,
+        description: description,
+        photoData: photoData,
+        rules: rules,
+        commands: commands ?? this.commands,
+        isOwner: isOwner,
+        webhook: webhook,
+        blocked: blocked ?? this.blocked,
+        status: status,
+        statusReason: statusReason,
       );
 }
 
@@ -76,6 +97,8 @@ class BotMessage {
   bool edited;
   bool deleted;
   final DateTime createdAt;
+  /// Group rooms only: who wrote it.
+  final String userUid;
   BotMessage({
     required this.id,
     required this.fromBot,
@@ -85,7 +108,11 @@ class BotMessage {
     required this.edited,
     required this.deleted,
     required this.createdAt,
+    this.userUid = '',
   });
+
+  bool get isSystem => kind == 'system';
+  String get senderName => (extra['name'] as String?) ?? '';
 
   factory BotMessage.fromJson(Map<String, dynamic> j) => BotMessage(
         id: (j['id'] as num).toInt(),
@@ -96,6 +123,36 @@ class BotMessage {
         edited: j['edited'] == true,
         deleted: j['deleted'] == true,
         createdAt: DateTime.tryParse((j['created_at'] as String?) ?? '')?.toLocal() ?? DateTime.now(),
+        userUid: (j['user_uid'] as String?) ?? '',
+      );
+}
+
+/// One bot that has reports waiting for an admin.
+class BotReportItem {
+  final String username;
+  final String name;
+  final String status;
+  final String? statusReason;
+  final int count;
+  final Map<String, int> reasons;
+  final List<String> details;
+  BotReportItem({
+    required this.username,
+    required this.name,
+    required this.status,
+    required this.statusReason,
+    required this.count,
+    required this.reasons,
+    required this.details,
+  });
+  factory BotReportItem.fromJson(Map<String, dynamic> j) => BotReportItem(
+        username: j['username'] as String,
+        name: (j['name'] as String?) ?? '',
+        status: (j['status'] as String?) ?? 'active',
+        statusReason: j['status_reason'] as String?,
+        count: (j['count'] as num?)?.toInt() ?? 0,
+        reasons: {for (final e in ((j['reasons'] as Map?) ?? {}).entries) e.key as String: (e.value as num).toInt()},
+        details: [for (final d in (j['details'] as List? ?? const [])) d as String],
       );
 }
 
@@ -128,7 +185,20 @@ class BotService {
         'New messages are pushed to your own server. Off = your bot fetches them with getUpdates.', Icons.webhook_outlined),
     BotRuleInfo('commandsMenu', 'Command menu', 'Show the "/" list of commands your bot sets.', Icons.terminal),
     BotRuleInfo('longMessages', 'Long messages', 'Up to 4000 characters per message (otherwise 1000).', Icons.notes),
+    BotRuleInfo('groups', 'Allowed in groups',
+        'Group admins can add this bot to a group. It gets a shared bot room that every member can use.', Icons.groups_outlined),
+    BotRuleInfo('seeAllMessages', 'Read all group messages',
+        'In groups the bot sees every message. Off = it only sees /commands, @mentions of the bot and replies to the bot.', Icons.visibility_outlined),
   ];
+
+  static const reportReasons = <String, String>{
+    'spam': 'Spam',
+    'scam': 'Scam or fraud',
+    'abuse': 'Harassment or abuse',
+    'illegal': 'Illegal content',
+    'impersonation': 'Pretends to be someone else',
+    'other': 'Something else',
+  };
 
   static String get functionsBase => '${const String.fromEnvironment('SUPABASE_URL')}/functions/v1';
   static String get apiBase => '$functionsBase/nwisp-bot-api';
@@ -263,4 +333,69 @@ class BotService {
 
   Future<void> setBlocked(String username, bool blocked) => _call('block', {'username': username, 'blocked': blocked});
   Future<void> clearChat(String username) => _call('clear_chat', {'username': username});
+
+  // ------------------------------------------------------------ reports & admin
+  Future<void> report(String username, String reason, {String details = ''}) =>
+      _call('report_bot', {'username': username, 'reason': reason, 'details': details});
+
+  Future<bool> isAdmin() async {
+    try {
+      return (await _call('whoami', {}))['isAdmin'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<BotReportItem>> adminReports() async {
+    final d = await _call('admin_reports', {});
+    return [for (final i in (d['items'] as List)) BotReportItem.fromJson(i as Map<String, dynamic>)];
+  }
+
+  Future<void> adminSetStatus(String username, String status, {String reason = ''}) =>
+      _call('admin_set_status', {'username': username, 'status': status, 'reason': reason});
+
+  Future<void> adminDismiss(String username) => _call('admin_dismiss', {'username': username});
+
+  // ------------------------------------------------------------ command menu
+  Future<List<BotCommand>> setCommands(String username, List<BotCommand> commands) async {
+    final d = await _call('set_commands', {
+      'username': username,
+      'commands': [for (final c in commands) {'command': c.command, 'description': c.description}],
+    });
+    return [
+      for (final c in (d['commands'] as List? ?? const []))
+        BotCommand((c as Map)['command'] as String, (c['description'] as String?) ?? ''),
+    ];
+  }
+
+  // ------------------------------------------------------------ bots in groups
+  Future<List<BotInfo>> groupBots(String groupId) async {
+    final d = await _call('group_list_bots', {'groupId': groupId});
+    return [for (final b in (d['bots'] as List)) BotInfo.fromJson(b as Map<String, dynamic>)];
+  }
+
+  Future<void> groupAddBot(String groupId, String username) => _call('group_add_bot', {'groupId': groupId, 'username': username});
+  Future<void> groupRemoveBot(String groupId, String username) => _call('group_remove_bot', {'groupId': groupId, 'username': username});
+
+  /// Returns (id, seenByBot).
+  Future<({int id, bool seenByBot})> groupSend(String groupId, String username, String text, {int? replyTo}) async {
+    final d = await _call('group_send', {'groupId': groupId, 'username': username, 'text': text, if (replyTo != null) 'replyTo': replyTo});
+    return (id: (d['id'] as num).toInt(), seenByBot: d['seenByBot'] == true);
+  }
+
+  Future<BotPollResult> groupPoll(String groupId, String username, {bool history = false, int afterId = 0, String? since, int waitSeconds = 0}) async {
+    final d = await _call('group_poll', {
+      'groupId': groupId,
+      'username': username,
+      'history': history,
+      'afterId': afterId,
+      if (since != null) 'since': since,
+      'waitSeconds': waitSeconds,
+    });
+    return BotPollResult(
+      [for (final m in (d['messages'] as List)) BotMessage.fromJson(m as Map<String, dynamic>)],
+      false,
+      (d['serverTime'] as String?) ?? DateTime.now().toUtc().toIso8601String(),
+    );
+  }
 }
