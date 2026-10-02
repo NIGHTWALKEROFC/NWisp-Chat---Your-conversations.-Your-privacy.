@@ -15,6 +15,7 @@ import 'announcements_screen.dart';
 import 'chat_list_screen.dart';
 import 'call/call_screens.dart';
 import 'community/community_screen.dart';
+import 'nearby/nearby_screen.dart';
 import 'secret/secret_chat_screen.dart';
 import 'settings/settings_screen.dart';
 import 'stories/stories_tab_screen.dart';
@@ -140,6 +141,7 @@ class _HomeShellState extends State<HomeShell> {
     });
     HomeSectionsService.announcementsTab.addListener(_onSettingChanged);
     HomeSectionsService.communityTab.addListener(_onSettingChanged);
+    HomeSectionsService.nearbyTab.addListener(_onSettingChanged);
     CallService.instance.incoming.addListener(_onIncomingCall);
     GroupCallService.instance.incoming.addListener(_onIncomingGroupCall);
     SecretChatService.instance.incomingInvite.addListener(_onSecretInvite);
@@ -164,6 +166,7 @@ class _HomeShellState extends State<HomeShell> {
   void dispose() {
     HomeSectionsService.announcementsTab.removeListener(_onSettingChanged);
     HomeSectionsService.communityTab.removeListener(_onSettingChanged);
+    HomeSectionsService.nearbyTab.removeListener(_onSettingChanged);
     CallService.instance.incoming.removeListener(_onIncomingCall);
     GroupCallService.instance.incoming.removeListener(_onIncomingGroupCall);
     SecretChatService.instance.incomingInvite.removeListener(_onSecretInvite);
@@ -196,12 +199,15 @@ class _HomeShellState extends State<HomeShell> {
     final hasAnnouncementGroups = _groupDocs.any((d) => d.data()['onlyAdminsCanSend'] == true && d.data()['isCommunity'] != true);
     final showAnnouncements = HomeSectionsService.announcementsTab.value && hasAnnouncementGroups;
     final showCommunity = HomeSectionsService.communityTab.value;
+    final showNearby = HomeSectionsService.nearbyTab.value;
 
     final tabs = <_Tab>[
       const _Tab('chats', 'Chats', Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded),
       const _Tab('stories', 'Stories', Icons.auto_awesome_motion_outlined, Icons.auto_awesome_motion),
       if (showAnnouncements) const _Tab('announcements', 'Announcements', Icons.campaign_outlined, Icons.campaign),
       if (showCommunity) const _Tab('community', 'Community', Icons.groups_2_outlined, Icons.groups_2),
+      // Feature: Nearby chat (Bluetooth / Wi-Fi, no internet). Can be switched off in Settings > Chats.
+      if (showNearby) const _Tab('nearby', 'Nearby', Icons.bluetooth_searching_rounded, Icons.bluetooth_connected_rounded),
       // Feature: Settings lives in the bottom bar (Telegram-style), so the
       // 3-dot menu on Chats only needs the everyday actions.
       const _Tab('settings', 'Settings', Icons.settings_outlined, Icons.settings),
@@ -222,6 +228,8 @@ class _HomeShellState extends State<HomeShell> {
           return const AnnouncementsScreen();
         case 'community':
           return const CommunityScreen();
+        case 'nearby':
+          return const NearbyScreen();
         case 'settings':
           return const SettingsScreen();
         default:
