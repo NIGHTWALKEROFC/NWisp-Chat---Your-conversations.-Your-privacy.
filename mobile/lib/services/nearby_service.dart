@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'mesh_service.dart';
 import 'signal_session_service.dart';
 
 enum NearbyMode { friends, everyone }
@@ -30,6 +31,8 @@ class NearbyPeer {
   /// null = not checked yet, true = proven (their key matches the one saved
   /// from earlier chats), false = could not be proven.
   bool? verified;
+  /// A relay link for the mesh network (not a chat) — see MeshService.
+  bool mesh = false;
   String? uid;
   List<int>? myNonce;
   List<int>? theirNonce;
@@ -61,12 +64,19 @@ class NearbyService extends ChangeNotifier {
   static const _serviceId = 'com.nightwalker.securechat.nearby';
   static const _strategy = Strategy.P2P_CLUSTER;
   static const _kMode = 'nearby_mode';
+  static const _kMesh = 'nearby_mesh';
+  static const _maxMeshLinks = 5;
   static const _prefix = 'NW|';
 
   final _nearby = Nearby();
   final _rand = Random.secure();
 
   NearbyMode mode = NearbyMode.friends;
+
+  /// Feature: mesh relay. When on, this phone links to other mesh phones
+  /// automatically and passes public-room messages and encrypted direct
+  /// messages along, so people further than one radio hop can still talk.
+  bool meshEnabled = false;
   bool scanning = false;
   bool busy = false;
   String? error;
@@ -90,6 +100,7 @@ class NearbyService extends ChangeNotifier {
     if (_loaded) return;
     final p = await SharedPreferences.getInstance();
     mode = (p.getString(_kMode) == 'everyone') ? NearbyMode.everyone : NearbyMode.friends;
+    meshEnabled = p.getBool(_kMesh) ?? false;
     _loaded = true;
     final uid = _myUid;
     if (uid != null) {
@@ -111,6 +122,41 @@ class NearbyService extends ChangeNotifier {
       }, onError: (_) {});
     }
   }
+
+  Future<void> setMesh(bool on) async {
+    meshEnabled = on;
+    (await SharedPreferences.getInstance()).setBool(_kMesh, on);
+    if (!on) {
+      // Drop the relay links; chat connections stay.
+      for (final p in peers.values.where((p) => p.mesh).toList()) {
+        await disconnect(p);
+      }
+      MeshService.instance.reset();
+    }
+    // The advertised name tells others whether this phone relays, so restart.
+    if (scanning) {
+      await stop();
+      await start();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  String get _advName => '$_prefix${myName.isEmpty ? 'nwisp' : myName}${meshEnabled ? '|m' : ''}';
+
+  /// Names look like "NW|alice", "NW|alice|m" (this phone relays) or
+  /// "NW|alice|L" (a relay link request, not a chat request).
+  ({String name, String flag}) _parseName(String endpointName) {
+    final parts = endpointName.split('|');
+    if (parts.isEmpty || parts[0] != 'NW') return (name: endpointName, flag: '');
+    return (name: parts.length > 1 ? parts[1] : '', flag: parts.length > 2 ? parts[2] : '');
+  }
+
+  int get meshLinkCount => peers.values.where((p) => p.mesh).length;
+  List<NearbyPeer> get meshLinks => peers.values.where((p) => p.mesh && p.state == PeerState.connected).toList();
+
+  /// Sends a mesh message to one linked phone.
+  void sendRaw(String endpointId, Map<String, dynamic> json) => _sendBytes(endpointId, json);
 
   Future<void> setMode(NearbyMode m) async {
     mode = m;
@@ -168,7 +214,7 @@ class NearbyService extends ChangeNotifier {
       }
       // While there is still internet, remember my contacts' security keys.
       await _prefetchFriendKeys().timeout(const Duration(seconds: 6), onTimeout: () {});
-      final name = '$_prefix${myName.isEmpty ? 'nwisp' : myName}';
+      final name = _advName;
       await _nearby.startAdvertising(
         name,
         _strategy,
@@ -238,14 +284,46 @@ class NearbyService extends ChangeNotifier {
   // ------------------------------------------------------------ discovery
   void _onFound(String id, String endpointName, String serviceId) {
     if (!endpointName.startsWith(_prefix)) return;
-    final claimed = endpointName.substring(_prefix.length);
+    final parsed = _parseName(endpointName);
+    final claimed = parsed.name;
+    if (claimed.isEmpty) return;
     final lower = claimed.toLowerCase();
     final isFriend = friends.containsKey(lower);
+    // Mesh: another relaying phone — link to it (the phone with the smaller
+    // name makes the request, so both don't ask at once).
+    if (meshEnabled && parsed.flag == 'm' && !peers.containsKey(id) && meshLinkCount < _maxMeshLinks &&
+        _myLower.compareTo(lower) < 0) {
+      _requestMeshLink(id, claimed);
+      return;
+    }
+    if (parsed.flag == 'm' && peers[id]?.mesh == true) return;
     if (mode == NearbyMode.friends && !isFriend) return; // not shown at all
     final p = peers.putIfAbsent(id, () => NearbyPeer(id, claimed));
     p.claimedName = claimed;
     p.isFriend = isFriend;
     notifyListeners();
+  }
+
+  String get _myLower => (myName.isEmpty ? 'nwisp' : myName).toLowerCase();
+
+  Future<void> _requestMeshLink(String id, String claimed) async {
+    final p = NearbyPeer(id, claimed)
+      ..mesh = true
+      ..state = PeerState.requesting;
+    peers[id] = p;
+    notifyListeners();
+    try {
+      await _nearby.requestConnection(
+        '$_prefix${myName.isEmpty ? 'nwisp' : myName}|L',
+        id,
+        onConnectionInitiated: _onInitiated,
+        onConnectionResult: _onResult,
+        onDisconnected: _onDisconnected,
+      );
+    } catch (_) {
+      peers.remove(id);
+      notifyListeners();
+    }
   }
 
   Future<void> request(NearbyPeer p) async {
@@ -268,7 +346,23 @@ class NearbyService extends ChangeNotifier {
 
   // ------------------------------------------------------------ connection
   void _onInitiated(String id, ConnectionInfo info) {
-    final claimed = info.endpointName.startsWith(_prefix) ? info.endpointName.substring(_prefix.length) : info.endpointName;
+    final parsed = _parseName(info.endpointName);
+    final claimed = parsed.name;
+    // A relay link request is not a chat request.
+    if (info.isIncomingConnection && parsed.flag == 'L') {
+      if (!meshEnabled || (peers[id]?.mesh != true && meshLinkCount >= _maxMeshLinks)) {
+        _nearby.rejectConnection(id);
+        return;
+      }
+      final mp = peers.putIfAbsent(id, () => NearbyPeer(id, claimed));
+      mp
+        ..claimedName = claimed
+        ..mesh = true
+        ..state = PeerState.connecting;
+      _accept(id);
+      notifyListeners();
+      return;
+    }
     final p = peers.putIfAbsent(id, () => NearbyPeer(id, claimed));
     p.claimedName = claimed;
     p.isFriend = friends.containsKey(claimed.toLowerCase());
@@ -325,7 +419,11 @@ class NearbyService extends ChangeNotifier {
     if (p == null) return;
     if (status == Status.CONNECTED) {
       p.state = PeerState.connected;
-      _sendHello(p);
+      if (p.mesh) {
+        MeshService.instance.onLinkUp(id);
+      } else {
+        _sendHello(p);
+      }
     } else {
       p.state = status == Status.REJECTED ? PeerState.declined : PeerState.found;
       if (status != Status.REJECTED) peers.remove(id);
@@ -377,6 +475,11 @@ class NearbyService extends ChangeNotifier {
     try {
       m = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
     } catch (_) {
+      return;
+    }
+    // Mesh links only carry mesh traffic; chat links never do.
+    if (p.mesh) {
+      MeshService.instance.onBytes(id, m);
       return;
     }
     switch (m['t']) {
@@ -458,6 +561,7 @@ class NearbyService extends ChangeNotifier {
 
   /// Everything wiped (used when signing out).
   Future<void> reset() async {
+    MeshService.instance.reset();
     await stop(disconnect: true);
     _friendsSub?.cancel();
     friends.clear();
