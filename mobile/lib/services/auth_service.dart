@@ -195,10 +195,20 @@ class AuthService {
     return (snap.data()?['passwordResetMethod'] as String?) ?? 'email';
   }
 
+  /// Feature: NWisp Bots. Names ending in a single "_bot" (like nwisp_bot)
+  /// belong to bots, so normal accounts can't use them. A double underscore
+  /// (like nwisp__bot) is fine for a normal account.
+  static bool isBotStyleUsername(String username) =>
+      RegExp(r'(^|[^_])_bot$').hasMatch(username.trim().toLowerCase());
+
+  static const String botNameMessage =
+      'Names ending in _bot are for bots. Use a double underscore (like name__bot) or another name.';
+
   /// Real-time-ish username availability check for the signup flow.
   Future<bool> isUsernameAvailable(String username) async {
     final lower = username.trim().toLowerCase();
     if (lower.isEmpty) return false;
+    if (isBotStyleUsername(lower)) return false;
     final doc = await _db.collection('usernames').doc(lower).get();
     return !doc.exists;
   }
@@ -229,6 +239,7 @@ class AuthService {
     // server-side guarantee). Existing accounts created before this change
     // keep whatever casing they already have; nothing here touches them.
     final lowerUsername = username.trim().toLowerCase();
+    if (isBotStyleUsername(lowerUsername)) throw Exception(botNameMessage);
 
     final existing = await _db.collection('usernames').doc(lowerUsername).get();
     if (existing.exists) throw Exception('Username already taken');
@@ -670,6 +681,7 @@ class AuthService {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
     final newLower = newUsername.toLowerCase();
+    if (isBotStyleUsername(newLower)) throw Exception(botNameMessage);
 
     final userDoc = await _db.collection('users').doc(uid).get();
     final oldLower = (userDoc.data()?['usernameLower'] as String?) ?? '';
