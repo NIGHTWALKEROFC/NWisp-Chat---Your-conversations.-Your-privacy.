@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../services/screenshot_guard_service.dart';
+import '../services/security_chat_lock_service.dart';
 import '../services/security_chat_service.dart';
 import '../widgets/nwisp_ui.dart';
+import 'security_chat_lock_screens.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/forgot_password_screen.dart';
 
@@ -19,21 +21,87 @@ class SecurityChatScreen extends StatefulWidget {
   State<SecurityChatScreen> createState() => _SecurityChatScreenState();
 }
 
-class _SecurityChatScreenState extends State<SecurityChatScreen> {
+class _SecurityChatScreenState extends State<SecurityChatScreen> with WidgetsBindingObserver {
   final _auth = AuthService();
+
+  // Optional lock (see SecurityChatLockService). The chat starts locked
+  // whenever the lock is on and locks itself again if the app goes to the
+  // background, the same way the app lock does.
+  bool _checking = true;
+  bool _lockEnabled = false;
+  bool _unlocked = false;
 
   @override
   void initState() {
     super.initState();
     ScreenshotGuardService.acquire();
+    WidgetsBinding.instance.addObserver(this);
+    _checkLock();
+  }
+
+  Future<void> _checkLock() async {
+    final service = SecurityChatLockService.instance;
+    final enabled = await service.isEnabled();
+    await service.load();
+    if (!mounted) return;
+    setState(() {
+      _lockEnabled = enabled;
+      _unlocked = !enabled;
+      _checking = false;
+    });
+    if (!enabled) {
+      SecurityChatService.instance.markRead();
+      _offerLockOnce();
+    }
+  }
+
+  /// The very first time this chat is opened, ask once whether to protect it.
+  /// "Not now" is fine — it's never asked again, and the lock stays available
+  /// from the lock button here and from Settings > Security.
+  Future<void> _offerLockOnce() async {
+    final service = SecurityChatLockService.instance;
+    if (await service.hasBeenOffered()) return;
+    await service.markOffered();
+    if (!mounted) return;
+    final turnedOn = await showSecurityChatLockOffer(context);
+    if (!mounted) return;
+    if (turnedOn) {
+      // They just set it up themselves, so don't lock them out of this visit.
+      setState(() => _lockEnabled = true);
+    }
+  }
+
+  void _onUnlocked() {
+    setState(() => _unlocked = true);
     SecurityChatService.instance.markRead();
+  }
+
+  Future<void> _openLockSettings() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const SecurityChatLockSettingsScreen()));
+    final enabled = await SecurityChatLockService.instance.isEnabled();
+    if (!mounted) return;
+    // Whoever is here has already passed the gate (or there was none), so
+    // changing the setting doesn't lock this visit.
+    setState(() {
+      _lockEnabled = enabled;
+      if (!enabled) _unlocked = true;
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused && _lockEnabled && _unlocked) {
+      setState(() => _unlocked = false);
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     ScreenshotGuardService.release();
-    // Anything that arrived while this screen was open counts as seen too.
-    SecurityChatService.instance.markRead();
+    // Anything that arrived while this screen was open counts as seen too —
+    // but not if it was never unlocked.
+    if (_unlocked) SecurityChatService.instance.markRead();
     super.dispose();
   }
 
@@ -55,46 +123,70 @@ class _SecurityChatScreenState extends State<SecurityChatScreen> {
     return '${months[t.month - 1]} ${t.day}, ${t.year}';
   }
 
+  Widget _titleRow(ColorScheme scheme) {
+    return Row(
+      children: [
+        const NwispOfficialAvatar(radius: 19),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Flexible(
+                    child: Text(
+                      'NWisp Chat Notifications',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  const VerifiedBadge(size: 16),
+                ],
+              ),
+              Text(
+                'Account alerts · read only',
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final uid = _auth.currentUserId;
 
+    if (_checking) {
+      return Scaffold(
+        appBar: AppBar(titleSpacing: 0, title: _titleRow(scheme)),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_lockEnabled && !_unlocked) {
+      return Scaffold(
+        appBar: AppBar(titleSpacing: 0, title: _titleRow(scheme)),
+        body: SecurityChatUnlockGate(onUnlocked: _onUnlocked),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        title: Row(
-          children: [
-            const NwispOfficialAvatar(radius: 19),
-            const SizedBox(width: 12),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Flexible(
-                        child: Text(
-                          'NWisp Chat Notifications',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      const VerifiedBadge(size: 16),
-                    ],
-                  ),
-                  Text(
-                    'Account alerts · read only',
-                    style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+        title: _titleRow(scheme),
+        actions: [
+          IconButton(
+            tooltip: 'Chat lock',
+            icon: Icon(_lockEnabled ? Icons.lock_rounded : Icons.lock_open_rounded),
+            onPressed: _openLockSettings,
+          ),
+        ],
       ),
       body: uid == null
           ? const SizedBox.shrink()
