@@ -364,6 +364,18 @@ class SignalSessionService {
     return Curve.verifySignature(Curve.decodePoint(key, 0), message, signature);
   }
 
+  /// Feature: Nearby chat. The identity key this phone saved for [uid] from
+  /// earlier chats — read from this phone only (no internet needed).
+  Future<Uint8List?> pinnedPeerIdentityKey(String uid) async {
+    final pinned = await _store.getIdentity(_addressFor(uid));
+    return pinned?.serialize();
+  }
+
+  /// Checks a signature against a given identity public key (33 bytes).
+  bool verifyWithKey(Uint8List identityKeyBytes, Uint8List message, Uint8List signature) {
+    return Curve.verifySignature(Curve.decodePoint(identityKeyBytes, 0), message, signature);
+  }
+
   /// This device's own identity public key — used only to build the
   /// safety-number / fingerprint comparison (see SafetyNumberService).
   /// This is already public information by design (it's the same key
