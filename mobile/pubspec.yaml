@@ -18,7 +18,13 @@ dependencies:
   shared_preferences: ^2.3.2
   provider: ^6.1.2
   image_picker: ^1.1.2
-  intl: ^0.19.0
+  # Feature: app language. flutter_localizations ships Flutter's own translations
+  # (date/time pickers, dialog buttons, text direction) for ~85 languages. It
+  # pins its own exact version of intl, so intl is left unpinned here — a
+  # fixed ^0.19.0 would clash with it and stop `flutter pub get`.
+  flutter_localizations:
+    sdk: flutter
+  intl: any
   http: ^1.2.2
   crypto: ^3.0.3
   libsignal_protocol_dart: ^0.8.2
@@ -64,9 +70,6 @@ dependencies:
   webview_flutter_android: ^4.0.0
   # Feature: voice calls (see CallService) — WebRTC, audio only.
   flutter_webrtc: ^0.12.0
-  # Feature: Nearby chat (Bluetooth / Wi-Fi, no internet — see NearbyService).
-  nearby_connections: ^4.0.0
-  permission_handler: ^11.3.1
   # Feature: live location sharing (see LiveLocationService). geolocator
   # reads the device's GPS; flutter_map + latlong2 draw the map bubble/full
   # screen view using OpenStreetMap tiles — no API key or billing account
