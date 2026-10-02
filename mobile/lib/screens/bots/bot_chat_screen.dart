@@ -6,6 +6,7 @@ import '../../services/auth_service.dart';
 import '../../services/bot_service.dart';
 import '../../widgets/bot_badge.dart';
 import '../../widgets/message_link_text.dart';
+import 'bot_report.dart';
 
 /// Chat with a bot. Bot chats are NOT end-to-end encrypted (the bot's program
 /// has to read them) — a notice at the top says so. Messages live on the
@@ -36,12 +37,18 @@ class _BotChatScreenState extends State<BotChatScreen> {
   @override
   void initState() {
     super.initState();
+    _input.addListener(_inputChanged);
     _start();
+  }
+
+  void _inputChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _alive = false;
+    _input.removeListener(_inputChanged);
     _input.dispose();
     _scroll.dispose();
     super.dispose();
@@ -51,7 +58,11 @@ class _BotChatScreenState extends State<BotChatScreen> {
     try {
       final r = await _service.getBot(widget.username);
       if (r.bot == null) {
-        setState(() => _loadError = r.reason == 'private' ? "This bot isn't open to everyone yet." : 'This bot no longer exists.');
+        setState(() => _loadError = r.reason == 'private'
+            ? "This bot isn't open to everyone yet."
+            : r.reason == 'suspended'
+                ? 'This bot has been suspended.'
+                : 'This bot no longer exists.');
         return;
       }
       _bot = r.bot;
@@ -197,6 +208,9 @@ class _BotChatScreenState extends State<BotChatScreen> {
           ),
         );
         break;
+      case 'report':
+        await showReportBotDialog(context, widget.username);
+        break;
       case 'clear':
         await _service.clearChat(widget.username);
         if (mounted) setState(() => _messages.clear());
@@ -205,14 +219,88 @@ class _BotChatScreenState extends State<BotChatScreen> {
         final block = !(_bot?.blocked ?? false);
         await _service.setBlocked(widget.username, block);
         if (mounted) {
-          setState(() => _bot = BotInfo(
-                username: _bot!.username, name: _bot!.name, description: _bot!.description, photoData: _bot!.photoData,
-                rules: _bot!.rules, commands: _bot!.commands, isOwner: _bot!.isOwner, blocked: block,
-              ));
+          setState(() => _bot = _bot!.copyWith(blocked: block));
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(block ? 'Bot blocked' : 'Bot unblocked')));
         }
         break;
     }
+  }
+
+  /// The reply keyboard the bot last showed (until it removes it), and the
+  /// "/" suggestions while typing a command.
+  List<Widget> _composerExtras(BotInfo bot, List<BotMessage> list, ColorScheme scheme) {
+    final out = <Widget>[];
+    if (bot.blocked) return out;
+    // Latest bot message that set or cleared a keyboard.
+    List<List<String>> keyboard = const [];
+    if (bot.rule('buttons')) {
+      for (final m in list.reversed) {
+        if (!m.fromBot || m.deleted) continue;
+        final kb = m.extra['keyboard'];
+        if (kb is List) {
+          keyboard = [for (final row in kb) [for (final b in (row as List)) '$b']];
+          break;
+        }
+      }
+    }
+    final typed = _input.text;
+    final cmds = bot.rule('commandsMenu') ? bot.commands : const <BotCommand>[];
+    if (typed.startsWith('/') && !typed.contains(' ') && cmds.isNotEmpty) {
+      final q = typed.substring(1).toLowerCase();
+      final matches = cmds.where((c) => c.command.startsWith(q)).take(6).toList();
+      if (matches.isNotEmpty) {
+        out.add(Container(
+          constraints: const BoxConstraints(maxHeight: 230),
+          color: scheme.surfaceContainerHigh,
+          child: ListView(
+            shrinkWrap: true,
+            padding: EdgeInsets.zero,
+            children: [
+              for (final c in matches)
+                ListTile(
+                  dense: true,
+                  title: Text('/${c.command}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: c.description.isEmpty ? null : Text(c.description),
+                  onTap: () {
+                    _input.clear();
+                    _send('/${c.command}');
+                  },
+                ),
+            ],
+          ),
+        ));
+      }
+    } else if (keyboard.isNotEmpty) {
+      out.add(Container(
+        width: double.infinity,
+        color: scheme.surfaceContainerHigh,
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+        child: Column(
+          children: [
+            for (final row in keyboard)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    for (final b in row)
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          child: FilledButton.tonal(
+                            style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)),
+                            onPressed: _sending ? null : () => _send(b),
+                            child: Text(b, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ));
+    }
+    return out;
   }
 
   /// **bold**, _italic_ and `code` — only when the bot's owner turned
@@ -343,6 +431,7 @@ class _BotChatScreenState extends State<BotChatScreen> {
               const PopupMenuItem(value: 'info', child: Text('Bot info')),
               const PopupMenuItem(value: 'clear', child: Text('Clear chat')),
               PopupMenuItem(value: 'block', child: Text(blocked ? 'Unblock bot' : 'Block bot')),
+              const PopupMenuItem(value: 'report', child: Text('Report bot')),
             ],
           ),
         ],
@@ -402,6 +491,7 @@ class _BotChatScreenState extends State<BotChatScreen> {
                               itemBuilder: (_, i) => _bubble(list[list.length - 1 - i]),
                             ),
                     ),
+                    ..._composerExtras(bot, list, scheme),
                     SafeArea(
                       top: false,
                       child: blocked
@@ -411,7 +501,15 @@ class _BotChatScreenState extends State<BotChatScreen> {
                               child: Row(
                                 children: [
                                   if (bot.rule('commandsMenu') && bot.commands.isNotEmpty)
-                                    IconButton(tooltip: 'Commands', onPressed: _showCommands, icon: const Icon(Icons.terminal)),
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 6),
+                                      child: FilledButton.tonalIcon(
+                                        style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                                        onPressed: _showCommands,
+                                        icon: const Icon(Icons.menu_rounded, size: 18),
+                                        label: const Text('Menu'),
+                                      ),
+                                    ),
                                   Expanded(
                                     child: TextField(
                                       controller: _input,
