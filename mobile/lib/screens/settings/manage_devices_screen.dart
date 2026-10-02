@@ -76,6 +76,44 @@ class _ManageDevicesScreenState extends State<ManageDevicesScreen> {
     }
   }
 
+  Future<void> _signOutOthers(int count) async {
+    final scheme = Theme.of(context).colorScheme;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sign out all other devices?'),
+        content: Text(
+          count == 1
+              ? 'The other device will be signed out immediately. This device stays signed in.'
+              : 'The other $count devices will be signed out immediately. This device stays signed in.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: scheme.error),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sign them out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _busy = true);
+    try {
+      final removed = await DeviceSessionService.instance.signOutOtherDevices(widget.uid);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(removed == 0 ? 'No other devices were signed in.' : 'Signed out $removed other device${removed == 1 ? '' : 's'}.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final message = e.toString().replaceFirst('Exception: ', '').replaceFirst('Bad state: ', '');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _makePrimary(LinkedDevice device) async {
     final scheme = Theme.of(context).colorScheme;
     final confirmed = await showDialog<bool>(
@@ -162,6 +200,21 @@ class _ManageDevicesScreenState extends State<ManageDevicesScreen> {
                       'Devices allowed to sign in to this account at the same time. Only the primary device can send and '
                       'receive messages — see Multiple devices in Account security for why.',
                       style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+                    ),
+                  ),
+                // One-tap clean-up: only shown when there IS another device,
+                // and never in the blocking "device limit" step during login.
+                if (blocking == null && devices.any((d) => !d.isThisDevice))
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+                    child: OutlinedButton.icon(
+                      onPressed: _busy ? null : () => _signOutOthers(devices.where((d) => !d.isThisDevice).length),
+                      icon: Icon(Icons.logout, color: scheme.error),
+                      label: Text('Sign out all other devices', style: TextStyle(color: scheme.error)),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(46),
+                        side: BorderSide(color: scheme.error.withValues(alpha: 0.4)),
+                      ),
                     ),
                   ),
                 for (final device in devices)
