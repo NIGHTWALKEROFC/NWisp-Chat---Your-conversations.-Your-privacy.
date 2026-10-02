@@ -2239,6 +2239,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                 ),
               ),
               const PopupMenuDivider(),
+              const PopupMenuItem(value: 'callback', child: ListTile(leading: Icon(Icons.phone_callback_outlined), title: Text('Ask to call me back'), contentPadding: EdgeInsets.zero)),
               const PopupMenuItem(value: 'secret', child: ListTile(leading: Icon(Icons.lock_clock_outlined), title: Text('Start secret chat'), contentPadding: EdgeInsets.zero)),
               PopupMenuItem(
                 value: 'clear',
@@ -2294,6 +2295,20 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
           _showForwardSnack(muted ? 'Notifications on' : 'Notifications muted');
         } catch (_) {
           _showForwardSnack("Couldn't change that — check your connection.");
+        }
+        break;
+      case 'callback':
+        // Feature: "call me back" request — a short note they can act on.
+        try {
+          await MessageRelayService.sendMessage(
+            conversationId: widget.conversationId,
+            recipientUid: widget.peerUid,
+            text: '📞 Please call me back',
+            ttlHours: _effectiveTtlHours,
+          );
+          _showForwardSnack('Asked ${widget.peerUsername} to call you back');
+        } catch (_) {
+          _showForwardSnack("Couldn't send the request");
         }
         break;
       case 'secret':
