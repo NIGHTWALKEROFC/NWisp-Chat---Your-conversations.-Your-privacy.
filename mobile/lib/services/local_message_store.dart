@@ -1123,8 +1123,136 @@ class LocalMessageStore {
   /// chat's message count.
   static Future<List<LocalMessage>> loadConversationForBrowsing(String conversationId) => _loadConversation(conversationId);
 
-  static Future<List<LocalMessage>> _loadConversation(String conversationId) async {
-    final rows = await _db!.query('messages', where: 'conversation_id = ?', whereArgs: [conversationId], orderBy: 'created_at ASC');
+  // ---------------------------------------------------------------------
+  // Feature: paged chat loading ("long chat performance").
+  //
+  // Opening a chat used to read AND decrypt every message in it, and did so
+  // again each time anything in the chat changed (a new message, a tick, a
+  // reaction) — fine for a few hundred messages, painfully slow for tens of
+  // thousands. A chat screen can now opt in with [startPaging]; from then on
+  // [watchConversation] only delivers the newest [pageSize] messages, and
+  // [loadOlder] pulls in another page when the person scrolls up.
+  //
+  // The window is anchored on a timestamp ("nothing older than this is
+  // loaded"), not on a count, so a new message just appends to it — the
+  // oldest message on screen never silently drops off the top while someone
+  // is reading history. Screens that don't call [startPaging] (the group
+  // chat, the media browser, search) behave exactly as before.
+  // ---------------------------------------------------------------------
+  static const pageSize = 60;
+  static final Set<String> _pagedChats = {};
+  // Oldest created_at (ms) in the window. A present-but-null entry means
+  // "the whole chat fits" — everything is loaded.
+  static final Map<String, int?> _pageFloor = {};
+  static final Map<String, bool> _hasMoreOlder = {};
+
+  /// Turns paging on for one chat. Call from the screen's initState and pair
+  /// it with [stopPaging] in dispose.
+  static void startPaging(String conversationId) {
+    _pagedChats.add(conversationId);
+    _pageFloor.remove(conversationId);
+    _hasMoreOlder.remove(conversationId);
+  }
+
+  static void stopPaging(String conversationId) {
+    _pagedChats.remove(conversationId);
+    _pageFloor.remove(conversationId);
+    _hasMoreOlder.remove(conversationId);
+  }
+
+  /// Whether there are older messages that aren't loaded yet.
+  static bool hasMoreOlder(String conversationId) => _hasMoreOlder[conversationId] ?? false;
+
+  /// created_at of the pageSize-th newest message — the starting edge of the
+  /// window — or null when the chat has fewer messages than that.
+  static Future<int?> _initialFloor(String conversationId) async {
+    final rows = await _db!.query(
+      'messages',
+      columns: ['created_at'],
+      where: 'conversation_id = ?',
+      whereArgs: [conversationId],
+      orderBy: 'created_at DESC',
+      limit: 1,
+      offset: pageSize - 1,
+    );
+    return rows.isEmpty ? null : rows.first['created_at'] as int;
+  }
+
+  /// Loads one more page of older messages and re-sends the list to the
+  /// screen. Returns false when there was nothing older to load.
+  static Future<bool> loadOlder(String conversationId) async {
+    if (!_pagedChats.contains(conversationId)) return false;
+    final floor = _pageFloor[conversationId];
+    if (floor == null) return false;
+    final rows = await _db!.query(
+      'messages',
+      columns: ['created_at'],
+      where: 'conversation_id = ? AND created_at < ?',
+      whereArgs: [conversationId, floor],
+      orderBy: 'created_at DESC',
+      limit: pageSize,
+    );
+    if (rows.isEmpty) {
+      _hasMoreOlder[conversationId] = false;
+      return false;
+    }
+    _pageFloor[conversationId] = rows.last['created_at'] as int;
+    await _emitConversation(conversationId);
+    return true;
+  }
+
+  /// Makes sure [messageId] is inside the loaded window (plus a page of
+  /// context above it) — used before scrolling to a message that may be older
+  /// than what's loaded, e.g. from search or a pinned banner. Returns false
+  /// if that message doesn't exist any more.
+  static Future<bool> ensureLoaded(String conversationId, String messageId) async {
+    if (!_pagedChats.contains(conversationId)) return true;
+    final rows = await _db!.query(
+      'messages',
+      columns: ['created_at'],
+      where: 'id = ? AND conversation_id = ?',
+      whereArgs: [messageId, conversationId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+    final createdAt = rows.first['created_at'] as int;
+    final floor = _pageFloor[conversationId];
+    if (floor == null || createdAt >= floor) return true; // already loaded
+    _pageFloor[conversationId] = createdAt;
+    await _emitConversation(conversationId); // the message itself is now in the list
+    await loadOlder(conversationId); // plus a page of context above it
+    return true;
+  }
+
+  static Future<List<LocalMessage>> _loadConversation(String conversationId, {bool paged = false}) async {
+    List<Map<String, Object?>> rows;
+    if (paged && _pagedChats.contains(conversationId)) {
+      if (!_pageFloor.containsKey(conversationId)) {
+        _pageFloor[conversationId] = await _initialFloor(conversationId);
+      }
+      final floor = _pageFloor[conversationId];
+      if (floor == null) {
+        _hasMoreOlder[conversationId] = false;
+        rows = await _db!.query('messages', where: 'conversation_id = ?', whereArgs: [conversationId], orderBy: 'created_at ASC');
+      } else {
+        rows = await _db!.query(
+          'messages',
+          where: 'conversation_id = ? AND created_at >= ?',
+          whereArgs: [conversationId, floor],
+          orderBy: 'created_at ASC',
+        );
+        final older = await _db!.query(
+          'messages',
+          columns: ['id'],
+          where: 'conversation_id = ? AND created_at < ?',
+          whereArgs: [conversationId, floor],
+          limit: 1,
+        );
+        _hasMoreOlder[conversationId] = older.isNotEmpty;
+      }
+    } else {
+      rows = await _db!.query('messages', where: 'conversation_id = ?', whereArgs: [conversationId], orderBy: 'created_at ASC');
+    }
     final result = <LocalMessage>[];
     for (final r in rows) {
       result.add(await _rowToMessage(r));
@@ -1132,12 +1260,21 @@ class LocalMessageStore {
     return result;
   }
 
+  /// Loads and sends the current list to whoever is watching, waiting until
+  /// it has been sent (unlike [_notifyConversation], which fires and forgets).
+  static Future<void> _emitConversation(String conversationId) async {
+    final controller = _convoControllers[conversationId];
+    if (controller == null) return;
+    final list = await _loadConversation(conversationId, paged: true);
+    if (!controller.isClosed) controller.add(list);
+  }
+
   /// Retries with backoff instead of dropping the update on the floor.
   /// Capped at 5 attempts so a genuinely bad row can't retry forever.
   static void _notifyConversation(String conversationId, [int attempt = 0]) {
     final controller = _convoControllers[conversationId];
     if (controller == null) return;
-    _loadConversation(conversationId).then((list) {
+    _loadConversation(conversationId, paged: true).then((list) {
       if (!controller.isClosed) controller.add(list);
     }).catchError((Object e) {
       if (attempt >= 5) return;
