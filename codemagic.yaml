@@ -48,9 +48,9 @@ workflows:
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
             --dart-define=TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY \
-            --dart-define=TURN_URL=$TURN_URL \
-            --dart-define=TURN_USER=$TURN_USER \
-            --dart-define=TURN_PASS=$TURN_PASS
+            "--dart-define=TURN_URL=$TURN_URL" \
+            "--dart-define=TURN_USER=$TURN_USER" \
+            "--dart-define=TURN_PASS=$TURN_PASS"
     artifacts:
       - mobile/build/**/outputs/**/*.apk
       # Keep these: they let you read crash stack traces from obfuscated builds.
