@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
+import '../bots/bots_hub_screen.dart';
 import '../broadcast/broadcast_lists_screen.dart';
 import '../browser/browser_settings_screen.dart';
 import '../chat/scheduled_messages_screen.dart';
@@ -12,6 +13,7 @@ import '../starred_messages_screen.dart';
 import '../vault/media_vault_screen.dart';
 import 'account_security_screen.dart';
 import '../../services/incoming_call_notifier.dart';
+import '../../services/nearby_service.dart';
 import 'encryption_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
@@ -62,6 +64,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _logout() async {
+    // Feature: Nearby chat — close any connections and forget everything.
+    await NearbyService.instance.reset();
     await _authService.logout();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
@@ -216,6 +220,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ]),
                 const SizedBox(height: 14),
                 _group([
+                  _row(Icons.smart_toy_outlined, 'Bots', 'Create and manage your bots, or open one', const BotsHubScreen()),
                   _row(Icons.campaign_outlined, 'Broadcast lists', 'Send one message to many people', const BroadcastListsScreen()),
                   _row(Icons.folder_outlined, 'Chat folders', 'Organise your chats', const ChatFoldersScreen()),
                   _row(Icons.edit_note, 'Note to self', 'A private notepad on this phone', const NoteToSelfScreen()),
