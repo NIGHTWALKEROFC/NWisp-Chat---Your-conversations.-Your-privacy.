@@ -19,6 +19,11 @@ verify_jwt = false
 [functions.send-push]
 verify_jwt = false
 
+# Feature: NWisp Chat Notifications. Checks the person's Firebase token itself,
+# so Supabase's own JWT check must be off (same reason as the functions above).
+[functions.send-security-push]
+verify_jwt = false
+
 [functions.send-login-approval-push]
 verify_jwt = false
 
