@@ -64,6 +64,9 @@ dependencies:
   webview_flutter_android: ^4.0.0
   # Feature: voice calls (see CallService) — WebRTC, audio only.
   flutter_webrtc: ^0.12.0
+  # Feature: Nearby chat (Bluetooth / Wi-Fi, no internet — see NearbyService).
+  nearby_connections: ^4.0.0
+  permission_handler: ^11.3.1
   # Feature: live location sharing (see LiveLocationService). geolocator
   # reads the device's GPS; flutter_map + latlong2 draw the map bubble/full
   # screen view using OpenStreetMap tiles — no API key or billing account
