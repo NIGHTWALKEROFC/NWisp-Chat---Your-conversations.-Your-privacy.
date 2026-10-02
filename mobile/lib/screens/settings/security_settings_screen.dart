@@ -6,6 +6,7 @@ import '../../services/settings_service.dart';
 import '../../widgets/duration_picker_dialog.dart';
 import '../security/duress_pin_setup_screen.dart';
 import '../security/pin_screen.dart';
+import '../security_chat_lock_screens.dart';
 import 'chat_lock_setup_screen.dart';
 import 'intruder_photo_screen.dart';
 
@@ -356,6 +357,16 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const ChatLockSetupScreen()),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.shield_outlined),
+                  title: const Text('Lock NWisp Chat Notifications'),
+                  subtitle: const Text('Ask for a PIN or biometrics before opening your account alerts'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SecurityChatLockSettingsScreen()),
                   ),
                 ),
                 SwitchListTile.adaptive(
