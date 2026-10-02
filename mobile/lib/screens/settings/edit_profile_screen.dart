@@ -106,7 +106,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       );
       Navigator.pop(context);
     } catch (e) {
-      setState(() => _error = e.toString().contains('taken') ? 'That username is taken.' : 'Could not update profile.');
+      setState(() => _error = e.toString().contains('taken')
+          ? 'That username is taken.'
+          : e.toString().contains('for bots')
+              ? AuthService.botNameMessage
+              : 'Could not update profile.');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
