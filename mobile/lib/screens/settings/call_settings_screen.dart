@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../l10n/app_strings.dart';
 import '../../services/call_privacy_service.dart';
+import '../../services/call_quality_service.dart';
 import '../../services/call_service.dart';
 
 /// Settings > Calls. Right now it holds one setting, "Protect IP address in
@@ -15,6 +16,21 @@ class CallSettingsScreen extends StatefulWidget {
 
 class _CallSettingsScreenState extends State<CallSettingsScreen> {
   bool _relay = CallPrivacyService.relayOnly;
+  bool _lowData = CallQualityService.lowData;
+  bool _recordingAlerts = CallQualityService.recordingAlerts;
+
+  @override
+  void initState() {
+    super.initState();
+    CallQualityService.load().then((_) {
+      if (mounted) {
+        setState(() {
+          _lowData = CallQualityService.lowData;
+          _recordingAlerts = CallQualityService.recordingAlerts;
+        });
+      }
+    });
+  }
 
   bool get _available => CallService.isTurnConfigured;
 
@@ -51,6 +67,37 @@ class _CallSettingsScreenState extends State<CallSettingsScreen> {
       appBar: AppBar(title: Text(context.tr('Calls'))),
       body: ListView(
         children: [
+          // Feature: low-data mode.
+          SwitchListTile.adaptive(
+            secondary: const Icon(Icons.data_saver_on_outlined),
+            title: Text(context.tr('Low-data mode')),
+            subtitle: Text(
+              context.tr(
+                'Uses about half the data on voice calls (roughly 0.12 MB a minute). Voices sound a little thinner. Good for weak or expensive connections.',
+              ),
+            ),
+            value: _lowData,
+            onChanged: (v) async {
+              await CallQualityService.setLowData(v);
+              if (mounted) setState(() => _lowData = v);
+            },
+          ),
+          // Feature: recording alerts.
+          SwitchListTile.adaptive(
+            secondary: const Icon(Icons.fiber_manual_record_outlined),
+            title: Text(context.tr('Recording alerts')),
+            subtitle: Text(
+              context.tr(
+                'Tell the other person if another app on this phone starts recording sound during a call. You are always warned when theirs does. It can\'t detect a recording made on a different device.',
+              ),
+            ),
+            value: _recordingAlerts,
+            onChanged: (v) async {
+              await CallQualityService.setRecordingAlerts(v);
+              if (mounted) setState(() => _recordingAlerts = v);
+            },
+          ),
+          const Divider(height: 1),
           SwitchListTile.adaptive(
             secondary: const Icon(Icons.shield_outlined),
             title: Text(context.tr('Protect IP address in calls')),
