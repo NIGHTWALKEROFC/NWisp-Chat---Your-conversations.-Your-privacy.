@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/call_service.dart';
+import '../../services/message_relay_service.dart';
 import '../../services/group_call_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../widgets/user_avatar.dart';
@@ -103,10 +104,27 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> {
       final reason = s.endReason;
       Future.delayed(const Duration(milliseconds: 900), () {
         if (!mounted) return;
+        final messenger = ScaffoldMessenger.maybeOf(context);
         Navigator.of(context).maybePop();
-        if (reason.isNotEmpty && reason != 'Call ended') {
-          // Shown on whatever screen we return to.
-          WidgetsBinding.instance.addPostFrameCallback((_) {});
+        // Feature: "call me back" — when nobody picked up, offer to leave a
+        // short note in the chat. Shown on the screen we go back to.
+        const unanswered = {'No answer', 'Call declined', 'Busy on another call'};
+        if (s.isCaller && unanswered.contains(reason) && s.conversationId.isNotEmpty) {
+          messenger?.showSnackBar(SnackBar(
+            duration: const Duration(seconds: 8),
+            content: Text('$reason. Want to ask ${s.peerName} to call you back?'),
+            action: SnackBarAction(
+              label: 'Ask to call back',
+              onPressed: () {
+                MessageRelayService.sendMessage(
+                  conversationId: s.conversationId,
+                  recipientUid: s.peerUid,
+                  text: '📞 Please call me back',
+                  ttlHours: 24,
+                ).catchError((_) => '');
+              },
+            ),
+          ));
         }
       });
     }
@@ -170,6 +188,8 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> {
                   Text('End-to-end encrypted voice call', style: TextStyle(color: Colors.white38, fontSize: 12)),
                 ],
               ),
+              const SizedBox(height: 14),
+              _RecordingBanner(session: s),
               const Spacer(flex: 3),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -211,6 +231,41 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> {
     );
   }
 }
+
+/// "May be recording" notices on a 1:1 call (this phone and the other one).
+class _RecordingBanner extends StatelessWidget {
+  final VoiceCallSession session;
+  const _RecordingBanner({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: session.peerRecording,
+      builder: (_, theirs, __) => ValueListenableBuilder<bool>(
+        valueListenable: session.iRecording,
+        builder: (_, mine, __) {
+          if (!theirs && !mine) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: _warningPill(theirs
+                ? '${session.peerName}\'s phone may be recording this call.'
+                : 'Another app on your phone is recording sound. ${session.peerName} was told.'),
+          );
+        },
+      ),
+    );
+  }
+}
+
+Widget _warningPill(String text) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: Colors.amber.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.amber.shade700)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.fiber_manual_record, size: 14, color: Colors.redAccent),
+        const SizedBox(width: 8),
+        Flexible(child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 12.5))),
+      ]),
+    );
 
 class _RoundButton extends StatelessWidget {
   final IconData icon;
@@ -411,6 +466,15 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
               const SizedBox(height: 4),
               Text('${entries.length + 1} in the call · up to ${GroupCallService.maxParticipants}',
                   style: const TextStyle(color: Colors.white38, fontSize: 12)),
+              if (s.recordingUids.isNotEmpty || s.iRecording)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
+                  child: _warningPill(
+                    s.iRecording && s.recordingUids.isEmpty
+                        ? 'Another app on your phone is recording sound. The others were told.'
+                        : '${s.recordingUids.map((u) => s.names[u] ?? 'Someone').join(', ')}${s.recordingUids.length == 1 ? '\'s phone' : ' — phones'} may be recording this call.',
+                  ),
+                ),
               const SizedBox(height: 18),
               Expanded(
                 child: GridView.count(
