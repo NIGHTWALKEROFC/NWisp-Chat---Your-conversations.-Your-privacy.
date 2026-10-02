@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -36,6 +37,10 @@ import 'screens/security/chat_pin_guard.dart';
 import 'services/notification_sound_service.dart';
 import 'screens/security_chat_screen.dart';
 import 'services/quiet_hours_service.dart';
+import 'l10n/languages.dart';
+import 'services/call_privacy_service.dart';
+import 'services/crash_report_service.dart';
+import 'services/locale_service.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -52,6 +57,9 @@ const _androidChannel = AndroidNotificationChannel(
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Feature: "Report a problem" — remembers recent errors so a report can attach
+  // them. Hooked first so errors during startup are caught too.
+  CrashReportService.install();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await Supabase.initialize(
     url: const String.fromEnvironment('SUPABASE_URL'),
@@ -123,6 +131,11 @@ void main() async {
   await themeService.load();
   final brandingService = BrandingService();
   await brandingService.load();
+  // Feature: app language (Settings > App language) and the "Protect IP
+  // address in calls" setting — both read before the first screen is drawn.
+  final localeService = LocaleService();
+  await localeService.load();
+  await CallPrivacyService.load();
 
   await _setUpLocalNotifications();
   _setUpPushNotifications();
@@ -133,10 +146,15 @@ void main() async {
       providers: [
         ChangeNotifierProvider.value(value: themeService),
         ChangeNotifierProvider.value(value: brandingService),
+        ChangeNotifierProvider.value(value: localeService),
       ],
       child: const SecureChatApp(),
     ),
   );
+
+  // If the app crashed last time, offer to send a report — a couple of seconds
+  // in, once the first screen is up.
+  Future<void>.delayed(const Duration(seconds: 3), () => CrashReportService.promptIfCrashed(navigatorKey));
 
   // If the app was cold-started BY tapping a notification (fully
   // terminated, not just backgrounded), handle that tap once the app is up.
@@ -636,6 +654,7 @@ class SecureChatApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final themeService = context.watch<ThemeService>();
     final branding = context.watch<BrandingService>();
+    final localeService = context.watch<LocaleService>();
     return MaterialApp(
       navigatorKey: navigatorKey,
       title: 'NWisp Chat',
@@ -643,6 +662,14 @@ class SecureChatApp extends StatelessWidget {
       theme: AppTheme.light(branding.accentColor),
       darkTheme: AppTheme.dark(branding.accentColor),
       themeMode: themeService.mode,
+      // App language. A null locale follows the phone's own language.
+      locale: localeService.locale,
+      supportedLocales: AppLanguages.supportedLocales,
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       // Appearance > Font size. Multiplies whatever text size the phone
       // itself already asks for, so system accessibility settings still work.
       builder: (context, child) {
