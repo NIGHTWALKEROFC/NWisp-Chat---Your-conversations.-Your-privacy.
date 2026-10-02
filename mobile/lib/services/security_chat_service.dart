@@ -155,6 +155,18 @@ class SecurityChatService {
           needsAttention: true,
           time: time,
         );
+      case 'other_devices_signed_out':
+        final count = data['count'];
+        return SecurityNotice(
+          id: id,
+          event: event,
+          title: 'Other devices signed out',
+          body: '${count is int && count > 0 ? '$count other device${count == 1 ? '' : 's'} ${count == 1 ? 'was' : 'were'}' : 'Your other devices were'} '
+              'signed out from $where.\n\nIf you didn\'t do this, change your password right away.',
+          icon: Icons.devices_other_rounded,
+          needsAttention: false,
+          time: time,
+        );
       default:
         return SecurityNotice(
           id: id,
