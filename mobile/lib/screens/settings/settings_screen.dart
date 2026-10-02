@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../l10n/app_strings.dart';
+import '../../l10n/languages.dart';
 import '../../services/auth_service.dart';
+import '../../services/locale_service.dart';
 import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
-import '../bots/bots_hub_screen.dart';
 import '../broadcast/broadcast_lists_screen.dart';
 import '../browser/browser_settings_screen.dart';
 import '../chat/scheduled_messages_screen.dart';
@@ -13,16 +16,18 @@ import '../starred_messages_screen.dart';
 import '../vault/media_vault_screen.dart';
 import 'account_security_screen.dart';
 import '../../services/incoming_call_notifier.dart';
-import '../../services/nearby_service.dart';
 import 'encryption_screen.dart';
 import 'account_screen.dart';
 import 'appearance_screen.dart';
+import 'call_settings_screen.dart';
 import 'chats_settings_screen.dart';
 import 'edit_profile_screen.dart';
 import 'help_about_screen.dart';
+import 'language_screen.dart';
 import 'notifications_settings_screen.dart';
 import 'privacy_checkup_screen.dart';
 import 'privacy_settings_screen.dart';
+import 'report_problem_screen.dart';
 import 'security_settings_screen.dart';
 
 /// Feature: settings reorganized into WhatsApp-style category pages.
@@ -64,8 +69,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _logout() async {
-    // Feature: Nearby chat — close any connections and forget everything.
-    await NearbyService.instance.reset();
     await _authService.logout();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
@@ -102,8 +105,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         child: Icon(icon, color: scheme.primary, size: 20),
       ),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12.5)),
+      title: Text(context.tr(title), style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(context.tr(subtitle), style: const TextStyle(fontSize: 12.5)),
       trailing: const Icon(Icons.chevron_right),
       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => screen)),
     );
@@ -119,8 +122,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         decoration: BoxDecoration(color: scheme.primary.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(12)),
         child: Icon(icon, color: scheme.primary, size: 20),
       ),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12.5)),
+      title: Text(context.tr(title), style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(context.tr(subtitle), style: const TextStyle(fontSize: 12.5)),
       onTap: onTap,
     );
   }
@@ -135,8 +138,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         decoration: BoxDecoration(color: scheme.primary.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(12)),
         child: Icon(icon, color: scheme.primary, size: 20),
       ),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12.5)),
+      title: Text(context.tr(title), style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(context.tr(subtitle), style: const TextStyle(fontSize: 12.5)),
       trailing: const Icon(Icons.chevron_right),
       onTap: () => Navigator.push(context, route()),
     );
@@ -145,8 +148,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Shown under "App language": the chosen language in its own name.
+    final languageName = AppLanguages.byCode(context.watch<LocaleService>().code)?.native ?? 'Phone language';
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(context.tr('Settings'))),
       body: _loadingProfile
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -185,7 +190,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     );
                     _load();
                   },
-                  child: const Text('Edit Profile'),
+                  child: Text(context.tr('Edit Profile')),
                 ),
                 const SizedBox(height: 18),
                 // Feature: Privacy checkup — a guided, WhatsApp-style walk
@@ -220,7 +225,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ]),
                 const SizedBox(height: 14),
                 _group([
-                  _row(Icons.smart_toy_outlined, 'Bots', 'Create and manage your bots, or open one', const BotsHubScreen()),
                   _row(Icons.campaign_outlined, 'Broadcast lists', 'Send one message to many people', const BroadcastListsScreen()),
                   _row(Icons.folder_outlined, 'Chat folders', 'Organise your chats', const ChatFoldersScreen()),
                   _row(Icons.edit_note, 'Note to self', 'A private notepad on this phone', const NoteToSelfScreen()),
@@ -235,9 +239,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ]),
                 const SizedBox(height: 14),
                 _group([
+                  _row(Icons.call_outlined, 'Calls', 'Protect your IP address in calls', const CallSettingsScreen()),
+                ]),
+                const SizedBox(height: 14),
+                _group([
+                  _row(Icons.language, 'App language', languageName, const LanguageScreen()),
+                ]),
+                const SizedBox(height: 14),
+                _group([
                   _row(Icons.notifications_outlined, 'Notifications', 'Muted keywords', const NotificationsSettingsScreen()),
                   _row(Icons.chat_bubble_outline, 'Chats', 'Auto-delete, paused chats, home screen layout', const ChatsSettingsScreen()),
                   _row(Icons.palette_outlined, 'Appearance', 'Customize how the app looks on this device', const AppearanceScreen()),
+                ]),
+                const SizedBox(height: 14),
+                _group([
+                  _row(Icons.bug_report_outlined, 'Report a problem', 'Report a bug or a security problem', const ReportProblemScreen()),
                 ]),
                 const SizedBox(height: 14),
                 _group([
@@ -247,7 +263,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 OutlinedButton.icon(
                   onPressed: _logout,
                   icon: Icon(Icons.logout, color: scheme.error),
-                  label: Text('Log out', style: TextStyle(color: scheme.error)),
+                  label: Text(context.tr('Log out'), style: TextStyle(color: scheme.error)),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
                     side: BorderSide(color: scheme.error.withValues(alpha: 0.4)),
