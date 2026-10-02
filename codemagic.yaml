@@ -15,6 +15,18 @@ workflows:
         # until you do, the app falls back to Cloudflare's "always passes"
         # test key, so CAPTCHA is NOT actually protecting anything yet.
         TURNSTILE_SITE_KEY: "0x4AAAAAAFCxWd56M8J50PRe"
+        # Relay (TURN) server for "Settings > Calls > Protect IP address in calls".
+        # Leave empty and that switch shows as "not available". Fill all three in
+        # (see the setup notes) to turn the feature on. TURN_URL can list several
+        # servers separated by commas, e.g. "turn:host:3478,turns:host:443".
+        # These get baked into the APK either way (the app needs them to place a
+        # call), so they're only as private as the APK itself — use credentials
+        # made just for this app. If your repo is public and you'd rather not keep
+        # them in this file, store them as secure variables in a Codemagic
+        # variable group and reference it with "groups:" under "environment:".
+        TURN_URL: ""
+        TURN_USER: ""
+        TURN_PASS: ""
     scripts:
       - name: Get Flutter packages
         script: |
@@ -35,7 +47,10 @@ workflows:
             --split-debug-info=build/symbols \
             --dart-define=SUPABASE_URL=$SUPABASE_URL \
             --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
-            --dart-define=TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY
+            --dart-define=TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY \
+            --dart-define=TURN_URL=$TURN_URL \
+            --dart-define=TURN_USER=$TURN_USER \
+            --dart-define=TURN_PASS=$TURN_PASS
     artifacts:
       - mobile/build/**/outputs/**/*.apk
       # Keep these: they let you read crash stack traces from obfuscated builds.
