@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/bot_service.dart';
 import '../../widgets/bot_badge.dart';
+import 'bot_admin_screen.dart';
 import 'bot_chat_screen.dart';
 import 'create_bot_screen.dart';
 import 'manage_bot_screen.dart';
@@ -18,6 +19,7 @@ class _BotsHubScreenState extends State<BotsHubScreen> {
   List<BotInfo>? _mine;
   List<BotInfo>? _chats;
   String? _error;
+  bool _admin = false;
   final _open = TextEditingController();
   bool _opening = false;
 
@@ -25,6 +27,9 @@ class _BotsHubScreenState extends State<BotsHubScreen> {
   void initState() {
     super.initState();
     _load();
+    BotService.instance.isAdmin().then((v) {
+      if (mounted && v) setState(() => _admin = v);
+    });
   }
 
   @override
@@ -128,6 +133,14 @@ class _BotsHubScreenState extends State<BotsHubScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Bots'),
+          actions: [
+            if (_admin)
+              IconButton(
+                tooltip: 'Reported bots (admin)',
+                icon: const Icon(Icons.admin_panel_settings_outlined),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BotAdminScreen())),
+              ),
+          ],
           bottom: const TabBar(tabs: [Tab(text: 'My bots'), Tab(text: 'Chats')]),
         ),
         floatingActionButton: FloatingActionButton.extended(
