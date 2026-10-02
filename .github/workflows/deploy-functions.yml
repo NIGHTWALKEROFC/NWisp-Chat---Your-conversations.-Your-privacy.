@@ -58,6 +58,14 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
 
+      # Feature: NWisp Chat Notifications — pushes for new sign-ins, password
+      # changes and two-step verification changes.
+      - name: Deploy send-security-push
+        run: supabase functions deploy send-security-push --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
       - name: Deploy send-login-approval-push
         run: supabase functions deploy send-login-approval-push --project-ref "$SUPABASE_PROJECT_REF"
         env:
