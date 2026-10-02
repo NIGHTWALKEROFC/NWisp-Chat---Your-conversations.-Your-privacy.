@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import '../../services/media_compression_service.dart';
 import '../../services/screenshot_guard_service.dart';
 import '../../services/story_reply_service.dart';
 import '../../services/story_service.dart';
+import '../../widgets/emoji_burst.dart';
 import '../../widgets/user_avatar.dart';
 import '../chat/chat_detail_screen.dart';
 import '../security/chat_pin_guard.dart';
@@ -59,6 +61,14 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
   final _replyFocus = FocusNode();
   bool _sendingReply = false;
 
+  // Emoji reactions: the quick row above the reply bar. The burst is the
+  // floating-emoji animation; the message is only sent the first time a given
+  // emoji is used on a given story, so tapping it over and over is just fun,
+  // not spam.
+  static const _reactionEmojis = ['😂', '😮', '😢', '👏', '🔥', '🎉'];
+  final _burstKey = GlobalKey<EmojiBurstState>();
+  final Set<String> _sentReactions = {};
+
   bool get _isMine => widget.ownerUid == FirebaseAuth.instance.currentUser?.uid;
   Map<String, dynamic> get _current => widget.stories[_index];
 
@@ -70,6 +80,8 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
     ScreenshotGuardService.acquire();
     // Typing a reply pauses the story so it doesn't move on under you.
     _replyFocus.addListener(() {
+      // Redraw too: the emoji row hides while the reply box is being typed in.
+      if (mounted) setState(() {});
       if (_replyFocus.hasFocus) {
         _pause();
       } else if (!_sendingReply) {
@@ -171,7 +183,44 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
 
   Future<void> _toggleLike() async {
     setState(() => _liked = !_liked);
+    if (_liked) _burstKey.currentState?.burst('❤️', count: 10);
     await _storyService.setLiked(_current['id'] as String, _liked);
+  }
+
+  Future<void> _react(String emoji) async {
+    _burstKey.currentState?.burst(emoji);
+    HapticFeedback.lightImpact();
+    if (_isMine) return;
+    final key = '${_current['id']}:$emoji';
+    if (!_sentReactions.add(key)) return; // already sent this one
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await StoryReplyService.sendReaction(ownerUid: widget.ownerUid, story: _current, emoji: emoji);
+    } catch (e) {
+      _sentReactions.remove(key);
+      messenger.showSnackBar(const SnackBar(content: Text("Couldn't send your reaction. Try again.")));
+    }
+  }
+
+  Widget _buildReactionRow() {
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          for (final emoji in _reactionEmojis)
+            InkResponse(
+              radius: 26,
+              onTap: () => _react(emoji),
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Text(emoji, style: const TextStyle(fontSize: 26)),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _sendReply() async {
@@ -382,11 +431,15 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
                   ],
                 ),
               ),
+              // Floating emojis from reactions and likes. Never takes a tap.
+              Positioned.fill(child: IgnorePointer(child: EmojiBurst(key: _burstKey))),
             ],
           ),
         ),
             ),
-            // Someone else's story: the "Reply..." bar (also holds the heart).
+            // Someone else's story: the quick emoji row (hidden while typing a
+            // reply) and the "Reply..." bar (which also holds the heart).
+            if (!_isMine && !_replyFocus.hasFocus) _buildReactionRow(),
             if (!_isMine) _buildReplyBar(),
           ],
         ),
