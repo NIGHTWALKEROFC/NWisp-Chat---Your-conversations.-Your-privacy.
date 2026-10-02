@@ -253,7 +253,7 @@ class _PrivacyList extends StatelessWidget {
     const rows = [
       (Icons.lock_outline_rounded, 'End-to-End Encryption', 'Even the server can\'t read your messages'),
       (Icons.timer_outlined, 'Disappearing Messages', 'Set a timer per chat'),
-      (Icons.phone_disabled_outlined, 'No Call Features', 'Only chat & stories'),
+      (Icons.call_outlined, 'Encrypted Voice Calls', 'Audio is encrypted between the two phones'),
       (Icons.phonelink_lock_outlined, 'You Control Your Sessions', 'Approve every new login'),
     ];
     return Column(
