@@ -67,6 +67,32 @@ class StoryReplyService {
     return conversationId;
   }
 
+  /// Sends an emoji reaction to a story as a short private message, e.g.
+  /// "🔥 Reacted to your story". Text only — unlike [send], it never re-sends
+  /// the photo, because a reaction is a quick tap and shouldn't cost a photo
+  /// upload each time. Throws the same exceptions as [send].
+  static Future<void> sendReaction({
+    required String ownerUid,
+    required Map<String, dynamic> story,
+    required String emoji,
+  }) async {
+    final me = FirebaseAuth.instance.currentUser;
+    if (me == null) throw NotSignedInException();
+
+    final conversations = ConversationService();
+    await conversations.ensureConversation(otherUid: ownerUid);
+    final conversationId = conversations.conversationIdFor(me.uid, ownerUid);
+    final ttlHours = await _ttlHoursFor(conversationId, me.uid);
+    final isVideo = story['mediaType'] == 'video';
+
+    await MessageRelayService.sendMessage(
+      conversationId: conversationId,
+      recipientUid: ownerUid,
+      text: '$emoji Reacted to your ${isVideo ? 'video ' : ''}story',
+      ttlHours: ttlHours,
+    );
+  }
+
   /// Same rule the chat screen uses: this chat's own auto-delete setting if
   /// it has one, otherwise my profile-wide default, otherwise 0 (never).
   static Future<int> _ttlHoursFor(String conversationId, String myUid) async {
