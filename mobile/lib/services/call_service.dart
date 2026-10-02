@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'call_log_service.dart';
+import 'call_quality_service.dart';
+import 'call_recording_watcher.dart';
 import 'call_privacy_service.dart';
 import 'incoming_call_notifier.dart';
 
@@ -213,6 +215,10 @@ class VoiceCallSession {
   final muted = ValueNotifier<bool>(false);
   final speaker = ValueNotifier<bool>(false);
   final seconds = ValueNotifier<int>(0);
+  /// Recording alerts: another app on THIS phone is recording / on the OTHER phone.
+  final iRecording = ValueNotifier<bool>(false);
+  final peerRecording = ValueNotifier<bool>(false);
+  Timer? _recDebounce;
   String endReason = '';
 
   RTCPeerConnection? _pc;
@@ -228,7 +234,24 @@ class VoiceCallSession {
   String get _mineCol => isCaller ? 'callerCandidates' : 'calleeCandidates';
   String get _theirsCol => isCaller ? 'calleeCandidates' : 'callerCandidates';
 
+  void _onLocalRecording(bool recording) {
+    _recDebounce?.cancel();
+    // Ignore blips shorter than 2 seconds (keyboards, voice typing…).
+    _recDebounce = Timer(Duration(seconds: recording ? 2 : 0), () {
+      if (_closed || iRecording.value == recording) return;
+      iRecording.value = recording;
+      ref.update({'rec.$myUid': recording}).catchError((_) {});
+    });
+  }
+
+  void _readRecording(Map<String, dynamic> data) {
+    final rec = data['rec'];
+    final theirs = rec is Map && rec[peerUid] == true;
+    if (peerRecording.value != theirs) peerRecording.value = theirs;
+  }
+
   Future<void> _setupPeer() async {
+    await CallQualityService.load();
     _local = await navigator.mediaDevices.getUserMedia({
       'audio': {'echoCancellation': true, 'noiseSuppression': true, 'autoGainControl': true},
       'video': false,
@@ -247,6 +270,7 @@ class VoiceCallSession {
         _ringTimeout?.cancel();
         if (phase.value != CallPhase.connected) {
           _everConnected = true;
+          if (CallQualityService.recordingAlerts) CallRecordingWatcher.start(_onLocalRecording);
           IncomingCallNotifier.startOngoing('On a call with $peerName');
           phase.value = CallPhase.connected;
           _ticker = Timer.periodic(const Duration(seconds: 1), (_) => seconds.value++);
@@ -292,7 +316,9 @@ class VoiceCallSession {
 
   Future<void> _startAsCaller({required String conversationId, required String myName}) async {
     await _setupPeer();
-    final offer = await _pc!.createOffer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+    final rawOffer = await _pc!.createOffer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+    // Low-data mode lowers the audio bitrate (see CallQualityService).
+    final offer = RTCSessionDescription(CallQualityService.tune(rawOffer.sdp), rawOffer.type);
     await _pc!.setLocalDescription(offer);
     await ref.set({
       'callerUid': myUid,
@@ -308,11 +334,12 @@ class VoiceCallSession {
     _docSub = ref.snapshots().listen((snap) async {
       final data = snap.data();
       if (data == null || _closed) return;
+      _readRecording(data);
       final status = data['status'] as String?;
       final answer = data['answer'] as Map<String, dynamic>?;
       if (answer != null && !_remoteSet) {
         phase.value = CallPhase.connecting;
-        await _pc!.setRemoteDescription(RTCSessionDescription(answer['sdp'] as String?, answer['type'] as String?));
+        await _pc!.setRemoteDescription(RTCSessionDescription(CallQualityService.tune(answer['sdp'] as String?), answer['type'] as String?));
         await _flushPending();
       } else if (status == 'ringing' && phase.value == CallPhase.calling) {
         phase.value = CallPhase.ringing;
@@ -339,17 +366,20 @@ class VoiceCallSession {
     }
     await _setupPeer();
     final offer = data['offer'] as Map<String, dynamic>;
-    await _pc!.setRemoteDescription(RTCSessionDescription(offer['sdp'] as String?, offer['type'] as String?));
+    await _pc!.setRemoteDescription(RTCSessionDescription(CallQualityService.tune(offer['sdp'] as String?), offer['type'] as String?));
     _listenCandidates();
     await _flushPending();
-    final answer = await _pc!.createAnswer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+    final rawAnswer = await _pc!.createAnswer({'offerToReceiveAudio': 1, 'offerToReceiveVideo': 0});
+    final answer = RTCSessionDescription(CallQualityService.tune(rawAnswer.sdp), rawAnswer.type);
     await _pc!.setLocalDescription(answer);
     await ref.update({
       'answer': {'sdp': answer.sdp, 'type': answer.type},
       'status': 'active',
     });
     _docSub = ref.snapshots().listen((s) {
-      final st = s.data()?['status'] as String?;
+      final d = s.data();
+      if (d != null) _readRecording(d);
+      final st = d?['status'] as String?;
       if (st == 'ended' || st == 'missed') _finish('Call ended', updateDoc: false);
     });
     _ringTimeout = Timer(const Duration(seconds: 30), () {
@@ -380,6 +410,8 @@ class VoiceCallSession {
     // Hanging up before anyone picked up counts as a missed call for them.
     if (updateDoc && isCaller && !_everConnected) _finalStatus = 'missed';
     if (outcome != null) _outcome = outcome;
+    _recDebounce?.cancel();
+    CallRecordingWatcher.stop();
     IncomingCallNotifier.cancelRing();
     IncomingCallNotifier.stopOngoing();
     IncomingCallNotifier.showOverLockScreen(false);
