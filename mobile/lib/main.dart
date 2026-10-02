@@ -35,6 +35,7 @@ import 'screens/login_approval_screen.dart';
 import 'screens/security/chat_pin_guard.dart';
 import 'services/notification_sound_service.dart';
 import 'screens/security_chat_screen.dart';
+import 'services/quiet_hours_service.dart';
 
 /// Used to navigate to a chat from a tapped push notification, from
 /// anywhere — including before AuthGate has even built a Navigator the
@@ -553,6 +554,9 @@ void _setUpPushNotifications() {
     // Feature: custom notification sound — keep the server's copy of which
     // channel to use in step with this phone (also covers a fresh login).
     await NotificationSoundService.instance.syncToProfile();
+    // Feature: Do Not Disturb — keeps the server's copy of the quiet hours
+    // (and this phone's time-zone offset) up to date.
+    await QuietHoursService.instance.syncToProfile();
   });
   FirebaseMessaging.instance.onTokenRefresh.listen((token) async {
     if (FirebaseAuth.instance.currentUser != null) {
