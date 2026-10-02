@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/home_sections_service.dart';
+import '../../services/nearby_service.dart';
 import '../../services/settings_service.dart';
 import 'paused_chats_screen.dart';
 
@@ -138,6 +139,19 @@ class _ChatsSettingsScreenState extends State<ChatsSettingsScreen> {
                     subtitle: const Text('Show the Community tab — find and join public communities near you or by topic. Off hides the tab — communities you joined then appear in Chats instead.'),
                     value: on,
                     onChanged: (v) => HomeSectionsService.setCommunityTab(v),
+                  ),
+                ),
+                ValueListenableBuilder<bool>(
+                  valueListenable: HomeSectionsService.nearbyTab,
+                  builder: (context, on, _) => SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.bluetooth_searching_rounded),
+                    title: const Text('Nearby chat section'),
+                    subtitle: const Text('Show the Nearby tab — chat with people close to you over Bluetooth and Wi-Fi, with no internet. Off hides the tab and stops any scanning.'),
+                    value: on,
+                    onChanged: (v) {
+                      HomeSectionsService.setNearbyTab(v);
+                      if (!v) NearbyService.instance.reset();
+                    },
                   ),
                 ),
                 ListTile(
