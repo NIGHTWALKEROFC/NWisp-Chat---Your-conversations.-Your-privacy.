@@ -108,10 +108,91 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
 
   List<LocalMessage> _messages = [];
 
+  // Feature: paged loading. While older messages are being loaded in above
+  // what's on screen, these remember where the person was so the list can be
+  // put back in the same place afterwards. Same approach as
+  // chat_detail_screen.dart.
+  bool _loadingOlder = false;
+  double? _olderAnchorExtent;
+  double? _olderAnchorPixels;
+  String? _olderAnchorMessageId;
+  double? _olderAnchorTop;
+
+  /// Finds the first message that's currently drawn (the list only builds
+  /// what's near the screen) and notes where it is, as a precise anchor.
+  void _rememberVisibleAnchor() {
+    for (final m in _messages) {
+      final ctx = _bubbleKeys[m.id]?.currentContext;
+      if (ctx == null) continue;
+      final box = ctx.findRenderObject();
+      if (box is! RenderBox || !box.attached) continue;
+      _olderAnchorMessageId = m.id;
+      _olderAnchorTop = box.localToGlobal(Offset.zero).dy;
+      return;
+    }
+    _olderAnchorMessageId = null;
+    _olderAnchorTop = null;
+  }
+
+  Future<void> _loadOlderMessages() async {
+    if (_loadingOlder || !_scrollController.hasClients) return;
+    _loadingOlder = true;
+    final pos = _scrollController.position;
+    _olderAnchorExtent = pos.maxScrollExtent;
+    _olderAnchorPixels = pos.pixels;
+    _rememberVisibleAnchor();
+    final loaded = await LocalMessageStore.loadOlder(widget.groupId);
+    if (!loaded) {
+      _loadingOlder = false;
+      _olderAnchorExtent = null;
+      return;
+    }
+    // The store has handed the longer list to the screen; wait for the frame
+    // that draws it, then put the person back where they were.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    _restoreAfterOlderLoaded();
+  }
+
+  /// Two passes — the list's total height is only an estimate, so first an
+  /// approximate jump (which brings the anchor message back into view), then
+  /// a correction measured against that exact message.
+  void _restoreAfterOlderLoaded() {
+    final extentBefore = _olderAnchorExtent;
+    final pixelsBefore = _olderAnchorPixels;
+    final anchorId = _olderAnchorMessageId;
+    final anchorTop = _olderAnchorTop;
+    _olderAnchorExtent = null;
+    _olderAnchorPixels = null;
+    _olderAnchorMessageId = null;
+    _olderAnchorTop = null;
+    if (extentBefore == null || pixelsBefore == null || !_scrollController.hasClients) {
+      _loadingOlder = false;
+      return;
+    }
+    final pos = _scrollController.position;
+    _scrollController.jumpTo((pixelsBefore + (pos.maxScrollExtent - extentBefore)).clamp(0.0, pos.maxScrollExtent).toDouble());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadingOlder = false;
+      if (!mounted || !_scrollController.hasClients || anchorId == null || anchorTop == null) return;
+      final ctx = _bubbleKeys[anchorId]?.currentContext;
+      final box = ctx?.findRenderObject();
+      if (box is! RenderBox || !box.attached) return;
+      final drift = box.localToGlobal(Offset.zero).dy - anchorTop;
+      if (drift.abs() < 1) return;
+      final p = _scrollController.position;
+      _scrollController.jumpTo((p.pixels + drift).clamp(0.0, p.maxScrollExtent).toDouble());
+    });
+  }
+
   void _onScrollPositionChanged() {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     _stickToBottom = (pos.maxScrollExtent - pos.pixels) < 400;
+    // Close to the top and there are older messages waiting: load a page.
+    if (pos.pixels < 400 && !_loadingOlder && LocalMessageStore.hasMoreOlder(widget.groupId)) {
+      _loadOlderMessages();
+    }
   }
 
   /// Rebuilds the caches above from the current [_messages] — called once
@@ -190,15 +271,53 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
   final Set<String> _selectedIds = {};
   final Map<String, GlobalKey> _bubbleKeys = {};
   GlobalKey _bubbleKeyFor(String id) => _bubbleKeys.putIfAbsent(id, () => GlobalKey());
-  void _jumpToMessage(String id) {
-    final ctx = _bubbleKeys[id]?.currentContext;
-    if (ctx != null) {
-      Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 300), alignment: 0.5);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Scroll to find this message — it's outside the loaded view")),
-      );
+
+  /// Scrolls to a message. If it's older than what's loaded (the chat loads in
+  /// pages — see LocalMessageStore.startPaging) it's loaded first. The list
+  /// only draws what's near the screen, so a message that is loaded but far
+  /// away is reached in two steps: an approximate scroll to bring it close,
+  /// then the exact one.
+  Future<void> _jumpToMessage(String id) async {
+    final messenger = ScaffoldMessenger.of(context);
+    void exactScroll() {
+      final ctx = _bubbleKeys[id]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 300), alignment: 0.5);
+      }
     }
+
+    if (_bubbleKeys[id]?.currentContext != null) {
+      exactScroll();
+      return;
+    }
+    final exists = await LocalMessageStore.ensureLoaded(widget.groupId, id);
+    if (!mounted) return;
+    if (!exists) {
+      messenger.showSnackBar(const SnackBar(content: Text('That message is no longer on this phone.')));
+      return;
+    }
+    // Let the list rebuild with the (possibly larger) loaded window.
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    if (!mounted || !_scrollController.hasClients) return;
+    if (_bubbleKeys[id]?.currentContext == null) {
+      final index = _messages.indexWhere((m) => m.id == id);
+      if (index < 0) {
+        messenger.showSnackBar(const SnackBar(content: Text("Couldn't find that message in this chat.")));
+        return;
+      }
+      final pos = _scrollController.position;
+      final fraction = _messages.length <= 1 ? 1.0 : index / (_messages.length - 1);
+      _scrollController.jumpTo((pos.maxScrollExtent * fraction).clamp(0.0, pos.maxScrollExtent).toDouble());
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    }
+    if (!mounted) return;
+    if (_bubbleKeys[id]?.currentContext == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Scroll a little to find this message.')));
+      return;
+    }
+    exactScroll();
   }
 
   /// Feature: date separators — same logic as chat_detail_screen.dart's
@@ -244,6 +363,10 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
   void initState() {
     super.initState();
     ScreenshotGuardService.acquire();
+    // Feature: paged loading — only the newest messages are read from disk
+    // (see LocalMessageStore.startPaging); older ones load as you scroll up.
+    // Must come before watchConversation below.
+    LocalMessageStore.startPaging(widget.groupId);
     // Feature: "jump to unread" button. Fired first — best-effort race
     // against markConversationRead below, same reasoning as
     // chat_detail_screen.dart's own version of this.
@@ -326,6 +449,7 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
   @override
   void dispose() {
     _scrollController.removeListener(_onScrollPositionChanged);
+    LocalMessageStore.stopPaging(widget.groupId);
     ScreenshotGuardService.release();
     GroupService.instance.setTyping(widget.groupId, false);
     // Feature: "clear on exit" ephemeral view mode, group version. Fires
