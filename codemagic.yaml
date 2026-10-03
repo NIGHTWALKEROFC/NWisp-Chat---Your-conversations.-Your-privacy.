@@ -16,17 +16,23 @@ workflows:
         # test key, so CAPTCHA is NOT actually protecting anything yet.
         TURNSTILE_SITE_KEY: "0x4AAAAAAFCxWd56M8J50PRe"
         # Relay (TURN) server for "Settings > Calls > Protect IP address in calls".
-        # Leave empty and that switch shows as "not available". Fill all three in
-        # (see the setup notes) to turn the feature on. TURN_URL can list several
-        # servers separated by commas, e.g. "turn:host:3478,turns:host:443".
-        # These get baked into the APK either way (the app needs them to place a
-        # call), so they're only as private as the APK itself — use credentials
-        # made just for this app. If your repo is public and you'd rather not keep
-        # them in this file, store them as secure variables in a Codemagic
-        # variable group and reference it with "groups:" under "environment:".
-        TURN_URL: ""
-        TURN_USER: ""
-        TURN_PASS: ""
+        #
+        # Codemagic does NOT accept empty values here ("" gives the validation
+        # error "ensure this value has at least 1 characters"), so while you have
+        # no relay server these three lines stay commented out. The build below
+        # still works: an undefined variable is simply empty, and the app then
+        # shows that switch as "not available".
+        #
+        # To turn the feature on, remove the "#" and put in REAL values.
+        # TURN_URL can list several servers separated by commas, e.g.
+        # "turn:host:3478,turns:host:443". These get baked into the APK (the app
+        # needs them to place a call), so use credentials made just for this app.
+        # If your repo is public and you'd rather not keep them in this file,
+        # add them in Codemagic (app > Environment variables, or a variable
+        # group referenced with "groups:" under "environment:") instead.
+        # TURN_URL: "turn:your-relay-host:3478"
+        # TURN_USER: "your-username"
+        # TURN_PASS: "your-password"
     scripts:
       - name: Get Flutter packages
         script: |
