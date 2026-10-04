@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../services/auth_service.dart';
@@ -16,6 +17,10 @@ import '../security/chat_pin_guard.dart';
 /// Auth id, not the username, email, or phone number) behind a small
 /// fixed prefix so a scan can be told apart from an arbitrary QR code
 /// someone points the camera at by accident.
+///
+/// Feature: the Scan tab is now a WhatsApp-style scanner — a dimmed camera
+/// with a square scanning box, corner marks, a moving scan line, flashlight,
+/// camera flip and "scan from gallery".
 class QrCodeScreen extends StatefulWidget {
   const QrCodeScreen({super.key});
 
@@ -30,29 +35,35 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
   late final TabController _tabController = TabController(length: 2, vsync: this);
   MobileScannerController? _scannerController;
   bool _handlingScan = false;
+  String _myName = '';
 
   @override
   void initState() {
     super.initState();
+    _loadMyName();
     _tabController.addListener(() {
-      // Only run the camera while the Scan tab is actually visible —
-      // no reason to keep it warm (and the flashlight/lens active) while
-      // looking at your own code.
+      // Only run the camera while the Scan tab is actually visible.
       if (_tabController.indexIsChanging) return;
-      // BUGFIX: this used to create/dispose _scannerController without
-      // calling setState — the controller was created, but the widget
-      // tree never rebuilt to swap the placeholder SizedBox.shrink() out
-      // for the actual MobileScanner, so the Scan tab stayed permanently
-      // blank with no camera preview.
       setState(() {
         if (_tabController.index == 1) {
-          _scannerController ??= MobileScannerController();
+          _scannerController ??= MobileScannerController(
+            formats: const [BarcodeFormat.qrCode],
+            detectionSpeed: DetectionSpeed.noDuplicates,
+          );
         } else {
           _scannerController?.dispose();
           _scannerController = null;
         }
       });
     });
+  }
+
+  Future<void> _loadMyName() async {
+    try {
+      final doc = await AuthService().currentUserProfile();
+      final name = (doc.data()?['username'] as String?) ?? '';
+      if (mounted) setState(() => _myName = name);
+    } catch (_) {}
   }
 
   @override
@@ -76,14 +87,40 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
       if (!mounted) return;
       if (user == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("That code doesn't match a real account.")),
+          SnackBar(
+            content: Text(
+              scannedUid == FirebaseAuth.instance.currentUser?.uid
+                  ? "That's your own code."
+                  : "That code doesn't match a real account.",
+            ),
+          ),
         );
         return;
       }
-      final username = (user['username'] as String?) ?? 'Unknown';
+      var username = ((user['username'] as String?) ?? '').trim();
+      if (username.isEmpty) username = 'Unknown';
       await _showResultSheet(scannedUid, username);
     } finally {
       _handlingScan = false;
+    }
+  }
+
+  Future<void> _scanFromGallery() async {
+    final controller = _scannerController;
+    if (controller == null) return;
+    try {
+      final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (picked == null) return;
+      final capture = await controller.analyzeImage(picked.path);
+      if (!mounted) return;
+      if (capture == null || capture.barcodes.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No QR code found in that picture.')));
+        return;
+      }
+      await _handleDetection(capture);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't read that picture.")));
     }
   }
 
@@ -134,7 +171,11 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
                         try {
                           final myProfile = await AuthService().currentUserProfile();
                           final myUsername = (myProfile.data()?['username'] as String?) ?? '';
-                          await _contactService.sendRequest(toUid: uid, toUsername: username, myUsername: myUsername);
+                          await _contactService.sendRequest(
+                            toUid: uid,
+                            toUsername: username == 'Unknown' ? '' : username,
+                            myUsername: myUsername,
+                          );
                           if (sheetContext.mounted) Navigator.pop(sheetContext);
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Contact request sent to $username')));
@@ -158,6 +199,85 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
     );
   }
 
+  Widget _scanTab() {
+    final controller = _scannerController;
+    if (controller == null) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final side = (constraints.biggest.shortestSide * 0.68).clamp(180.0, 320.0);
+        final box = Rect.fromCenter(
+          center: Offset(constraints.maxWidth / 2, constraints.maxHeight * 0.42),
+          width: side,
+          height: side,
+        );
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            MobileScanner(
+              controller: controller,
+              scanWindow: box,
+              onDetect: _handleDetection,
+              errorBuilder: (context, error, child) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Text(
+                    'The camera is not available. Allow camera access for NWisp in your phone settings, then try again.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                ),
+              ),
+            ),
+            // Dimmed area around the scanning box.
+            IgnorePointer(child: CustomPaint(painter: _ScanOverlayPainter(box))),
+            // Moving scan line.
+            Positioned.fromRect(
+              rect: box,
+              child: const IgnorePointer(child: _ScanLine()),
+            ),
+            Positioned(
+              left: 24,
+              right: 24,
+              top: box.bottom + 20,
+              child: const Text(
+                "Point your camera at someone's NWisp QR code",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontSize: 14.5, fontWeight: FontWeight.w600),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 28,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _RoundAction(
+                    icon: Icons.flashlight_on_rounded,
+                    label: 'Flash',
+                    onTap: () => controller.toggleTorch(),
+                  ),
+                  const SizedBox(width: 28),
+                  _RoundAction(
+                    icon: Icons.photo_library_outlined,
+                    label: 'Gallery',
+                    onTap: _scanFromGallery,
+                  ),
+                  const SizedBox(width: 28),
+                  _RoundAction(
+                    icon: Icons.cameraswitch_outlined,
+                    label: 'Flip',
+                    onTap: () => controller.switchCamera(),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -169,6 +289,7 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
       ),
       body: TabBarView(
         controller: _tabController,
+        physics: const NeverScrollableScrollPhysics(),
         children: [
           Center(
             child: Padding(
@@ -187,7 +308,11 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
                             size: 220,
                           ),
                   ),
-                  const SizedBox(height: 20),
+                  if (_myName.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Text(_myName, style: Theme.of(context).textTheme.titleLarge),
+                  ],
+                  const SizedBox(height: 14),
                   Text(
                     'Let someone scan this to add you as a contact — it only encodes your account id, '
                     'not your username, email, or phone number.',
@@ -198,10 +323,129 @@ class _QrCodeScreenState extends State<QrCodeScreen> with SingleTickerProviderSt
               ),
             ),
           ),
-          _scannerController == null
-              ? const SizedBox.shrink()
-              : MobileScanner(controller: _scannerController, onDetect: _handleDetection),
+          Container(color: Colors.black, child: _scanTab()),
         ],
+      ),
+    );
+  }
+}
+
+class _RoundAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _RoundAction({required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Material(
+          color: Colors.white24,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: Padding(padding: const EdgeInsets.all(14), child: Icon(icon, color: Colors.white)),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+      ],
+    );
+  }
+}
+
+/// Dark layer with a clear rounded square (the scanning box) and bright
+/// corner marks.
+class _ScanOverlayPainter extends CustomPainter {
+  final Rect box;
+  _ScanOverlayPainter(this.box);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rrect = RRect.fromRectAndRadius(box, const Radius.circular(18));
+    final dim = Path()
+      ..addRect(Offset.zero & size)
+      ..addRRect(rrect)
+      ..fillType = PathFillType.evenOdd;
+    canvas.drawPath(dim, Paint()..color = Colors.black.withValues(alpha: 0.62));
+
+    final corner = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.5
+      ..strokeCap = StrokeCap.round;
+    const len = 30.0;
+    const r = 18.0;
+    final l = box.left, t = box.top, rt = box.right, b = box.bottom;
+    final path = Path()
+      // top-left
+      ..moveTo(l, t + len)
+      ..lineTo(l, t + r)
+      ..arcToPoint(Offset(l + r, t), radius: const Radius.circular(r))
+      ..lineTo(l + len, t)
+      // top-right
+      ..moveTo(rt - len, t)
+      ..lineTo(rt - r, t)
+      ..arcToPoint(Offset(rt, t + r), radius: const Radius.circular(r))
+      ..lineTo(rt, t + len)
+      // bottom-right
+      ..moveTo(rt, b - len)
+      ..lineTo(rt, b - r)
+      ..arcToPoint(Offset(rt - r, b), radius: const Radius.circular(r))
+      ..lineTo(rt - len, b)
+      // bottom-left
+      ..moveTo(l + len, b)
+      ..lineTo(l + r, b)
+      ..arcToPoint(Offset(l, b - r), radius: const Radius.circular(r))
+      ..lineTo(l, b - len);
+    canvas.drawPath(path, corner);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScanOverlayPainter old) => old.box != box;
+}
+
+class _ScanLine extends StatefulWidget {
+  const _ScanLine();
+
+  @override
+  State<_ScanLine> createState() => _ScanLineState();
+}
+
+class _ScanLineState extends State<_ScanLine> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) => AnimatedBuilder(
+        animation: _c,
+        builder: (context, _) => Stack(
+          children: [
+            Positioned(
+              left: 14,
+              right: 14,
+              top: 14 + (constraints.maxHeight - 28) * _c.value,
+              child: Container(
+                height: 2.5,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(2),
+                  boxShadow: [BoxShadow(color: Colors.white.withValues(alpha: 0.5), blurRadius: 8)],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
