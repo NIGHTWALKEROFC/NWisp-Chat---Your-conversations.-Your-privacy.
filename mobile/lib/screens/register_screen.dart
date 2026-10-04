@@ -39,7 +39,10 @@ const _stepUsername = 0;
 const _stepEmail = 1;
 const _stepVerify = 2;
 const _stepPassword = 3;
-const _stepReview = 4;
+// Feature: Telegram-style permission — may other NWisp users see this
+// account in their People suggestions? Can be changed later in Settings.
+const _stepSuggestions = 4;
+const _stepReview = 5;
 
 class _RegisterScreenState extends State<RegisterScreen> {
   final _authService = AuthService();
@@ -49,7 +52,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _confirmController = TextEditingController();
 
   int _step = _stepUsername;
-  static const _totalSteps = 5;
+  static const _totalSteps = 6;
 
   _UsernameCheck _usernameCheck = _UsernameCheck.idle;
   Timer? _usernameDebounce;
@@ -71,6 +74,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String? _otpError;
   int _resendCooldown = 0;
   Timer? _resendTimer;
+
+  // Feature: People suggestions permission. Off unless the person allows it.
+  bool _allowSuggestions = false;
 
   bool _agreedPrivacy = false;
   bool _agreedTerms = false;
@@ -398,9 +404,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
         email: _emailController.text.trim(),
         password: _passwordController.text,
         username: _usernameController.text.trim().toLowerCase(),
+        discoverable: _allowSuggestions,
       );
-      // On success, AuthGate's authStateChanges listener takes over and
-      // navigates to the home screen automatically.
+      // BUGFIX: AuthGate switches to the home screen underneath this page,
+      // but this page was pushed ON TOP of it, so it stayed visible — and
+      // tapping "Create account" again said the email was already taken.
+      // Close it so the home screen is what you see.
+      if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
     } catch (e) {
       setState(() => _error = _friendlyError(e));
     } finally {
@@ -410,7 +420,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   String _friendlyError(Object e) {
     final msg = e.toString();
-    if (msg.contains('email-already-in-use')) return 'That email is already registered.';
+    if (msg.contains('email-already-in-use')) {
+      return 'That email is already registered. If you just created it, you are already signed in — go back.';
+    }
     if (msg.contains('weak-password')) return 'Password is too weak (min 6 characters).';
     if (msg.contains('Username already taken')) return 'That username is taken — try another.';
     if (msg.contains('invalid-email')) return 'That email address looks invalid.';
@@ -575,6 +587,40 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
           ],
         );
+      case _stepSuggestions:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Icon(Icons.people_alt_rounded, size: 46, color: scheme.primary),
+            const SizedBox(height: 14),
+            Text('Let people find you?', textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Text(
+              'Allow NWisp to show your username in the "People on NWisp" suggestions, so other users can discover you '
+              'and send you a request. Only your username and photo are shown — never your email.\n\n'
+              'You can change this any time in Settings → Privacy.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: scheme.onSurfaceVariant, height: 1.4),
+            ),
+            const SizedBox(height: 20),
+            RadioListTile<bool>(
+              contentPadding: EdgeInsets.zero,
+              value: true,
+              groupValue: _allowSuggestions,
+              onChanged: (v) => setState(() => _allowSuggestions = v ?? false),
+              title: const Text('Allow', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Show me in other people\'s suggestions'),
+            ),
+            RadioListTile<bool>(
+              contentPadding: EdgeInsets.zero,
+              value: false,
+              groupValue: _allowSuggestions,
+              onChanged: (v) => setState(() => _allowSuggestions = v ?? false),
+              title: const Text('Not now', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Keep me hidden — people can only add me by username or QR code'),
+            ),
+          ],
+        );
       case _stepReview:
       default:
         return Column(
@@ -584,6 +630,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             const SizedBox(height: 16),
             _ReviewRow(label: 'Username', value: _usernameController.text.trim()),
             _ReviewRow(label: 'Email', value: _emailController.text.trim()),
+            _ReviewRow(label: 'Suggestions', value: _allowSuggestions ? 'Visible to other users' : 'Hidden'),
             Row(
               children: [
                 Icon(Icons.verified, size: 15, color: Colors.green.shade600),
