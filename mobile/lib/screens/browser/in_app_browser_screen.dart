@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../../services/browser_data_service.dart';
+import '../../services/browser_download_service.dart';
 import '../../services/browser_settings_service.dart';
 import 'browser_library_screen.dart';
 import 'browser_settings_screen.dart';
@@ -101,6 +102,79 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
 })();
 ''';
 
+  // Feature: HIGH privacy mode — runs on every page before the page's own
+  // scripts get far. Makes this phone look like a common, generic one and
+  // closes the usual leaks. Best effort: a hardened system WebView, not Tor.
+  static const _privacyScript = r'''
+(function(){
+  if (window.__nwPriv) return; window.__nwPriv = true;
+  function def(o,k,v){ try{ Object.defineProperty(o,k,{get:function(){return v;},configurable:true}); }catch(e){} }
+  def(navigator,'hardwareConcurrency',4);
+  def(navigator,'deviceMemory',4);
+  def(navigator,'languages',['en-US','en']);
+  def(navigator,'language','en-US');
+  def(navigator,'plugins',[]);
+  def(navigator,'webdriver',false);
+  def(navigator,'maxTouchPoints',5);
+  try{ delete navigator.getBattery; }catch(e){}
+  try{ navigator.getBattery = undefined; }catch(e){}
+  try{ if(navigator.connection){ def(navigator,'connection',undefined); } }catch(e){}
+  // WebRTC can reveal your real IP — remove it from pages.
+  ['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel'].forEach(function(n){ try{ window[n]=undefined; }catch(e){} });
+  // Camera / microphone / location / sensors are never available to sites.
+  try{ if(navigator.mediaDevices){ navigator.mediaDevices.enumerateDevices=function(){return Promise.resolve([]);}; navigator.mediaDevices.getUserMedia=function(){return Promise.reject(new DOMException('Denied','NotAllowedError'));}; } }catch(e){}
+  try{ if(navigator.geolocation){ var deny=function(a,b){ if(b) b({code:1,message:'denied'}); }; navigator.geolocation.getCurrentPosition=deny; navigator.geolocation.watchPosition=function(a,b){ deny(a,b); return 0; }; } }catch(e){}
+  // Round the screen size so it is not a unique number.
+  def(screen,'width',Math.round(screen.width/100)*100);
+  def(screen,'height',Math.round(screen.height/100)*100);
+  def(screen,'availWidth',Math.round(screen.availWidth/100)*100);
+  def(screen,'availHeight',Math.round(screen.availHeight/100)*100);
+  // Canvas fingerprinting: add a tiny random change to what a page reads back.
+  try{
+    var gid = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function(){
+      var d = gid.apply(this, arguments);
+      for(var i=0;i<d.data.length;i+=97){ d.data[i] = (d.data[i] + (Math.random()*2|0)) & 255; }
+      return d;
+    };
+    var tdu = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(){
+      try{ var c=this.getContext('2d'); if(c && this.width>0 && this.height>0){ var px=c.getImageData(0,0,1,1); c.putImageData(px,0,0); } }catch(e){}
+      return tdu.apply(this, arguments);
+    };
+  }catch(e){}
+  // WebGL: hide the real graphics card name.
+  try{
+    [WebGLRenderingContext, window.WebGL2RenderingContext].forEach(function(C){
+      if(!C) return;
+      var gp = C.prototype.getParameter;
+      C.prototype.getParameter = function(p){
+        if(p===37445) return 'Google Inc.';
+        if(p===37446) return 'ANGLE (Generic GPU)';
+        return gp.apply(this, arguments);
+      };
+    });
+  }catch(e){}
+  // No Referer to other sites.
+  try{ var m=document.createElement('meta'); m.name='referrer'; m.content='no-referrer'; (document.head||document.documentElement).appendChild(m); }catch(e){}
+})();
+''';
+
+  static final _trackingParam = RegExp(r'^(utm_[a-z_]+|fbclid|gclid|dclid|msclkid|yclid|mc_eid|mc_cid|igshid|_ga|_gl|ref_src|spm|vero_id|oly_enc_id|oly_anon_id)$', caseSensitive: false);
+
+  /// Returns [uri] without tracking query parts, or the same [uri] if clean.
+  Uri _cleanLink(Uri uri) {
+    if (!_settings.stripTrackingParams.value || uri.queryParameters.isEmpty) return uri;
+    final kept = Map<String, String>.from(uri.queryParameters)..removeWhere((k, _) => _trackingParam.hasMatch(k));
+    if (kept.length == uri.queryParameters.length) return uri;
+    return uri.replace(queryParameters: kept.isEmpty ? null : kept);
+  }
+
+  void _injectPrivacy(_BTab tab) {
+    if (!_settings.highPrivacy.value) return;
+    tab.controller.runJavaScript(_privacyScript);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -146,12 +220,14 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
           }
         });
         if (_settings.blockTrackers.value) _injectBlocker(tab);
+        _injectPrivacy(tab);
       },
       onProgress: (p) {
         if (mounted) setState(() => tab.progress = p);
       },
       onPageFinished: (url) async {
         if (_settings.blockTrackers.value) _injectBlocker(tab);
+        _injectPrivacy(tab);
         final title = await controller.getTitle();
         final back = await controller.canGoBack();
         final fwd = await controller.canGoForward();
@@ -224,6 +300,14 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
       });
       return NavigationDecision.prevent;
     }
+    // Feature: clean tracking parts out of page links before opening them.
+    if (request.isMainFrame) {
+      final cleaned = _cleanLink(uri);
+      if (cleaned.toString() != uri.toString()) {
+        _load(tab, cleaned);
+        return NavigationDecision.prevent;
+      }
+    }
     return NavigationDecision.navigate;
   }
 
@@ -270,7 +354,7 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
 
   void _go(String input) {
     if (input.trim().isEmpty || _tabs.isEmpty) return;
-    var uri = _resolve(input);
+    var uri = _cleanLink(_resolve(input));
     if (uri.scheme == 'http' && _settings.httpsOnly.value) uri = uri.replace(scheme: 'https');
     _load(_tab, uri);
   }
@@ -458,6 +542,148 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
     }
   }
 
+  // ------------------------------------------------------------- downloads
+  Future<void> _downloadFromPage() async {
+    if (_tabs.isEmpty) return;
+    final pageUrl = _tab.url;
+    final dl = BrowserDownloadService.instance;
+    if (BrowserDownloadService.isRestrictedSite(pageUrl)) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.info_outline_rounded, size: 34),
+          title: const Text("Can't download from this site"),
+          content: const Text(
+            'YouTube, Instagram, Netflix and similar sites serve their videos as protected streams and their rules '
+            "don't allow saving them, so NWisp doesn't download from them.\n\n"
+            'On other sites, NWisp can save videos, audio, pictures and files that the page offers directly.',
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ),
+      );
+      return;
+    }
+    List<FoundMedia> found = [];
+    try {
+      final raw = await _tab.controller.runJavaScriptReturningResult(BrowserDownloadService.scanScript);
+      found = dl.parse(raw);
+    } catch (_) {}
+    if (!mounted) return;
+    if (found.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No downloadable video, audio, picture or file found on this page. If a video is still loading, play it first and try again.'),
+      ));
+      return;
+    }
+    final chosen = await showModalBottomSheet<FoundMedia>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Align(alignment: Alignment.centerLeft, child: Text('Download', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800))),
+              ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final f in found)
+                      ListTile(
+                        leading: Icon(f.kind == 'video'
+                            ? Icons.videocam_outlined
+                            : f.kind == 'audio'
+                                ? Icons.audiotrack_outlined
+                                : f.kind == 'image'
+                                    ? Icons.image_outlined
+                                    : Icons.insert_drive_file_outlined),
+                        title: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: FutureBuilder<int?>(
+                          future: dl.sizeOf(f.url),
+                          builder: (_, s) {
+                            final size = s.data;
+                            final sizeText = size == null ? '' : ' · ${_fmtBytes(size)}';
+                            final q = f.label.isEmpty ? f.kind : f.label;
+                            return Text('$q$sizeText');
+                          },
+                        ),
+                        trailing: const Icon(Icons.download_rounded),
+                        onTap: () => Navigator.pop(ctx, f),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await _runDownload(chosen);
+  }
+
+  String _fmtBytes(int b) {
+    if (b < 1024) return '$b B';
+    if (b < 1024 * 1024) return '${(b / 1024).toStringAsFixed(0)} KB';
+    if (b < 1024 * 1024 * 1024) return '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(b / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  Future<void> _runDownload(FoundMedia item) async {
+    final progress = ValueNotifier<double?>(0);
+    var cancelled = false;
+    final messenger = ScaffoldMessenger.of(context);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Downloading…'),
+        content: ValueListenableBuilder<double?>(
+          valueListenable: progress,
+          builder: (_, v, __) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 14),
+              LinearProgressIndicator(value: v),
+              if (v != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text('${(v * 100).toStringAsFixed(0)}%')),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              cancelled = true;
+              Navigator.pop(ctx);
+            },
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    try {
+      final where = await BrowserDownloadService.instance.download(
+        item,
+        onProgress: (v) => progress.value = v,
+        cancelled: () => cancelled,
+      );
+      if (!mounted) return;
+      if (!cancelled && Navigator.of(context).canPop()) Navigator.of(context).pop();
+      messenger.showSnackBar(SnackBar(content: Text(where.startsWith('/') ? 'Saved: $where' : where)));
+    } catch (e) {
+      if (!mounted) return;
+      if (!cancelled && Navigator.of(context).canPop()) Navigator.of(context).pop();
+      if (!cancelled) {
+        messenger.showSnackBar(SnackBar(content: Text("Couldn't download: ${e.toString().replaceFirst('Exception: ', '')}")));
+      }
+    }
+  }
+
   void _menu() {
     final onPage = !_tab.start && _tab.url.isNotEmpty;
     showModalBottomSheet<void>(
@@ -500,6 +726,10 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
                 ListTile(leading: const Icon(Icons.share_outlined), title: const Text('Share link'), onTap: () {
                   Navigator.pop(ctx);
                   Share.share(_tab.url);
+                }),
+                ListTile(leading: const Icon(Icons.download_rounded), title: const Text('Download from this page'), onTap: () {
+                  Navigator.pop(ctx);
+                  _downloadFromPage();
                 }),
                 ListTile(leading: const Icon(Icons.open_in_browser), title: const Text('Open in default browser'), onTap: () {
                   Navigator.pop(ctx);
