@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -233,6 +234,9 @@ class AuthService {
     required String email,
     required String password,
     required String username,
+    // Feature: "Suggest me to other people" — asked during sign-up
+    // (Telegram-style permission). false = not listed in anyone's suggestions.
+    bool discoverable = false,
   }) async {
     // Usernames are lowercase-only from here on (Instagram-style — the
     // signup screen already forces lowercase as you type, this is just a
@@ -270,18 +274,24 @@ class AuthService {
     DeviceSessionService.instance.isClaimPending = true;
     try {
       final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-      // SessionService both prepares this device's Signal Protocol identity
-      // AND — if a different account was last active on this device — wipes
-      // that previous account's local state first (old messages, old keys)
-      // so it's never visible to this new one.
-      await SessionService.prepareForUser(cred.user!.uid);
 
+      // BUGFIX (the \"new account has no username / can't receive messages\"
+      // bug): the profile documents are now written FIRST. Before, the app
+      // first prepared this device's encryption keys (SessionService), and
+      // that step tried to "migrate" a profile that did not exist yet and
+      // crashed — so the username, the private profile and the Supabase
+      // role were never saved, while Firebase still counted the person as
+      // signed in. Writing the profile first means everything that follows
+      // always finds the documents it expects.
       final batch = _db.batch();
       batch.set(_db.collection('users').doc(cred.user!.uid), {
         'username': lowerUsername,
         'usernameLower': lowerUsername,
         'photoUrl': null,
         'createdAt': FieldValue.serverTimestamp(),
+        // Feature: people suggestions (public flag, read by Discover).
+        'discoverable': discoverable,
+        if (discoverable) 'discoverableAt': FieldValue.serverTimestamp(),
       });
       batch.set(_privateProfileRef(cred.user!.uid), {
         'emailVisible': false,
@@ -321,6 +331,18 @@ class AuthService {
           // original error is still the right call either way.
         }
         throw Exception('That username was just taken by someone else — please choose another and try again.');
+      }
+
+      // SessionService both prepares this device's Signal Protocol identity
+      // AND — if a different account was last active on this device — wipes
+      // that previous account's local state first (old messages, old keys)
+      // so it's never visible to this new one. Not fatal if it fails here:
+      // the profile already exists, and main.dart's sign-in listener tries
+      // again (a failed attempt is no longer cached — see SessionService).
+      try {
+        await SessionService.prepareForUser(cred.user!.uid);
+      } catch (e) {
+        debugPrint('registerWithEmail: prepareForUser failed, will retry later: $e');
       }
 
       // Feature: Instagram-style signup — by this point the person already
@@ -645,7 +667,7 @@ class AuthService {
   Future<void> updatePhotoUrl(String photoUrl) async {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
-    await _db.collection('users').doc(uid).update({'photoUrl': photoUrl});
+    await _db.collection('users').doc(uid).set({'photoUrl': photoUrl}, SetOptions(merge: true));
   }
 
   /// Feature: "Who can add me" — controls whether OTHER people can put you
@@ -669,7 +691,7 @@ class AuthService {
     final uid = currentUserId;
     if (uid == null) throw Exception('No signed-in user');
     assert(['contacts', 'requests', 'nobody'].contains(value));
-    await _db.collection('users').doc(uid).update({'whoCanInviteMe': value});
+    await _db.collection('users').doc(uid).set({'whoCanInviteMe': value}, SetOptions(merge: true));
   }
 
   Future<String> whoCanInviteMeFor(String uid) async {
@@ -695,11 +717,123 @@ class AuthService {
       batch.delete(_db.collection('usernames').doc(oldLower));
     }
     batch.set(_db.collection('usernames').doc(newLower), {'uid': uid});
-    batch.update(_db.collection('users').doc(uid), {
-      'username': newUsername,
-      'usernameLower': newLower,
-    });
+    // BUGFIX: was batch.update(...), which silently failed (\"doesn't apply\")
+    // for an account whose public profile document was missing or half-empty.
+    batch.set(
+      _db.collection('users').doc(uid),
+      {'username': newUsername, 'usernameLower': newLower},
+      SetOptions(merge: true),
+    );
     await batch.commit();
+  }
+
+  // ---------------------------------------------------------------------
+  // Profile repair + account readiness (fixes accounts that were created
+  // while the sign-up bug was present — see registerWithEmail).
+  // ---------------------------------------------------------------------
+
+  /// True when this account's public profile has a usable username.
+  Future<bool> hasUsername() async {
+    final uid = currentUserId;
+    if (uid == null) return true;
+    try {
+      final doc = await _db.collection('users').doc(uid).get();
+      final data = doc.data();
+      final name = (data?['username'] as String?)?.trim() ?? '';
+      final lower = (data?['usernameLower'] as String?)?.trim() ?? '';
+      return doc.exists && name.isNotEmpty && lower.isNotEmpty;
+    } catch (_) {
+      // Offline etc. — never block the app on a failed check.
+      return true;
+    }
+  }
+
+  /// Sets the username of an account that has none (the repair screen).
+  /// Reserves it in `usernames/` and writes the public profile with a
+  /// merge-set, so it works whether the document is missing or half-empty.
+  Future<void> claimUsername(String username) async {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    final lower = username.trim().toLowerCase();
+    if (lower.length < 3 || !RegExp(r'^[a-z0-9_]+$').hasMatch(lower)) {
+      throw Exception('At least 3 characters — lowercase letters, numbers and underscores only.');
+    }
+    if (isBotStyleUsername(lower)) throw Exception(botNameMessage);
+
+    final reservation = await _db.collection('usernames').doc(lower).get();
+    final ownedByMe = reservation.exists && reservation.data()?['uid'] == uid;
+    if (reservation.exists && !ownedByMe) throw Exception('Username already taken');
+
+    final batch = _db.batch();
+    if (!reservation.exists) {
+      batch.set(_db.collection('usernames').doc(lower), {'uid': uid});
+    }
+    batch.set(
+      _db.collection('users').doc(uid),
+      {
+        'username': lower,
+        'usernameLower': lower,
+        'createdAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+    try {
+      await batch.commit();
+    } catch (_) {
+      throw Exception('Could not save that username — it may have just been taken. Try another.');
+    }
+  }
+
+  static String? _readyForUid;
+
+  /// Runs once per app start for the signed-in account (main.dart). Quietly
+  /// repairs what an old failed sign-up left behind:
+  ///  * the Supabase `authenticated` role (without it the message relay
+  ///    refuses to deliver, which looked like \"I can send but never receive\"),
+  ///  * contacts saved with an empty username (they showed as \"?\"/Unknown).
+  /// Never throws.
+  Future<void> ensureAccountReady() async {
+    final uid = currentUserId;
+    if (uid == null || _readyForUid == uid) return;
+    _readyForUid = uid;
+    await _grantSupabaseAuthenticatedRole();
+    try {
+      await _healBlankContactNames(uid);
+    } catch (e) {
+      debugPrint('ensureAccountReady: contact names: $e');
+    }
+  }
+
+  Future<void> _healBlankContactNames(String uid) async {
+    final contacts = await _db.collection('users').doc(uid).collection('contacts').get();
+    for (final doc in contacts.docs) {
+      final name = (doc.data()['username'] as String?)?.trim() ?? '';
+      if (name.isNotEmpty) continue;
+      final peer = await _db.collection('users').doc(doc.id).get();
+      final real = (peer.data()?['username'] as String?)?.trim() ?? '';
+      if (real.isEmpty) continue;
+      await doc.reference.set({'username': real}, SetOptions(merge: true));
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Feature: people suggestions ("Discover"). Opt-in, public flag.
+  // ---------------------------------------------------------------------
+
+  Future<bool> isDiscoverable() async {
+    final uid = currentUserId;
+    if (uid == null) return false;
+    final doc = await _db.collection('users').doc(uid).get();
+    return (doc.data()?['discoverable'] as bool?) ?? false;
+  }
+
+  Future<void> setDiscoverable(bool value) async {
+    final uid = currentUserId;
+    if (uid == null) throw Exception('No signed-in user');
+    await _db.collection('users').doc(uid).set({
+      'discoverable': value,
+      if (value) 'discoverableAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   /// Public profile only (username, photoUrl, publicKey). For your own
