@@ -119,7 +119,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
     // Feature: Stories — a view only counts once you're actually looking
     // at it, not just once it's queued up to load.
     unawaited(_storyService.recordView(_current['id'] as String, widget.ownerUid));
-    _storyService.myLikeStream(_current['id'] as String).first.then((liked) {
+    _storyService.isLiked(_current['id'] as String).then((liked) {
       if (mounted) setState(() => _liked = liked);
     });
 
@@ -150,6 +150,27 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
         });
       }
     }
+  }
+
+  Future<void> _confirmDelete() async {
+    _pause();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this story?'),
+        content: const Text('It is removed from your phone and from your contacts\' phones.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok != true) {
+      _resume();
+      return;
+    }
+    await _storyService.deleteStory(_current['id'] as String);
+    if (mounted) Navigator.of(context).pop();
   }
 
   void _goNext() {
@@ -184,7 +205,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
   Future<void> _toggleLike() async {
     setState(() => _liked = !_liked);
     if (_liked) _burstKey.currentState?.burst('❤️', count: 10);
-    await _storyService.setLiked(_current['id'] as String, _liked);
+    await _storyService.setLiked(_current['id'] as String, widget.ownerUid, _liked);
   }
 
   Future<void> _react(String emoji) async {
@@ -397,6 +418,12 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (_isMine)
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline, color: Colors.white),
+                        tooltip: 'Delete story',
+                        onPressed: _confirmDelete,
+                      ),
                     IconButton(
                       icon: const Icon(Icons.close, color: Colors.white),
                       onPressed: () => Navigator.of(context).pop(),
