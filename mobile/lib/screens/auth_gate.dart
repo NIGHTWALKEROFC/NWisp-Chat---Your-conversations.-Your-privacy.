@@ -11,6 +11,7 @@ import '../services/intruder_photo_service.dart';
 import '../services/presence_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/contact_developer_sheet.dart';
+import 'choose_username_screen.dart';
 import 'home_shell.dart';
 import 'decoy_home_screen.dart';
 import 'login_screen.dart';
@@ -114,13 +115,81 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
               builder: (context, claimPending, _) {
                 if (snapshot.hasData && !claimPending) {
                   PresenceService.goOnline();
-                  return const _PostAuthGate();
+                  // BUGFIX: screens opened from the login page (Sign up, the
+                  // 2-step code page, Forgot password …) are pushed ON TOP of
+                  // this gate. When sign-in finished they stayed on screen —
+                  // that is why a new account showed \"email already taken\"
+                  // when you pressed Create again, and why 2-step login looked
+                  // like it went back to the login page. Close them all.
+                  return const _ClearAuthRoutes(child: _PostAuthGate());
                 }
                 return const LoginScreen();
               },
             );
           },
         );
+      },
+    );
+  }
+}
+
+/// Closes every page that was opened on top of the login page the moment
+/// sign-in completes, so the person lands on the home screen.
+class _ClearAuthRoutes extends StatefulWidget {
+  final Widget child;
+  const _ClearAuthRoutes({required this.child});
+
+  @override
+  State<_ClearAuthRoutes> createState() => _ClearAuthRoutesState();
+}
+
+class _ClearAuthRoutesState extends State<_ClearAuthRoutes> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+/// Accounts created while the old sign-up bug existed have no username.
+/// This asks for one once (and only once) before showing the app, so the
+/// account becomes searchable and scannable like everyone else's.
+class _ProfileGate extends StatefulWidget {
+  final Widget child;
+  const _ProfileGate({required this.child});
+
+  @override
+  State<_ProfileGate> createState() => _ProfileGateState();
+}
+
+class _ProfileGateState extends State<_ProfileGate> {
+  final _auth = AuthService();
+  late Future<bool> _hasName = _auth.hasUsername();
+
+  @override
+  void initState() {
+    super.initState();
+    // Quiet repairs (Supabase role, contacts with empty names). Never throws.
+    _auth.ensureAccountReady();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _hasName,
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (snap.data == false) {
+          return ChooseUsernameScreen(onDone: () => setState(() => _hasName = _auth.hasUsername()));
+        }
+        return widget.child;
       },
     );
   }
@@ -196,7 +265,7 @@ class _PostAuthGateState extends State<_PostAuthGate> {
       // rule, which blocks the owner from ever writing it away).
       return const SuspendedAccountScreen();
     }
-    return const _LockGate(child: HomeShell());
+    return const _LockGate(child: _ProfileGate(child: HomeShell()));
   }
 }
 
