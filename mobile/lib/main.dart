@@ -323,6 +323,7 @@ void _setUpMessagingLifecycle() {
       _approvalWatchSub?.cancel();
       _approvalWatchSub = null;
       sweepTimer?.cancel();
+      StoryService.instance.resetMemory();
       // Feature: app-icon badge — never leave one account's unread count on
       // the icon after that account has signed out.
       AppBadgeService.instance.clear();
@@ -337,7 +338,23 @@ void _setUpMessagingLifecycle() {
       await _waitForClaimToSettle();
       if (FirebaseAuth.instance.currentUser?.uid != user.uid) return;
     }
-    await SessionService.prepareForUser(user.uid);
+    // BUGFIX (\"messages send but are never received\"): if preparing this
+    // phone's keys failed once (slow network right after sign-up, a missing
+    // profile document …) this listener used to stop right here, so the
+    // message relay was never started and nothing could be received until
+    // the app was killed. It now retries a few times, and keeps going.
+    var prepared = false;
+    for (var attempt = 0; attempt < 4 && !prepared; attempt++) {
+      try {
+        await SessionService.prepareForUser(user.uid);
+        prepared = true;
+      } catch (e) {
+        debugPrint('prepareForUser attempt ${attempt + 1} failed: $e');
+        await Future<void>.delayed(Duration(seconds: 2 + attempt * 3));
+        if (FirebaseAuth.instance.currentUser?.uid != user.uid) return;
+      }
+    }
+    unawaited(AuthService().ensureAccountReady());
     await LocalMessageStore.purgeExpired();
     // Feature: Stories — best-effort cleanup of MY OWN expired stories'
     // Supabase Storage files (see StoryService.purgeMyExpiredStories for
