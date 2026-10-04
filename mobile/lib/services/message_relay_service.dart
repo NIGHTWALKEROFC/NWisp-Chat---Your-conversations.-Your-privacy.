@@ -14,6 +14,7 @@ import 'local_message_store.dart';
 import 'media_service.dart';
 import 'pin_service.dart';
 import 'signal_session_service.dart';
+import 'story_service.dart';
 import 'traffic_camouflage_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
 
@@ -335,6 +336,25 @@ class MessageRelayService {
         // message already says exactly what state to end up in.
         final data = jsonDecode(payload) as Map<String, dynamic>;
         await PinService.setPinned(row['conversation_id'] as String, data['ref'] as String, data['pinned'] as bool);
+        break;
+      // Feature: WhatsApp-style stories — see StoryService. These four row
+      // types are tiny encrypted notes between phones; none of them is a chat
+      // message, so none must ever reach the default (text) branch below.
+      case 'story':
+        await StoryService.instance.receiveStory(
+          ownerUid: senderUid,
+          payload: payload,
+          remotePath: row['media_path'] as String?,
+        );
+        break;
+      case 'story_view':
+        await StoryService.instance.receiveView(viewerUid: senderUid, payload: payload);
+        break;
+      case 'story_like':
+        await StoryService.instance.receiveLike(viewerUid: senderUid, payload: payload);
+        break;
+      case 'story_delete':
+        await StoryService.instance.receiveDelete(ownerUid: senderUid, payload: payload);
         break;
       case 'screenshot':
         // Feature: screenshot alert. The other person's phone reported that
