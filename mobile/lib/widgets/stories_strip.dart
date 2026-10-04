@@ -1,8 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../screens/stories/story_composer_screen.dart';
 import '../screens/stories/story_viewer_screen.dart';
+import '../services/contact_service.dart';
 import '../services/story_service.dart';
 import 'nwisp_ui.dart';
 import 'user_avatar.dart';
@@ -29,8 +29,7 @@ class _StoriesStripState extends State<StoriesStrip> {
 
   Future<String> _usernameFor(String uid) async {
     if (_usernameCache.containsKey(uid)) return _usernameCache[uid]!;
-    final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-    final name = (doc.data()?['username'] as String?) ?? 'Unknown';
+    final name = await ContactService().usernameFor(uid);
     _usernameCache[uid] = name;
     return name;
   }
@@ -55,23 +54,22 @@ class _StoriesStripState extends State<StoriesStrip> {
     if (myUid == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
 
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _storyService.feedStories(),
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: _storyService.feed(),
       builder: (context, snap) {
         // Same grouping as StoriesTabScreen: newest-first query, reversed
         // per person so each list is oldest-first.
         final byUid = <String, List<Map<String, dynamic>>>{};
         if (snap.hasData) {
-          for (final doc in snap.data!.docs) {
-            final data = {...doc.data(), 'id': doc.id};
+          for (final data in snap.data!) {
             byUid.putIfAbsent(data['uid'] as String, () => []).insert(0, data);
           }
         }
         final myStories = byUid.remove(myUid) ?? const <Map<String, dynamic>>[];
         final otherUids = byUid.keys.toList()
           ..sort((a, b) {
-            final aLatest = (byUid[a]!.last['createdAt'] as Timestamp?)?.toDate() ?? DateTime(0);
-            final bLatest = (byUid[b]!.last['createdAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+            final aLatest = (byUid[a]!.last['createdAt'] as DateTime?) ?? DateTime(0);
+            final bLatest = (byUid[b]!.last['createdAt'] as DateTime?) ?? DateTime(0);
             return bLatest.compareTo(aLatest);
           });
 
