@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../l10n/app_strings.dart';
 import '../models/local_message.dart';
 import '../services/call_log_service.dart';
+import '../services/contact_service.dart';
 import '../services/call_service.dart';
 import '../services/group_call_service.dart';
 import '../services/incoming_call_notifier.dart';
@@ -45,6 +46,9 @@ class _HomeShellState extends State<HomeShell> {
   List<ConversationSummary> _summaries = [];
   StreamSubscription? _groupsSub;
   StreamSubscription? _summarySub;
+  // Feature: number of contact requests waiting for an answer (badge on Chats).
+  StreamSubscription<int>? _requestsSub;
+  int _pendingRequests = 0;
 
   // Feature: incoming voice calls and secret-chat invitations. Both only
   // work while the app is open (that's the point of a secret chat, and
@@ -153,6 +157,9 @@ class _HomeShellState extends State<HomeShell> {
     _groupsSub = GroupService.instance.myGroupsStream().listen((snap) {
       if (mounted) setState(() => _groupDocs = snap.docs);
     });
+    _requestsSub = ContactService().pendingRequestCountStream().listen((n) {
+      if (mounted) setState(() => _pendingRequests = n);
+    });
     _summarySub = LocalMessageStore.watchSummaries().listen((list) {
       if (mounted) setState(() => _summaries = list);
     });
@@ -175,6 +182,7 @@ class _HomeShellState extends State<HomeShell> {
     SecretChatService.instance.stopListening();
     _groupsSub?.cancel();
     _summarySub?.cancel();
+    _requestsSub?.cancel();
     super.dispose();
   }
 
@@ -218,7 +226,8 @@ class _HomeShellState extends State<HomeShell> {
     final unreadAnnouncements = _unreadWhere((d) => d['onlyAdminsCanSend'] == true && d['isCommunity'] != true);
     final unreadCommunity = _unreadWhere((d) => d['isCommunity'] == true);
 
-    int badgeFor(String id) => id == 'announcements' ? unreadAnnouncements : (id == 'community' ? unreadCommunity : 0);
+    int badgeFor(String id) =>
+        id == 'announcements' ? unreadAnnouncements : (id == 'community' ? unreadCommunity : (id == 'chats' ? _pendingRequests : 0));
 
     Widget screenFor(String id) {
       switch (id) {
