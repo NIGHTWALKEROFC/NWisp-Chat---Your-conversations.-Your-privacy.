@@ -103,6 +103,10 @@ class _BrowserSettingsScreenState extends State<BrowserSettingsScreen> {
                 NwispCard(
                   child: Column(
                     children: [
+                      _switch(s.highPrivacy, 'High privacy mode', 'Hides your device fingerprint, blocks WebRTC IP leaks, sends no Referer, hides camera/mic/sensor/battery info from sites', s.setHighPrivacy, icon: Icons.security_rounded),
+                      const Divider(height: 1, indent: 56),
+                      _switch(s.stripTrackingParams, 'Clean tracking links', 'Removes utm_, fbclid, gclid and similar tracking bits from links', s.setStripTrackingParams, icon: Icons.cleaning_services_outlined),
+                      const Divider(height: 1, indent: 56),
                       _switch(s.blockTrackers, 'Block trackers & ads', 'Stops known tracking and advertising servers', s.setBlockTrackers, icon: Icons.block_rounded),
                       const Divider(height: 1, indent: 56),
                       _switch(s.blockThirdPartyCookies, 'Block third-party cookies', 'Sites can\'t follow you around through embedded content', s.setBlockThirdPartyCookies, icon: Icons.cookie_outlined),
