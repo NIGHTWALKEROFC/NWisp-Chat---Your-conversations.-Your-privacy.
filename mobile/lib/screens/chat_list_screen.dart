@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import '../services/contact_service.dart';
 import '../models/local_message.dart';
 import '../services/app_badge_service.dart';
 import '../services/app_lock_service.dart';
@@ -419,7 +420,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Future<String> _usernameFor(String uid) async {
     if (_usernameCache.containsKey(uid)) return _usernameCache[uid]!;
     final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-    final name = (doc.data()?['username'] as String?) ?? 'Unknown';
+    final stored = ((doc.data()?['username'] as String?) ?? '').trim();
+    final name = stored.isEmpty ? 'Unknown' : stored;
     _usernameCache[uid] = name;
     return name;
   }
@@ -980,10 +982,21 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen())),
-        tooltip: 'Message a contact',
-        child: const Icon(Icons.chat_rounded),
+      floatingActionButton: StreamBuilder<int>(
+        stream: ContactService().pendingRequestCountStream(),
+        builder: (context, snap) {
+          final n = snap.data ?? 0;
+          return Badge(
+            isLabelVisible: n > 0,
+            label: Text(n > 99 ? '99+' : '$n'),
+            offset: const Offset(-4, 2),
+            child: FloatingActionButton(
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen())),
+              tooltip: n > 0 ? '$n new contact request${n == 1 ? '' : 's'}' : 'Message a contact',
+              child: const Icon(Icons.chat_rounded),
+            ),
+          );
+        },
       ),
     ),
       ],
