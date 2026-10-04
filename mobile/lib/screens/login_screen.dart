@@ -27,6 +27,10 @@ class _LoginScreenState extends State<LoginScreen> {
   final _authService = AuthService();
 
   bool _loading = false;
+  // BUGFIX: after the 2-step code is accepted the login page used to show
+  // again (spinner on the Login button) until the app opened. This shows a
+  // clear \"Signing you in\" page instead.
+  bool _finishing = false;
   bool _obscurePassword = true;
   bool _stayLoggedIn = true;
   String? _error;
@@ -100,6 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
           if (mounted) setState(() {});
           return;
         }
+        if (mounted) setState(() => _finishing = true);
       }
 
       // BUGFIX: was DeviceSessionService.instance.isLoginApprovalRequired(uid)
@@ -180,7 +185,12 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } finally {
       DeviceSessionService.instance.isClaimPending = false;
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _finishing = false;
+        });
+      }
     }
   }
 
@@ -271,6 +281,26 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    if (_finishing) {
+      return Scaffold(
+        body: NwispBackdrop(
+          child: SafeArea(
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const NwispLogo(size: 64),
+                  const SizedBox(height: 22),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text('Signing you in…', style: Theme.of(context).textTheme.titleMedium),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
