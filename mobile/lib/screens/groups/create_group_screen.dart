@@ -64,9 +64,19 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       final direct = <String>[];
       final needsInvite = <String, String>{}; // uid -> username
       final blocked = <String>[];
+      // BUGFIX (\"Couldn't create the group: type '() => …' is not a subtype of
+      // type '(() => _IL)?'\"): this used firstWhere(…, orElse: () =>
+      // contactDocs.first) on Firestore's own document list. Dart checks the
+      // orElse callback against the list's REAL internal element type, which
+      // differs from the public QueryDocumentSnapshot type in a release build,
+      // so it crashed every time. Names are now read from a plain Map.
       final contactDocs = (await _contactService.contactsStream().first).docs;
+      final namesByUid = <String, String>{
+        for (final d in contactDocs) d.id: ((d.data()['username'] as String?) ?? '').trim(),
+      };
       for (final uid in _selectedUids) {
-        final username = contactDocs.firstWhere((d) => d.id == uid, orElse: () => contactDocs.first).data()['username'] as String? ?? 'Unknown';
+        final stored = namesByUid[uid] ?? '';
+        final username = stored.isNotEmpty ? stored : await _contactService.usernameFor(uid);
         final pref = await AuthService().whoCanInviteMeFor(uid);
         if (pref == 'nobody') {
           blocked.add(username);
