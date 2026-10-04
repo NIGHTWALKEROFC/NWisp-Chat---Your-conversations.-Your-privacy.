@@ -30,6 +30,8 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
   String _whoCanInviteMe = 'contacts';
   bool _loading = true;
   bool _trafficCamouflage = false;
+  // Feature: People suggestions (Contacts → Discover).
+  bool _discoverable = false;
 
   @override
   void initState() {
@@ -51,6 +53,9 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
     });
     final uid = _authService.currentUserId;
     if (uid != null) {
+      _authService.isDiscoverable().then((v) {
+        if (mounted) setState(() => _discoverable = v);
+      }).catchError((_) {});
       final pref = await _authService.whoCanInviteMeFor(uid);
       if (mounted) setState(() => _whoCanInviteMe = pref);
     }
@@ -206,6 +211,24 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                     setState(() => _hideRecentsPreview = v);
                     await SettingsService.setHideRecentsPreview(v);
                     await ScreenshotGuardService.setRecentsPreviewHidden(v);
+                  },
+                ),
+                SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.people_alt_outlined),
+                  title: const Text('Show me in people suggestions'),
+                  subtitle: const Text(
+                    'Lets other NWisp users find you in Contacts → Discover. Only your username and photo are shown. Off by default.',
+                  ),
+                  value: _discoverable,
+                  onChanged: (v) async {
+                    setState(() => _discoverable = v);
+                    try {
+                      await _authService.setDiscoverable(v);
+                    } catch (_) {
+                      if (!mounted) return;
+                      setState(() => _discoverable = !v);
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't save that — try again.")));
+                    }
                   },
                 ),
                 ListTile(
