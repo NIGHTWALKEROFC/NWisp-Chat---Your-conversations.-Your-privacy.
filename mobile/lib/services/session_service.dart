@@ -24,6 +24,17 @@ class SessionService {
     _preparingUid = uid;
     final future = _prepare(uid);
     _preparingFuture = future;
+    // BUGFIX: a FAILED attempt used to stay cached for this uid, so every
+    // later call (main.dart's sign-in listener, registration, login) got the
+    // very same failed result back and the app never started receiving
+    // messages for that account. A failure is now forgotten so the next call
+    // really tries again.
+    future.catchError((Object _) {
+      if (identical(_preparingFuture, future)) {
+        _preparingFuture = null;
+        _preparingUid = null;
+      }
+    });
     return future;
   }
 
@@ -98,17 +109,30 @@ class SessionService {
     });
     // Strip the now-migrated fields off the public doc so they stop being
     // world-readable to every other signed-in user.
-    batch.update(userRef, {
-      'emailVisible': FieldValue.delete(),
-      'lastSeenVisible': FieldValue.delete(),
-      'readReceiptsEnabled': FieldValue.delete(),
-      'blockedUsers': FieldValue.delete(),
-      'messageTtlHours': FieldValue.delete(),
-      'fcmTokens': FieldValue.delete(),
-      'lastLoginAt': FieldValue.delete(),
-      'online': FieldValue.delete(),
-      'lastSeen': FieldValue.delete(),
-    });
+    // BUGFIX (the \"new account has no username\" bug): this used to be
+    // `batch.update(userRef, ...)`. During sign-up this code runs BEFORE the
+    // public users/{uid} document exists, and update() on a missing document
+    // fails with NOT_FOUND — which failed this whole batch, threw out of
+    // registration, and left a signed-in account with NO profile, NO username
+    // and NO working message receiving. It is now a merge-set, and only when
+    // the document really exists.
+    if (oldSnap.exists) {
+      batch.set(
+        userRef,
+        {
+          'emailVisible': FieldValue.delete(),
+          'lastSeenVisible': FieldValue.delete(),
+          'readReceiptsEnabled': FieldValue.delete(),
+          'blockedUsers': FieldValue.delete(),
+          'messageTtlHours': FieldValue.delete(),
+          'fcmTokens': FieldValue.delete(),
+          'lastLoginAt': FieldValue.delete(),
+          'online': FieldValue.delete(),
+          'lastSeen': FieldValue.delete(),
+        },
+        SetOptions(merge: true),
+      );
+    }
     // Backfill the blocks/{blockerUid}_{blockedUid} lookup docs (see
     // firestore.rules + ModerationService) so any blocks made before this
     // migration keep being enforced server-side on send, not just locally.
