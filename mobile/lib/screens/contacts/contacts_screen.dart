@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../../widgets/user_avatar.dart';
@@ -18,7 +19,7 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProviderStateMixin {
   final _contactService = ContactService();
   final _conversationService = ConversationService();
-  late final TabController _tabController = TabController(length: 2, vsync: this);
+  late final TabController _tabController = TabController(length: 3, vsync: this);
 
   String? _openingUid;
 
@@ -125,7 +126,29 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
             ? null
             : TabBar(
                 controller: _tabController,
-                tabs: const [Tab(text: 'Contacts'), Tab(text: 'Requests')],
+                tabs: [
+                  const Tab(text: 'Contacts'),
+                  // Feature: count badge so new requests can't be missed.
+                  Tab(
+                    child: StreamBuilder<int>(
+                      stream: _contactService.pendingRequestCountStream(),
+                      builder: (context, snap) {
+                        final count = snap.data ?? 0;
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('Requests'),
+                            if (count > 0) ...[
+                              const SizedBox(width: 6),
+                              Badge(label: Text(count > 99 ? '99+' : '$count')),
+                            ],
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                  const Tab(text: 'Discover'),
+                ],
               ),
         actions: _selectionMode
             ? [
@@ -187,7 +210,8 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                 itemBuilder: (context, i) {
                   final uid = docs[i].id;
                   final data = docs[i].data();
-                  final username = (data['username'] as String?) ?? '';
+                  final storedName = ((data['username'] as String?) ?? '').trim();
+                  final username = storedName.isEmpty ? 'Unknown' : storedName;
                   final isOpening = _openingUid == uid;
                   final isSelected = _selectedUids.contains(uid);
                   return ListTile(
@@ -206,12 +230,27 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                           ),
                       ],
                     ),
-                    title: Text(username),
+                    title: storedName.isEmpty
+                        ? FutureBuilder<String>(
+                            future: _contactService.usernameFor(uid),
+                            builder: (_, s) => Text(s.data ?? 'Unknown'),
+                          )
+                        : Text(username),
                     trailing: _selectionMode
                         ? null
                         : (isOpening
                             ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.chat_bubble_outline)),
+                            : PopupMenuButton<String>(
+                                icon: const Icon(Icons.more_vert),
+                                onSelected: (value) {
+                                  if (value == 'message') _openChat(uid, username);
+                                  if (value == 'remove') _confirmRemove(uid, username);
+                                },
+                                itemBuilder: (_) => const [
+                                  PopupMenuItem(value: 'message', child: Text('Message')),
+                                  PopupMenuItem(value: 'remove', child: Text('Remove contact')),
+                                ],
+                              )),
                     selected: isSelected,
                     selectedTileColor: scheme.primary.withValues(alpha: 0.08),
                     onTap: _selectionMode ? () => _toggleSelection(uid) : () => _openChat(uid, username),
@@ -237,10 +276,15 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                 itemBuilder: (context, i) {
                   final data = docs[i].data();
                   final fromUid = data['fromUid'] as String;
-                  final fromUsername = (data['fromUsername'] as String?) ?? '';
+                  final fromUsername = ((data['fromUsername'] as String?) ?? '').trim();
                   return ListTile(
                     leading: UserAvatar(uid: fromUid, name: fromUsername),
-                    title: Text(fromUsername),
+                    title: fromUsername.isEmpty
+                        ? FutureBuilder<String>(
+                            future: _contactService.usernameFor(fromUid),
+                            builder: (_, s) => Text(s.data ?? 'Unknown'),
+                          )
+                        : Text(fromUsername),
                     subtitle: const Text('wants to add you'),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -260,6 +304,226 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
               );
             },
           ),
+          const _DiscoverTab(),
+        ],
+      ),
+    );
+  }
+
+  /// Feature: unfriend.
+  Future<void> _confirmRemove(String uid, String username) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Remove $username?'),
+        content: const Text(
+          "They'll be removed from your contacts and you'll be removed from theirs. "
+          "They won't be notified, and your existing chat stays as it is. You can add each other again any time.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(ctx).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await _contactService.removeContact(uid);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$username removed from your contacts')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't remove — check your connection and try again.")));
+    }
+  }
+}
+
+/// Feature: "People on NWisp" — people who chose to be shown in suggestions.
+/// The switch at the top is the same setting as Settings → Privacy.
+class _DiscoverTab extends StatefulWidget {
+  const _DiscoverTab();
+
+  @override
+  State<_DiscoverTab> createState() => _DiscoverTabState();
+}
+
+class _DiscoverTabState extends State<_DiscoverTab> with AutomaticKeepAliveClientMixin {
+  final _contacts = ContactService();
+  final _auth = AuthService();
+  final _search = TextEditingController();
+
+  List<Map<String, dynamic>> _people = [];
+  final Set<String> _requested = {};
+  final Set<String> _sending = {};
+  bool _loading = true;
+  bool _visible = false;
+  bool _savingVisible = false;
+  String? _error;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final visible = await _auth.isDiscoverable();
+      final people = await _contacts.discoverUsers();
+      if (!mounted) return;
+      setState(() {
+        _visible = visible;
+        _people = people;
+        _requested
+          ..clear()
+          ..addAll(people.where((p) => p['pending'] == true).map((p) => p['uid'] as String));
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = "Couldn't load people. Check your connection and pull down to try again.";
+      });
+    }
+  }
+
+  Future<void> _setVisible(bool value) async {
+    setState(() {
+      _visible = value;
+      _savingVisible = true;
+    });
+    try {
+      await _auth.setDiscoverable(value);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _visible = !value);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't save that — try again.")));
+    } finally {
+      if (mounted) setState(() => _savingVisible = false);
+    }
+  }
+
+  Future<void> _add(String uid, String username) async {
+    setState(() => _sending.add(uid));
+    try {
+      await _contacts.sendRequest(toUid: uid, toUsername: username, myUsername: '');
+      if (!mounted) return;
+      setState(() {
+        _requested.add(uid);
+        _sending.remove(uid);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _sending.remove(uid));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final scheme = Theme.of(context).colorScheme;
+    final q = _search.text.trim().toLowerCase();
+    final shown = q.isEmpty
+        ? _people
+        : _people.where((p) => ((p['username'] as String?) ?? '').toLowerCase().contains(q)).toList();
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          SwitchListTile.adaptive(
+            secondary: const Icon(Icons.visibility_outlined),
+            title: const Text('Show me in suggestions', style: TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(
+              _visible
+                  ? 'Other NWisp users can see your username and photo here.'
+                  : "You're hidden. Turn this on to appear in other people's suggestions.",
+              style: const TextStyle(fontSize: 12.5),
+            ),
+            value: _visible,
+            onChanged: _savingVisible ? null : _setVisible,
+          ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: TextField(
+              controller: _search,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search these people',
+                isDense: true,
+              ),
+            ),
+          ),
+          if (_loading)
+            const Padding(padding: EdgeInsets.all(48), child: Center(child: CircularProgressIndicator()))
+          else if (_error != null)
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: scheme.error)),
+            )
+          else if (shown.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                children: [
+                  Icon(Icons.people_outline, size: 56, color: scheme.primary.withValues(alpha: 0.5)),
+                  const SizedBox(height: 10),
+                  Text(
+                    q.isEmpty ? 'Nobody to suggest yet' : 'No one matches "$q"',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'People appear here when they allow suggestions. Pull down to refresh.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            )
+          else
+            for (final person in shown)
+              Builder(builder: (context) {
+                final uid = person['uid'] as String;
+                final name = ((person['username'] as String?) ?? '').trim();
+                final isRequested = _requested.contains(uid);
+                final isSending = _sending.contains(uid);
+                return ListTile(
+                  leading: UserAvatar(uid: uid, name: name),
+                  title: Text(name),
+                  subtitle: const Text('On NWisp'),
+                  trailing: isRequested
+                      ? const Text('Requested')
+                      : FilledButton.tonal(
+                          onPressed: isSending ? null : () => _add(uid, name),
+                          child: isSending
+                              ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Text('Add'),
+                        ),
+                );
+              }),
         ],
       ),
     );
