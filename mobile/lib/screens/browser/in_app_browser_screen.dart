@@ -7,6 +7,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../../services/browser_data_service.dart';
 import '../../services/browser_download_service.dart';
+import 'download_manager_screen.dart';
 import '../../services/browser_settings_service.dart';
 import 'browser_library_screen.dart';
 import 'browser_settings_screen.dart';
@@ -751,7 +752,13 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
       );
       if (!mounted) return;
       if (!cancelled && Navigator.of(context).canPop()) Navigator.of(context).pop();
-      messenger.showSnackBar(SnackBar(content: Text(where.startsWith('/') ? 'Saved: $where' : where)));
+      messenger.showSnackBar(SnackBar(
+        content: Text(where.startsWith('/') ? 'Saved: $where' : where),
+        action: SnackBarAction(
+          label: 'Downloads',
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DownloadManagerScreen())),
+        ),
+      ));
     } catch (e) {
       if (!mounted) return;
       if (!cancelled && Navigator.of(context).canPop()) Navigator.of(context).pop();
@@ -807,6 +814,10 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
                 ListTile(leading: const Icon(Icons.download_rounded), title: const Text('Download from this page'), onTap: () {
                   Navigator.pop(ctx);
                   _downloadFromPage();
+                }),
+                ListTile(leading: const Icon(Icons.folder_copy_outlined), title: const Text('Downloads'), onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const DownloadManagerScreen()));
                 }),
                 ListTile(leading: const Icon(Icons.open_in_browser), title: const Text('Open in default browser'), onTap: () {
                   Navigator.pop(ctx);
