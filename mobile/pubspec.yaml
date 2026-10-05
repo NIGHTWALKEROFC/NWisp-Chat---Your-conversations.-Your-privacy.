@@ -73,6 +73,12 @@ dependencies:
   # Feature: Nearby chat (Bluetooth / Wi-Fi, no internet — see NearbyService).
   nearby_connections: ^4.0.0
   permission_handler: ^11.3.1
+  # Feature: auto-download rules (Wi-Fi / mobile data) — see AutoDownloadService.
+  connectivity_plus: ^6.0.5
+  # Feature: message reminders — schedules a notification for a chosen time.
+  timezone: ^0.9.4
+  # Feature: encrypted backup — picks the backup file to restore.
+  file_picker: ^8.1.2
   # Feature: live location sharing (see LiveLocationService). geolocator
   # reads the device's GPS; flutter_map + latlong2 draw the map bubble/full
   # screen view using OpenStreetMap tiles — no API key or billing account
