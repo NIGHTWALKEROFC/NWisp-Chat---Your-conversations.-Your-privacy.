@@ -15,6 +15,8 @@ import 'media_service.dart';
 import 'pin_service.dart';
 import 'signal_session_service.dart';
 import 'story_service.dart';
+import 'poll_service.dart';
+import 'auto_download_service.dart';
 import 'traffic_camouflage_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
 
@@ -405,6 +407,9 @@ class MessageRelayService {
       // Feature: WhatsApp-style stories — see StoryService. These four row
       // types are tiny encrypted notes between phones; none of them is a chat
       // message, so none must ever reach the default (text) branch below.
+      case 'poll_vote':
+        await PollService.instance.receiveVote(voterUid: senderUid, payload: payload);
+        break;
       case 'story':
         await StoryService.instance.receiveStory(
           ownerUid: senderUid,
@@ -532,7 +537,11 @@ class MessageRelayService {
     // either way — see _handleRow) and let the person tap to fetch it
     // later (see downloadPendingMedia). 1:1 chats are unaffected — this
     // setting only exists on group docs.
-    if (conversationId.startsWith(_groupIdPrefix) && !await GroupService.instance.isMediaAutoDownloadEnabled(conversationId)) {
+    // Feature: auto-download rules (Settings → Data and storage) apply to
+    // every chat; a group can ALSO switch auto-download off for itself.
+    final groupBlocks = conversationId.startsWith(_groupIdPrefix) && !await GroupService.instance.isMediaAutoDownloadEnabled(conversationId);
+    final ruleBlocks = !await AutoDownloadService.instance.allowedNow(row['message_type'] as String);
+    if (groupBlocks || ruleBlocks) {
       await LocalMessageStore.insert(
         id: row['client_id'] as String,
         conversationId: conversationId,
@@ -616,6 +625,15 @@ class MessageRelayService {
     final extension = (meta['extension'] as String?) ?? 'bin';
     final localPath = await LocalMediaFiles.save(Uint8List.fromList(plainBytes), extension);
     await LocalMessageStore.resolvePendingMedia(messageId, localPath, (meta['caption'] as String?) ?? '');
+    // 1:1 chats: our copy is safe now, so the temporary server copy can go.
+    // (Best effort: the relay row that authorises the delete may already be
+    // gone, in which case the server's cleanup job removes the file.)
+    final pendingConversation = (await LocalMessageStore.getById(messageId))?.conversationId ?? '';
+    if (!pendingConversation.startsWith(_groupIdPrefix)) {
+      try {
+        await MediaService.deleteRemote(_mediaBucket, remotePath);
+      } catch (_) {}
+    }
   }
 
   /// Reads the narrow blocks/{recipientUid}_{myUid} lookup doc (see
