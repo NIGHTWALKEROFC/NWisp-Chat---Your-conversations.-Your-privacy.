@@ -48,6 +48,8 @@ import 'starred_messages_screen.dart';
 import '../services/chat_wallpaper_service.dart';
 import '../services/home_background_service.dart';
 import '../services/bot_service.dart';
+import '../services/nickname_service.dart';
+import '../widgets/nickname_dialog.dart';
 import '../widgets/bot_badge.dart';
 import 'bots/bot_chat_screen.dart';
 
@@ -306,15 +308,22 @@ class _ChatListScreenState extends State<ChatListScreen> {
         ),
         PopupMenuButton<String>(
           onSelected: (v) {
+            if (v == 'nick') {
+              final r = _selectedRows.first;
+              showNicknameDialog(context, uid: r.peerUid, realName: _usernameCache[r.peerUid] ?? 'this person').then((_) => _clearSelection());
+              return;
+            }
             if (v == 'all') {
               setState(() => _selected.addAll(_lastRows.where((r) => !NoteToSelfService.isNotes(r.conversationId)).map((r) => r.conversationId)));
             } else if (v == 'unread') {
               _bulkMarkUnread();
             }
           },
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'all', child: Text('Select all')),
-            PopupMenuItem(value: 'unread', child: Text('Mark as read / unread')),
+          itemBuilder: (_) => [
+            if (_selected.length == 1 && !_selectedRows.first.isGroup && !NoteToSelfService.isNotes(_selectedRows.first.conversationId))
+              const PopupMenuItem(value: 'nick', child: Text('Set nickname')),
+            const PopupMenuItem(value: 'all', child: Text('Select all')),
+            const PopupMenuItem(value: 'unread', child: Text('Mark as read / unread')),
           ],
         ),
       ],
@@ -432,6 +441,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
     HomeSectionsService.announcementsTab.addListener(_onSectionSettingChanged);
     HomeSectionsService.communityTab.addListener(_onSectionSettingChanged);
     HomeSectionsService.storiesOnHome.addListener(_onSectionSettingChanged);
+    NicknameService.instance.load();
+    NicknameService.instance.changes.addListener(_onSectionSettingChanged);
     _loadHiddenIds();
     _loadBots();
     _startSecurityWatch();
@@ -510,6 +521,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     HomeSectionsService.announcementsTab.removeListener(_onSectionSettingChanged);
     HomeSectionsService.communityTab.removeListener(_onSectionSettingChanged);
     HomeSectionsService.storiesOnHome.removeListener(_onSectionSettingChanged);
+    NicknameService.instance.changes.removeListener(_onSectionSettingChanged);
     SecurityChatService.instance.readTick.removeListener(_onSecurityRead);
     _securitySub?.cancel();
     _localSub.cancel();
@@ -602,7 +614,15 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
+  /// What this screen shows for a person: my private nickname for them if I
+  /// set one (Feature: nicknames — see NicknameService), otherwise their
+  /// username.
   Future<String> _usernameFor(String uid) async {
+    await NicknameService.instance.load();
+    return NicknameService.instance.display(uid, await _realUsernameFor(uid));
+  }
+
+  Future<String> _realUsernameFor(String uid) async {
     if (_usernameCache.containsKey(uid)) return _usernameCache[uid]!;
     final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
     final stored = ((doc.data()?['username'] as String?) ?? '').trim();
@@ -1146,8 +1166,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
           final searching = _query.isNotEmpty && !_showHiddenOnly && !_showArchived;
           if (searching) {
             rows = rows.where((r) {
-              final name = r.isGroup ? (r.title ?? '') : (_usernameCache[r.peerUid] ?? '');
-              return name.toLowerCase().contains(_query) || r.lastText.toLowerCase().contains(_query);
+              final real = r.isGroup ? (r.title ?? '') : (_usernameCache[r.peerUid] ?? '');
+              final nick = r.isGroup ? '' : (NicknameService.instance.nicknameFor(r.peerUid) ?? '');
+              return real.toLowerCase().contains(_query) || nick.toLowerCase().contains(_query) || r.lastText.toLowerCase().contains(_query);
             }).toList();
           }
           _lastRows = rows;
@@ -1710,10 +1731,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
             }
             if (!await requireChatPinIfLocked(context, row.conversationId)) return;
             if (!context.mounted) return;
+            // The chat screen shows my nickname in its title by itself; it
+            // is given the REAL username so everything else stays accurate.
+            final realName = await _realUsernameFor(row.peerUid);
+            if (!context.mounted) return;
             await Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: username),
+                builder: (_) => ChatDetailScreen(conversationId: row.conversationId, peerUid: row.peerUid, peerUsername: realName),
               ),
             );
             await _loadHiddenIds();
