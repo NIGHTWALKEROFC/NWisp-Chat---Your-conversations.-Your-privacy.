@@ -108,6 +108,21 @@ class SettingsService {
     await prefs.setBool(_privateKeyboardKey, value);
   }
 
+  /// Feature: block screenshots and screen recording on EVERY screen of the
+  /// app (chat list, settings …). Chats, stories and other private screens are
+  /// ALWAYS blocked regardless of this switch — see ScreenshotGuardService.
+  static const _blockScreenshotsEverywhereKey = 'block_screenshots_everywhere';
+
+  static Future<bool> getBlockScreenshotsEverywhere() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_blockScreenshotsEverywhereKey) ?? false;
+  }
+
+  static Future<void> setBlockScreenshotsEverywhere(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_blockScreenshotsEverywhereKey, value);
+  }
+
   /// Feature: hide the app preview in the recent-apps switcher (see
   /// ScreenshotGuardService.setRecentsPreviewHidden). ON by default — this
   /// is a security-first app, and this only ever ADDS protection (chats stay
