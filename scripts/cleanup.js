@@ -83,6 +83,48 @@ async function cleanupMessageRelay() {
   return { rows: stale.length, media: mediaPaths.length };
 }
 
+/// Encrypted media files (photos, videos, voice, story files) that nothing
+/// points at any more. They appear when someone's "auto-download" rule held a
+/// file back and it was never opened, or a story's owner phone never got to
+/// delete its temporary file. Anything older than `maxAgeDays` that no
+/// message_relay row still references is removed, so storage can't pile up.
+async function sweepOrphanMedia(maxAgeDays = 7) {
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+
+  const { data: rows, error } = await supabase.from("message_relay").select("media_path").not("media_path", "is", null);
+  if (error) throw error;
+  const referenced = new Set((rows ?? []).map((r) => r.media_path));
+
+  const stale = [];
+  // Folders look like "<kind>/<uid>/<file>"; list level by level.
+  async function walk(prefix) {
+    let offset = 0;
+    for (;;) {
+      const { data, error: listError } = await supabase.storage.from("media").list(prefix, { limit: 100, offset });
+      if (listError) throw listError;
+      if (!data || data.length === 0) break;
+      for (const item of data) {
+        const path = prefix ? `${prefix}/${item.name}` : item.name;
+        if (item.id === null || item.id === undefined) {
+          await walk(path); // a folder
+        } else {
+          const created = new Date(item.created_at ?? item.updated_at ?? Date.now()).getTime();
+          if (created < cutoff && !referenced.has(path)) stale.push(path);
+        }
+      }
+      if (data.length < 100) break;
+      offset += 100;
+    }
+  }
+  await walk("");
+
+  const chunkSize = 100;
+  for (let i = 0; i < stale.length; i += chunkSize) {
+    await supabase.storage.from("media").remove(stale.slice(i, i + chunkSize));
+  }
+  return stale.length;
+}
+
 async function main() {
   const expiredStories = await deleteExpired(
     db.collection("stories").where("expiresAt", "<", now)
@@ -108,6 +150,12 @@ async function main() {
     // should never fail the whole scheduled job, just get logged for
     // whoever's watching the Action's output.
     console.warn("message_relay cleanup failed (will retry on the next scheduled run):", err);
+  }
+  try {
+    const removed = await sweepOrphanMedia();
+    console.log(`Removed ${removed} orphaned media files`);
+  } catch (err) {
+    console.warn("orphan media sweep failed (will retry on the next scheduled run):", err);
   }
 }
 
