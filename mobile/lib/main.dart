@@ -27,6 +27,10 @@ import 'services/screenshot_guard_service.dart';
 import 'services/settings_service.dart';
 import 'services/session_service.dart';
 import 'services/story_service.dart';
+import 'services/auto_download_service.dart';
+import 'services/reminder_service.dart';
+import 'services/nickname_service.dart';
+import 'services/poll_service.dart';
 import 'services/traffic_camouflage_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auth_gate.dart';
@@ -112,6 +116,7 @@ void main() async {
   // previous run might have left behind.
   ScreenshotGuardService.init();
   ScreenshotGuardService.setRecentsPreviewHidden(await SettingsService.getHideRecentsPreview());
+  ScreenshotGuardService.setBlockEverywhere(await SettingsService.getBlockScreenshotsEverywhere());
   await PrivateKeyboardService.load();
   MediaVaultService.instance.cleanTemp();
 
@@ -324,6 +329,10 @@ void _setUpMessagingLifecycle() {
       _approvalWatchSub = null;
       sweepTimer?.cancel();
       StoryService.instance.resetMemory();
+      AutoDownloadService.instance.stop();
+      ReminderService.instance.resetMemory();
+      NicknameService.instance.resetMemory();
+      PollService.instance.resetMemory();
       // Feature: app-icon badge — never leave one account's unread count on
       // the icon after that account has signed out.
       AppBadgeService.instance.clear();
@@ -355,6 +364,11 @@ void _setUpMessagingLifecycle() {
       }
     }
     unawaited(AuthService().ensureAccountReady());
+    await AutoDownloadService.instance.load();
+    AutoDownloadService.instance.start();
+    unawaited(ReminderService.instance.load());
+    unawaited(NicknameService.instance.load());
+    unawaited(PollService.instance.ensureLoaded());
     await LocalMessageStore.purgeExpired();
     // Feature: Stories — best-effort cleanup of MY OWN expired stories'
     // Supabase Storage files (see StoryService.purgeMyExpiredStories for
