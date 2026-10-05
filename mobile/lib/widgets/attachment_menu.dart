@@ -35,6 +35,8 @@ Future<void> showAttachmentMenu(
   // Feature: "Request their location" — the companion to onLiveLocation
   // above, so it isn't always the sender who has to start sharing first.
   VoidCallback? onRequestLocation,
+  // Feature: polls — group chats only.
+  VoidCallback? onPoll,
 }) {
   final scheme = Theme.of(context).colorScheme;
   // Any caller that hasn't wired up the view-once callbacks yet (there
@@ -123,6 +125,16 @@ Future<void> showAttachmentMenu(
                         onTap: () {
                           Navigator.pop(sheetContext);
                           onLiveLocation();
+                        },
+                      ),
+                    if (onPoll != null)
+                      _AttachmentOption(
+                        icon: Icons.poll_outlined,
+                        label: 'Poll',
+                        color: const Color(0xFFF9A825),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          onPoll();
                         },
                       ),
                     if (onRequestLocation != null)
