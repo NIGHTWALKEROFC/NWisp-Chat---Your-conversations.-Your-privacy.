@@ -1,3 +1,5 @@
+import '../../services/nickname_service.dart';
+import '../../widgets/nickname_dialog.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../../services/app_lock_service.dart';
@@ -671,9 +673,19 @@ class _ChatSettingsScreenState extends State<ChatSettingsScreen> {
 
           return ListView(
             children: [
-              ListTile(
-                leading: UserAvatar(uid: widget.peerUid, name: widget.peerUsername),
-                title: Text(widget.peerUsername, style: const TextStyle(fontWeight: FontWeight.w700)),
+              ValueListenableBuilder<int>(
+                valueListenable: NicknameService.instance.changes,
+                builder: (context, _, __) {
+                  final nick = NicknameService.instance.nicknameFor(widget.peerUid);
+                  return ListTile(
+                    leading: UserAvatar(uid: widget.peerUid, name: widget.peerUsername),
+                    title: Text(nick ?? widget.peerUsername, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    // The real username always stays visible here.
+                    subtitle: nick != null ? Text('@${widget.peerUsername}') : const Text('Tap to set a private nickname'),
+                    trailing: const Icon(Icons.edit_outlined, size: 20),
+                    onTap: () => showNicknameDialog(context, uid: widget.peerUid, realName: widget.peerUsername),
+                  );
+                },
               ),
               const Divider(height: 24),
               ListTile(
