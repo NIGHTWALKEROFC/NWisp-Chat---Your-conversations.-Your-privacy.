@@ -20,6 +20,10 @@ import '../../services/screenshot_guard_service.dart';
 import '../../services/signal_session_service.dart';
 import '../../services/voice_recording_controller.dart';
 import '../../widgets/attachment_menu.dart';
+import '../../widgets/poll_bubble.dart';
+import '../../services/poll_service.dart';
+import '../../services/nickname_service.dart';
+import '../../widgets/reminder_picker.dart';
 import '../../widgets/chat_theme_scope.dart';
 import '../../services/media_vault_service.dart';
 import '../../services/private_keyboard_service.dart';
@@ -48,6 +52,8 @@ String _mediaLabel(String type) {
       return '🎥 Video';
     case 'voice':
       return '🎤 Voice message';
+    case 'poll':
+      return '📊 Poll';
     default:
       return type;
   }
@@ -487,7 +493,7 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
     if (mounted) setState(() {});
   }
 
-  String _nameFor(String uid) => uid == _myUid ? 'You' : (_usernames[uid] ?? '…');
+  String _nameFor(String uid) => uid == _myUid ? 'You' : NicknameService.instance.display(uid, _usernames[uid] ?? '…');
 
   /// Feature: anti-tampering / MITM re-verification prompts, group
   /// version. Same no-silent-dismiss shape as the 1:1 banner — each
@@ -841,9 +847,29 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
       onGalleryPhoto: () => _pickAndSendImage(ImageSource.gallery),
       onCameraVideo: () => _pickAndSendVideo(ImageSource.camera),
       onGalleryVideo: () => _pickAndSendVideo(ImageSource.gallery),
+      onPoll: _createPoll,
       // The separate "view once" entries are gone from this menu: view once is
       // now a switch inside the preview that opens after you pick something.
     );
+  }
+
+  Future<void> _createPoll() async {
+    final poll = await showCreatePoll(context);
+    if (poll == null || !mounted) return;
+    try {
+      await PollService.instance.createPoll(
+        groupId: widget.groupId,
+        memberUids: _otherMembers,
+        poll: poll,
+        ttlHours: _ttlHours,
+      );
+    } on GroupSendPartialFailure {
+      // Some members couldn't be reached right now — the poll is still in the
+      // chat for everyone else, same as a normal message.
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not send the poll: $e')));
+    }
   }
 
   Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
@@ -1369,6 +1395,19 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
                       ? Text('Voice message unavailable', style: TextStyle(color: mine ? scheme.onPrimary : scheme.onSurface))
                       : VoiceMessageBubble(path: message.mediaPath!, isMine: mine),
                 ),
+              if (message.messageType == 'poll')
+                PollBubble(
+                  pollId: message.id,
+                  text: message.text,
+                  isMine: mine,
+                  nameFor: _nameFor,
+                  onVote: (choices) => PollService.instance.vote(
+                    groupId: widget.groupId,
+                    memberUids: _otherMembers,
+                    pollId: message.id,
+                    choices: choices,
+                  ),
+                ),
               if (message.messageType == 'text' || (isMedia && message.text.isNotEmpty))
                 Padding(
                   padding: EdgeInsets.fromLTRB(
@@ -1632,6 +1671,23 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
             setState(_selectedIds.clear);
           },
         ),
+        if (selected.length == 1)
+          IconButton(
+            icon: const Icon(Icons.alarm_add_outlined),
+            tooltip: 'Remind me later',
+            onPressed: () {
+              final m = selected.first;
+              setState(_selectedIds.clear);
+              askReminder(
+                context,
+                messageId: m.id,
+                conversationId: widget.groupId,
+                peerUid: m.senderUid,
+                peerName: _groupName,
+                preview: m.messageType == 'text' ? m.text : _mediaLabel(m.messageType),
+              );
+            },
+          ),
         IconButton(
           icon: Icon(selected.every((m) => m.starred) ? Icons.star : Icons.star_border),
           tooltip: 'Star',
