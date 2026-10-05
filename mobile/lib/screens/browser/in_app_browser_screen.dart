@@ -160,6 +160,81 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
 })();
 ''';
 
+  // Feature: ad blocking. Runs inside the page (this WebView cannot filter
+  // network requests the way Brave does), so it is best effort:
+  //  * hides ad boxes and cookie banners,
+  //  * on YouTube removes the ad data from the player's information before the
+  //    player sees it, and skips/mutes any ad that still starts.
+  static const _adScript = r'''
+(function(){
+  if (window.__nwAd) return; window.__nwAd = true;
+  var host = location.hostname;
+  var isYT = /(^|\.)youtube\.com$|(^|\.)youtube-nocookie\.com$/.test(host);
+  function addCss(t){ try{ var s=document.createElement('style'); s.textContent=t; (document.head||document.documentElement).appendChild(s);}catch(e){} }
+  addCss('ins.adsbygoogle,.adsbygoogle,[id^="google_ads"],[id^="div-gpt-ad"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"],iframe[src*="adservice"],[class*="ad-banner"],[class*="adbanner"],[class*="sponsored-ad"],[data-ad-slot],[aria-label="Advertisement"]{display:none!important}');
+  if (!isYT) return;
+  addCss('#player-ads,#masthead-ad,ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,ytd-banner-promo-renderer,ytd-promoted-sparkles-web-renderer,ytd-promoted-video-renderer,ytd-display-ad-renderer,ytd-companion-slot-renderer,ytd-action-companion-ad-renderer,ytd-statement-banner-renderer,.ytp-ad-module,.ytp-ad-overlay-container,.ytp-ad-text-overlay,ytd-merch-shelf-renderer,ytm-promoted-sparkles-web-renderer,ytm-companion-slot,ytm-promoted-video-renderer,.ad-container,.ytp-paid-content-overlay{display:none!important}');
+  var KEYS = ['adPlacements','playerAds','adSlots','adBreakHeartbeatParams','adBreakParams'];
+  function strip(o){
+    if (!o || typeof o !== 'object') return o;
+    KEYS.forEach(function(k){ if (k in o) { try{ o[k] = Array.isArray(o[k]) ? [] : undefined; }catch(e){} } });
+    if (o.playerResponse) strip(o.playerResponse);
+    return o;
+  }
+  var _parse = JSON.parse;
+  JSON.parse = function(){ var r = _parse.apply(this, arguments); try{ strip(r); }catch(e){} return r; };
+  try{
+    var _json = Response.prototype.json;
+    Response.prototype.json = function(){ return _json.apply(this, arguments).then(function(r){ try{ strip(r); }catch(e){} return r; }); };
+  }catch(e){}
+  try{
+    var ipr;
+    Object.defineProperty(window, 'ytInitialPlayerResponse', { configurable:true, get:function(){ return ipr; }, set:function(v){ ipr = strip(v); } });
+  }catch(e){}
+  var wasAd = false;
+  setInterval(function(){
+    var player = document.querySelector('.html5-video-player');
+    var v = document.querySelector('video.html5-main-video') || document.querySelector('video');
+    var showing = !!(player && player.classList.contains('ad-showing'));
+    if (showing && v) {
+      try{ v.muted = true; v.playbackRate = 16; if (isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration; }catch(e){}
+      wasAd = true;
+    } else if (wasAd && v) {
+      try{ v.muted = false; v.playbackRate = 1; }catch(e){}
+      wasAd = false;
+    }
+    var skip = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-skip-button-container button');
+    if (skip) { try{ skip.click(); }catch(e){} }
+    var close = document.querySelector('.ytp-ad-overlay-close-button');
+    if (close) { try{ close.click(); }catch(e){} }
+  }, 300);
+})();
+''';
+
+  static const _cookieBannerScript = r'''
+(function(){
+  if (window.__nwCookie) return; window.__nwCookie = true;
+  try{
+    var s = document.createElement('style');
+    s.textContent = '#onetrust-banner-sdk,#onetrust-consent-sdk,#CybotCookiebotDialog,.cc-window,.cookie-banner,.cookie-consent,.cookie-notice,#cookie-banner,#cookieBanner,#cookie-law-info-bar,.fc-consent-root,[id*="cookie-consent"],[class*="cookie-consent"],[aria-label*="cookie" i],.qc-cmp2-container,#sp_message_container_,div[id^="sp_message_container"]{display:none!important}body{overflow:auto!important}';
+    (document.head||document.documentElement).appendChild(s);
+  }catch(e){}
+})();
+''';
+
+  static const _popupScript = r'''
+(function(){
+  if (window.__nwPop) return; window.__nwPop = true;
+  try{ window.open = function(){ return null; }; }catch(e){}
+})();
+''';
+
+  void _injectAds(_BTab tab) {
+    if (_settings.blockAds.value) tab.controller.runJavaScript(_adScript);
+    if (_settings.blockCookieBanners.value) tab.controller.runJavaScript(_cookieBannerScript);
+    if (_settings.blockPopups.value) tab.controller.runJavaScript(_popupScript);
+  }
+
   static final _trackingParam = RegExp(r'^(utm_[a-z_]+|fbclid|gclid|dclid|msclkid|yclid|mc_eid|mc_cid|igshid|_ga|_gl|ref_src|spm|vero_id|oly_enc_id|oly_anon_id)$', caseSensitive: false);
 
   /// Returns [uri] without tracking query parts, or the same [uri] if clean.
@@ -221,6 +296,7 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
         });
         if (_settings.blockTrackers.value) _injectBlocker(tab);
         _injectPrivacy(tab);
+        _injectAds(tab);
       },
       onProgress: (p) {
         if (mounted) setState(() => tab.progress = p);
@@ -228,6 +304,7 @@ class _InAppBrowserScreenState extends State<InAppBrowserScreen> {
       onPageFinished: (url) async {
         if (_settings.blockTrackers.value) _injectBlocker(tab);
         _injectPrivacy(tab);
+        _injectAds(tab);
         final title = await controller.getTitle();
         final back = await controller.canGoBack();
         final fwd = await controller.canGoForward();
