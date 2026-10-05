@@ -32,6 +32,8 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
   bool _trafficCamouflage = false;
   // Feature: People suggestions (Contacts → Discover).
   bool _discoverable = false;
+  // Feature: block screenshots on every screen (chats/stories are always blocked).
+  bool _blockShots = false;
 
   @override
   void initState() {
@@ -53,6 +55,9 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
     });
     final uid = _authService.currentUserId;
     if (uid != null) {
+      SettingsService.getBlockScreenshotsEverywhere().then((v) {
+        if (mounted) setState(() => _blockShots = v);
+      });
       _authService.isDiscoverable().then((v) {
         if (mounted) setState(() => _discoverable = v);
       }).catchError((_) {});
@@ -211,6 +216,19 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                     setState(() => _hideRecentsPreview = v);
                     await SettingsService.setHideRecentsPreview(v);
                     await ScreenshotGuardService.setRecentsPreviewHidden(v);
+                  },
+                ),
+                SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.screenshot_monitor_outlined),
+                  title: const Text('Block screenshots everywhere'),
+                  subtitle: const Text(
+                    'Chats, groups, stories and the media viewers are always protected. Turn this on to also block screenshots and screen recording on every other screen, like the chat list and settings.',
+                  ),
+                  value: _blockShots,
+                  onChanged: (v) async {
+                    setState(() => _blockShots = v);
+                    await SettingsService.setBlockScreenshotsEverywhere(v);
+                    await ScreenshotGuardService.setBlockEverywhere(v);
                   },
                 ),
                 SwitchListTile.adaptive(
