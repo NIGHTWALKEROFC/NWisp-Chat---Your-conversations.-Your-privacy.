@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../screens/browser/in_app_browser_screen.dart';
 import '../services/browser_settings_service.dart';
@@ -20,6 +21,7 @@ import '../services/link_safety_service.dart';
 Future<void> openMessageLink(BuildContext context, String url) async {
   final host = LinkSafetyService.hostOf(url);
   final reason = LinkSafetyService.flagReason(url);
+  final danger = LinkSafetyService.level(url) >= 2;
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
@@ -29,6 +31,14 @@ Future<void> openMessageLink(BuildContext context, String url) async {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(host.isEmpty ? url : host, style: const TextStyle(fontWeight: FontWeight.w700)),
+          if (danger) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(color: Theme.of(dialogContext).colorScheme.error, borderRadius: BorderRadius.circular(6)),
+              child: Text('LIKELY UNSAFE', style: TextStyle(color: Theme.of(dialogContext).colorScheme.onError, fontSize: 11, fontWeight: FontWeight.w800)),
+            ),
+          ],
           if (reason != null) ...[
             const SizedBox(height: 10),
             Row(
@@ -43,11 +53,18 @@ Future<void> openMessageLink(BuildContext context, String url) async {
         ],
       ),
       actions: [
+        TextButton(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: url));
+            ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Link copied')));
+          },
+          child: const Text('Copy'),
+        ),
         TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
         FilledButton(
           style: reason != null ? FilledButton.styleFrom(backgroundColor: Theme.of(dialogContext).colorScheme.error) : null,
           onPressed: () => Navigator.pop(dialogContext, true),
-          child: Text(reason != null ? 'Open anyway' : 'Open'),
+          child: Text(danger ? 'Open anyway (not advised)' : (reason != null ? 'Open anyway' : 'Open')),
         ),
       ],
     ),
