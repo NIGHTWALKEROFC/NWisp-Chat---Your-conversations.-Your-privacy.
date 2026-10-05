@@ -6,6 +6,8 @@ import '../../widgets/confirm_email_fields.dart';
 import '../../widgets/contact_developer_sheet.dart';
 import '../../widgets/strong_password_fields.dart';
 import 'account_security_screen.dart';
+import 'change_email_screen.dart';
+import 'change_password_screen.dart';
 import 'delete_account_screen.dart';
 import 'forgot_password_screen.dart';
 
@@ -35,178 +37,13 @@ class _AccountScreenState extends State<AccountScreen> {
     });
   }
 
-  // ---- Change email (redesign) -----------------------------------------
-  //
-  // Instagram-style: "new email" + "confirm new email" are shown TOGETHER,
-  // just like a "new password" + "confirm password" pair, so a typo in the
-  // new address is caught before the person ever has to type their
-  // password or wait for a confirmation email that will never arrive at
-  // the address they actually meant. Only once the two match do we ask for
-  // the current password (same reauthentication step as before — nothing
-  // about how the change is actually applied server-side has changed).
+  // Change email / change password are full pages now (not pop-ups).
   Future<void> _changeEmail() async {
-    final newEmail = await _promptNewEmail();
-    if (newEmail == null) return;
-
-    final password = await _promptPassword('Confirm your current password to change your email.');
-    if (password == null) return;
-
-    try {
-      await _authService.reauthenticate(password);
-      await _authService.requestEmailChange(newEmail);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Check $newEmail for a link to confirm the change')),
-      );
-    } catch (e) {
-      _showErrorWithHelp('Could not change email. Check your password and try again.');
-    }
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangeEmailScreen()));
   }
 
-  /// Shows the "new email" / "confirm new email" pair (see
-  /// ConfirmEmailFields) and returns the validated, trimmed new address —
-  /// or null if the person cancelled, left it unchanged, or the two
-  /// fields didn't match.
-  Future<String?> _promptNewEmail() async {
-    final emailController = TextEditingController();
-    final confirmController = TextEditingController();
-    try {
-      return await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            final newEmail = emailController.text.trim();
-            final confirmEmail = confirmController.text.trim();
-            final looksValid = newEmail.contains('@') && newEmail.contains('.');
-            final matches = confirmEmail.isNotEmpty && confirmEmail.toLowerCase() == newEmail.toLowerCase();
-            final isUnchanged = newEmail.isNotEmpty && newEmail.toLowerCase() == _email.toLowerCase();
-            return AlertDialog(
-              title: const Text('Change email'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text('Current email: $_email', style: Theme.of(context).textTheme.bodySmall),
-                    const SizedBox(height: 16),
-                    ConfirmEmailFields(
-                      emailController: emailController,
-                      confirmController: confirmController,
-                      onChanged: () => setDialogState(() {}),
-                    ),
-                    if (isUnchanged)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          'That matches your current email address.',
-                          style: TextStyle(color: Theme.of(dialogContext).colorScheme.error, fontSize: 12.5),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-                FilledButton(
-                  onPressed: looksValid && matches && !isUnchanged
-                      ? () => Navigator.pop(dialogContext, newEmail)
-                      : null,
-                  child: const Text('Next'),
-                ),
-              ],
-            );
-          },
-        ),
-      );
-    } finally {
-      emailController.dispose();
-      confirmController.dispose();
-    }
-  }
-
-  // ---- Change password (redesign) --------------------------------------
-  //
-  // Instagram-style: current password first (its own, separate step — you
-  // shouldn't see the "new password" fields until you've proven you're
-  // allowed to set one), THEN "new password" + "confirm new password"
-  // shown together, reusing the exact same StrongPasswordFields widget
-  // signup/reset already use, instead of two sequential single-field
-  // prompts with no way to compare them side by side.
   Future<void> _changePassword() async {
-    final currentPassword = await _promptPassword('Enter your current password.');
-    if (currentPassword == null) return;
-
-    final newPassword = await _promptNewPassword();
-    if (newPassword == null) return;
-
-    final ok = await confirmPasswordNotBreached(context, newPassword);
-    if (!ok || !mounted) return;
-    try {
-      await _authService.reauthenticate(currentPassword);
-      await _authService.updatePassword(newPassword);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Password updated')),
-      );
-    } catch (e) {
-      _showErrorWithHelp("Could not change password. If you don't remember your current one, use "
-          "'Forgot password?' below instead.");
-    }
-  }
-
-  /// Shows the "new password" / "confirm new password" pair (see
-  /// StrongPasswordFields — same widget used at signup) and returns the
-  /// validated new password, or null if cancelled or too short.
-  Future<String?> _promptNewPassword() async {
-    final passwordController = TextEditingController();
-    final confirmController = TextEditingController();
-    try {
-      return await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            final matches = passwordController.text.isNotEmpty && passwordController.text == confirmController.text;
-            final longEnough = passwordController.text.length >= 6;
-            return AlertDialog(
-              title: const Text('Choose a new password'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    StrongPasswordFields(
-                      passwordController: passwordController,
-                      confirmController: confirmController,
-                      passwordLabel: 'New password',
-                      confirmLabel: 'Confirm new password',
-                      onChanged: () => setDialogState(() {}),
-                    ),
-                    if (passwordController.text.isNotEmpty && !longEnough)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          'Must be at least 6 characters.',
-                          style: TextStyle(color: Theme.of(dialogContext).colorScheme.error, fontSize: 12.5),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-                FilledButton(
-                  onPressed: matches && longEnough ? () => Navigator.pop(dialogContext, passwordController.text) : null,
-                  child: const Text('Next'),
-                ),
-              ],
-            );
-          },
-        ),
-      );
-    } finally {
-      passwordController.dispose();
-      confirmController.dispose();
-    }
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangePasswordScreen()));
   }
 
   Future<void> _exportData() async {
