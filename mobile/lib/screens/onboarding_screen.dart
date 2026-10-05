@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/settings_service.dart';
+import 'settings/permissions_screen.dart';
 import '../widgets/nwisp_ui.dart';
 
 /// Shown once, ever, per install — see SettingsService.getHasSeenOnboarding.
@@ -25,6 +26,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _finish() async {
     await SettingsService.setHasSeenOnboarding(true);
+    // Ask for every permission together, once (Settings → Permissions later).
+    if (mounted) {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PermissionsScreen(intro: true)));
+    }
     widget.onDone();
   }
 
