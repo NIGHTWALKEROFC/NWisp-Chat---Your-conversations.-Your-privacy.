@@ -76,7 +76,9 @@ dependencies:
   # Feature: auto-download rules (Wi-Fi / mobile data) — see AutoDownloadService.
   connectivity_plus: ^6.0.5
   # Feature: message reminders — schedules a notification for a chosen time.
-  timezone: ^0.9.4
+  # No version on purpose: flutter_local_notifications decides which timezone
+  # version it needs, and a fixed number here could clash with it.
+  timezone: any
   # Feature: encrypted backup — picks the backup file to restore.
   file_picker: ^8.1.2
   # Feature: live location sharing (see LiveLocationService). geolocator
