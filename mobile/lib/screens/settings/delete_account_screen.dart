@@ -16,19 +16,35 @@ class _DeleteAccountScreenState extends State<DeleteAccountScreen> {
   final _passwordController = TextEditingController();
   bool _obscure = true;
   bool _deleting = false;
+
+  // Feature: ask why (saved for the app owner to read in Firestore).
+  static const _reasons = <String>[
+    'I have privacy concerns',
+    'I use another app instead',
+    'Too many bugs or something is not working',
+    'I get too many notifications or unwanted requests',
+    'I created this account by mistake',
+    'I need a break from social apps',
+    'Other',
+  ];
+  String? _reason;
+  final _otherController = TextEditingController();
   String? _error;
 
   @override
   void dispose() {
     _confirmController.dispose();
     _passwordController.dispose();
+    _otherController.dispose();
     super.dispose();
   }
 
   bool get _canSubmit =>
       !_deleting &&
       _confirmController.text.trim() == _confirmWord &&
-      _passwordController.text.isNotEmpty;
+      _passwordController.text.isNotEmpty &&
+      _reason != null &&
+      (_reason != 'Other' || _otherController.text.trim().isNotEmpty);
 
   Future<void> _delete() async {
     setState(() {
@@ -36,7 +52,11 @@ class _DeleteAccountScreenState extends State<DeleteAccountScreen> {
       _error = null;
     });
     try {
-      await AccountLifecycleService.deleteAccount(_passwordController.text);
+      await AccountLifecycleService.deleteAccount(
+        _passwordController.text,
+        reason: _reason ?? '',
+        reasonDetails: _otherController.text,
+      );
       // Deleting the Firebase Auth user fires authStateChanges — AuthGate
       // is already listening and drops back to LoginScreen on its own;
       // nothing else needs to happen here on success.
@@ -71,6 +91,29 @@ class _DeleteAccountScreenState extends State<DeleteAccountScreen> {
                 'data this device has for this account. This cannot be undone.',
               ),
               const SizedBox(height: 24),
+              Text('Why are you leaving?', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 4),
+              for (final r in _reasons)
+                RadioListTile<String>(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  value: r,
+                  groupValue: _reason,
+                  onChanged: (v) => setState(() => _reason = v),
+                  title: Text(r),
+                ),
+              if (_reason == 'Other')
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: TextField(
+                    controller: _otherController,
+                    onChanged: (_) => setState(() {}),
+                    maxLines: 3,
+                    maxLength: 300,
+                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Tell us in your own words'),
+                  ),
+                ),
+              const SizedBox(height: 16),
               Text('Type $_confirmWord to confirm', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               TextField(
