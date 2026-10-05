@@ -9,6 +9,9 @@ import '../../widgets/nwisp_ui.dart';
 import '../../widgets/user_avatar.dart';
 import '../bots/bots_hub_screen.dart';
 import 'permissions_screen.dart';
+import 'data_storage_screen.dart';
+import 'reminders_screen.dart';
+import 'backup_screen.dart';
 import '../broadcast/broadcast_lists_screen.dart';
 import '../browser/browser_settings_screen.dart';
 import '../chat/scheduled_messages_screen.dart';
@@ -231,6 +234,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 14),
                 _group([
                   _row(Icons.smart_toy_outlined, 'Manage bots', 'Create and manage the bots you made', const BotsHubScreen()),
+                  _row(Icons.backup_outlined, 'Backup and restore', 'Passphrase-protected copy of your chats', const BackupScreen()),
+                  _row(Icons.alarm_outlined, 'Reminders', 'Messages you asked to be reminded about', const RemindersScreen()),
+                  _row(Icons.data_usage_rounded, 'Data and storage', 'Auto-download rules and clearing space', const DataStorageScreen()),
                   _row(Icons.admin_panel_settings_outlined, 'Permissions', 'See, allow or turn off what NWisp can use', const PermissionsScreen()),
                   _row(Icons.campaign_outlined, 'Broadcast lists', 'Send one message to many people', const BroadcastListsScreen()),
                   _row(Icons.folder_outlined, 'Chat folders', 'Organise your chats', const ChatFoldersScreen()),
