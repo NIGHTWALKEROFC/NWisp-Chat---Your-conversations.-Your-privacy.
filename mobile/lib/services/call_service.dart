@@ -417,9 +417,14 @@ class VoiceCallSession {
     IncomingCallNotifier.showOverLockScreen(false);
     _ringTimeout?.cancel();
     _ticker?.cancel();
+    // BUGFIX: tell the screen the call is over FIRST. Before, this only
+    // happened after several network/WebRTC awaits at the bottom — if any of
+    // them stalled (weak network right after a call), the call screen stayed
+    // frozen on screen.
+    phase.value = CallPhase.ended;
     if (updateDoc) {
       try {
-        await ref.update({'status': _finalStatus});
+        await ref.update({'status': _finalStatus}).timeout(const Duration(seconds: 4));
       } catch (_) {}
     }
     // The chat line for this call (see CallLogService).
@@ -438,18 +443,21 @@ class VoiceCallSession {
       outgoing: isCaller,
       text: line,
     ));
-    await _docSub?.cancel();
-    await _candSub?.cancel();
-    for (final t in _local?.getTracks() ?? <MediaStreamTrack>[]) {
-      try {
-        await t.stop();
-      } catch (_) {}
+    try {
+      await _docSub?.cancel();
+      await _candSub?.cancel();
+      for (final t in _local?.getTracks() ?? <MediaStreamTrack>[]) {
+        try {
+          await t.stop();
+        } catch (_) {}
+      }
+      await _local?.dispose();
+      await _pc?.close().timeout(const Duration(seconds: 3));
+    } catch (_) {
+      // Releasing the microphone must never block ending the call.
     }
-    await _local?.dispose();
-    await _pc?.close();
     _pc = null;
     _local = null;
-    phase.value = CallPhase.ended;
     _onClosed?.call();
     // Only the caller cleans the signalling notes up (rules allow either) —
     // except for a missed call, whose record is kept so the other phone can
