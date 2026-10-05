@@ -6,6 +6,59 @@ import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// One entry in the Download manager.
+class DownloadRecord {
+  final String id;
+  final String name;
+  final String kind;
+  final String url;
+  final DateTime startedAt;
+  String status; // downloading | done | failed | cancelled
+  double? progress;
+  int? bytes;
+  String? savedTo; // a folder path, or "Gallery"
+  String? error;
+
+  DownloadRecord({
+    required this.id,
+    required this.name,
+    required this.kind,
+    required this.url,
+    required this.startedAt,
+    this.status = 'downloading',
+    this.progress,
+    this.bytes,
+    this.savedTo,
+    this.error,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'kind': kind,
+        'url': url,
+        't': startedAt.millisecondsSinceEpoch,
+        's': status,
+        'b': bytes,
+        'p': savedTo,
+        'e': error,
+      };
+
+  static DownloadRecord fromJson(Map<String, dynamic> j) => DownloadRecord(
+        id: j['id'] as String,
+        name: j['name'] as String,
+        kind: (j['kind'] as String?) ?? 'file',
+        url: (j['url'] as String?) ?? '',
+        startedAt: DateTime.fromMillisecondsSinceEpoch((j['t'] as num).toInt()),
+        // A download that was running when the app closed did not finish.
+        status: (j['s'] == 'downloading') ? 'failed' : (j['s'] as String),
+        bytes: (j['b'] as num?)?.toInt(),
+        savedTo: j['p'] as String?,
+        error: j['e'] as String?,
+      );
+}
 
 /// One downloadable file found on the page the person is looking at.
 class FoundMedia {
@@ -29,6 +82,46 @@ class FoundMedia {
 class BrowserDownloadService {
   BrowserDownloadService._();
   static final instance = BrowserDownloadService._();
+
+  // ---- Download manager state -------------------------------------------
+  /// Newest first. The Download manager screen listens to this.
+  final ValueNotifier<List<DownloadRecord>> records = ValueNotifier(const []);
+  bool _recordsLoaded = false;
+  final Map<String, bool> _cancelFlags = {};
+
+  Future<void> loadRecords() async {
+    if (_recordsLoaded) return;
+    _recordsLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('download_records_v1');
+      if (raw != null) {
+        records.value = (jsonDecode(raw) as List).map((e) => DownloadRecord.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _persist() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final keep = records.value.take(100).map((r) => r.toJson()).toList();
+      await prefs.setString('download_records_v1', jsonEncode(keep));
+    } catch (_) {}
+  }
+
+  void _touch() => records.value = List.of(records.value);
+
+  void cancel(String id) => _cancelFlags[id] = true;
+
+  Future<void> remove(String id) async {
+    records.value = records.value.where((r) => r.id != id).toList();
+    await _persist();
+  }
+
+  Future<void> clearFinished() async {
+    records.value = records.value.where((r) => r.status == 'downloading').toList();
+    await _persist();
+  }
 
   /// JavaScript that lists media on the page. Returns a JSON string.
   static const scanScript = r'''
@@ -137,6 +230,46 @@ class BrowserDownloadService {
   /// to the app's Downloads folder and the returned path is where they are.
   /// [onProgress] gets 0.0–1.0 (or null if the size is unknown).
   Future<String> download(FoundMedia item, {void Function(double? progress)? onProgress, bool Function()? cancelled}) async {
+    await loadRecords();
+    final rec = DownloadRecord(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: item.name,
+      kind: item.kind,
+      url: item.url,
+      startedAt: DateTime.now(),
+    );
+    records.value = [rec, ...records.value];
+    _cancelFlags[rec.id] = false;
+    try {
+      final where = await _download(
+        item,
+        onProgress: (v) {
+          rec.progress = v;
+          _touch();
+          onProgress?.call(v);
+        },
+        cancelled: () => (cancelled?.call() ?? false) || (_cancelFlags[rec.id] ?? false),
+        onSize: (b) => rec.bytes = b,
+      );
+      rec.status = 'done';
+      rec.progress = 1;
+      rec.savedTo = where.startsWith('/') ? p.dirname(where) : 'Gallery';
+      _touch();
+      await _persist();
+      return where;
+    } catch (e) {
+      final wasCancelled = (cancelled?.call() ?? false) || (_cancelFlags[rec.id] ?? false);
+      rec.status = wasCancelled ? 'cancelled' : 'failed';
+      rec.error = e.toString().replaceFirst('Exception: ', '');
+      _touch();
+      await _persist();
+      rethrow;
+    } finally {
+      _cancelFlags.remove(rec.id);
+    }
+  }
+
+  Future<String> _download(FoundMedia item, {void Function(double? progress)? onProgress, bool Function()? cancelled, void Function(int bytes)? onSize}) async {
     final tmp = await getTemporaryDirectory();
     final tmpFile = File(p.join(tmp.path, 'nw_dl_${DateTime.now().millisecondsSinceEpoch}_${item.name}'));
     final client = http.Client();
@@ -158,6 +291,7 @@ class BrowserDownloadService {
         onProgress?.call(total != null && total > 0 ? got / total : null);
       }
       await sink.close();
+      onSize?.call(got);
     } finally {
       client.close();
     }
