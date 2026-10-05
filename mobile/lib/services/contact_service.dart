@@ -8,6 +8,8 @@ class ContactService {
 
   String get _myUid => _auth.currentUser!.uid;
 
+  String? get currentUidOrNull => _auth.currentUser?.uid;
+
   /// Looks up one person's current username straight from their public
   /// profile. Used wherever a saved contact name turns out to be empty.
   /// Returns 'Unknown' only if the person truly has no username.
