@@ -476,31 +476,34 @@ class GroupCallSession extends ChangeNotifier {
     CallRecordingWatcher.stop();
     IncomingCallNotifier.stopOngoing();
     IncomingCallNotifier.showOverLockScreen(false);
-    await _docSub?.cancel();
-    await _sigSub?.cancel();
-    if (leaveDoc) {
-      try {
-        await FirebaseFirestore.instance.runTransaction((tx) async {
-          final snap = await tx.get(ref);
-          final data = snap.data();
-          if (data == null) return;
-          final joined = List<String>.from(data['joined'] ?? const [])..remove(myUid);
-          tx.update(ref, {'joined': joined, if (joined.isEmpty) 'status': 'ended'});
-        });
-      } catch (_) {}
-    }
-    for (final u in _peers.keys.toList()) {
-      await _dropPeer(u);
-    }
-    for (final t in _local?.getTracks() ?? <MediaStreamTrack>[]) {
-      try {
-        await t.stop();
-      } catch (_) {}
-    }
-    await _local?.dispose();
-    _local = null;
+    // BUGFIX: close the call screen first (see CallService._finish).
     ended = true;
     notifyListeners();
+    try {
+      await _docSub?.cancel();
+      await _sigSub?.cancel();
+      if (leaveDoc) {
+        try {
+          await FirebaseFirestore.instance.runTransaction((tx) async {
+            final snap = await tx.get(ref);
+            final data = snap.data();
+            if (data == null) return;
+            final joined = List<String>.from(data['joined'] ?? const [])..remove(myUid);
+            tx.update(ref, {'joined': joined, if (joined.isEmpty) 'status': 'ended'});
+          }).timeout(const Duration(seconds: 5));
+        } catch (_) {}
+      }
+      for (final u in _peers.keys.toList()) {
+        await _dropPeer(u);
+      }
+      for (final t in _local?.getTracks() ?? <MediaStreamTrack>[]) {
+        try {
+          await t.stop();
+        } catch (_) {}
+      }
+      await _local?.dispose();
+    } catch (_) {}
+    _local = null;
     _onClosed?.call();
     if (_wasConnected) {
       unawaited(CallLogService.instance.logGroup(
