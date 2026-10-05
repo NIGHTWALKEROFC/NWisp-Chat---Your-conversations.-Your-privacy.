@@ -8,6 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
+import '../../services/nickname_service.dart';
+import '../../widgets/reminder_picker.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/chat_wallpaper_service.dart';
 import '../../services/inactivity_wipe_service.dart';
@@ -385,6 +387,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
         _ephemeralViewEnabled = doc.data()?['ephemeralViewEnabled'] == true;
       });
     });
+    NicknameService.instance.load();
     _contactService.unfriendedUids().then((s) {
       if (mounted) setState(() => _unfriended = s.contains(widget.peerUid));
     });
@@ -1810,6 +1813,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                             text: msg.text,
                             messageType: msg.messageType,
                             mediaPath: msg.mediaPath,
+                            awaitingDownload: !msg.isMine && msg.hasPendingMedia && msg.mediaPath == null,
                             createdAt: msg.createdAt,
                             replyPreview: replySource?.text,
                             reactions: msg.reactions.values.toList(),
@@ -2273,7 +2277,10 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(widget.peerUsername, overflow: TextOverflow.ellipsis),
+                    ValueListenableBuilder<int>(
+                      valueListenable: NicknameService.instance.changes,
+                      builder: (_, __, ___) => Text(NicknameService.instance.display(widget.peerUid, widget.peerUsername), overflow: TextOverflow.ellipsis),
+                    ),
                     if (data != null)
                       Text(
                         online ? 'Online' : _lastSeenLabel(lastSeen?.toDate()),
@@ -2439,6 +2446,19 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     }
   }
 
+  String _mediaTypeLabel(String t) {
+    switch (t) {
+      case 'image':
+        return '📷 Photo';
+      case 'video':
+        return '🎥 Video';
+      case 'voice':
+        return '🎤 Voice message';
+      default:
+        return 'Message';
+    }
+  }
+
   AppBar _buildSelectionAppBar(ColorScheme scheme) {
     final count = _selectedIds.length;
     final single = count == 1;
@@ -2491,6 +2511,25 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
         // Feature: locked media vault — only for photos/videos.
         if (_selectedMovableToVault().isNotEmpty)
           IconButton(icon: const Icon(Icons.enhanced_encryption_outlined), tooltip: 'Move to vault', onPressed: _moveSelectedToVault),
+        // Feature: message reminders — one message at a time.
+        if (single)
+          IconButton(
+            icon: const Icon(Icons.alarm_add_outlined),
+            tooltip: 'Remind me later',
+            onPressed: () {
+              final m = _messages.firstWhere((x) => x.id == _selectedIds.first);
+              final text = m.messageType == 'text' ? m.text : _mediaTypeLabel(m.messageType);
+              setState(_selectedIds.clear);
+              askReminder(
+                context,
+                messageId: m.id,
+                conversationId: widget.conversationId,
+                peerUid: widget.peerUid,
+                peerName: NicknameService.instance.display(widget.peerUid, widget.peerUsername),
+                preview: text,
+              );
+            },
+          ),
         IconButton(
           icon: Icon(single && _messages.any((m) => m.id == _selectedIds.first && m.starred) ? Icons.star : Icons.star_border),
           tooltip: 'Star',
@@ -2547,6 +2586,8 @@ class _MessageBubble extends StatelessWidget {
   final String text;
   final String messageType;
   final String? mediaPath;
+  // Feature: auto-download rules — received media held back until tapped.
+  final bool awaitingDownload;
   final DateTime createdAt;
   final String? replyPreview;
   final List<String> reactions;
@@ -2581,6 +2622,7 @@ class _MessageBubble extends StatelessWidget {
     required this.text,
     this.messageType = 'text',
     this.mediaPath,
+    this.awaitingDownload = false,
     required this.createdAt,
     required this.replyPreview,
     required this.reactions,
@@ -2740,6 +2782,11 @@ class _MessageBubble extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 6),
                             child: _ViewOnceBubbleContent(id: id, path: mediaPath, isVideo: true, isMine: isMine, consumed: viewOnceConsumed),
+                          )
+                        else if (awaitingDownload && (messageType == 'image' || messageType == 'video' || messageType == 'voice'))
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _DownloadTile(messageId: id, type: messageType),
                           )
                         else if (messageType == 'image' && mediaPath != null)
                           Padding(
@@ -3204,6 +3251,64 @@ class _VideoBubbleContent extends StatelessWidget {
           color: Colors.black87,
           alignment: Alignment.center,
           child: const Icon(Icons.play_circle_fill, color: Colors.white, size: 52),
+        ),
+      ),
+    );
+  }
+}
+
+
+/// "Tap to download" tile for received media that an auto-download rule held
+/// back (Settings → Data and storage → Auto-download).
+class _DownloadTile extends StatefulWidget {
+  final String messageId;
+  final String type;
+  const _DownloadTile({required this.messageId, required this.type});
+
+  @override
+  State<_DownloadTile> createState() => _DownloadTileState();
+}
+
+class _DownloadTileState extends State<_DownloadTile> {
+  bool _busy = false;
+
+  Future<void> _go() async {
+    setState(() => _busy = true);
+    try {
+      await MessageRelayService.downloadPendingMedia(widget.messageId);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Couldn't download — it may have expired. Ask them to send it again.")),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final label = widget.type == 'video' ? 'video' : (widget.type == 'voice' ? 'voice message' : 'photo');
+    return InkWell(
+      onTap: _busy ? null : _go,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        height: 120,
+        width: 220,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_busy)
+              const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 2))
+            else
+              Icon(Icons.download_rounded, color: scheme.primary, size: 30),
+            const SizedBox(height: 6),
+            Text(_busy ? 'Downloading…' : 'Tap to download $label', style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant)),
+          ],
         ),
       ),
     );
