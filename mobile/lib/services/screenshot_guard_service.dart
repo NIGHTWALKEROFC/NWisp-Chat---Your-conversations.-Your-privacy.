@@ -85,6 +85,20 @@ class ScreenshotGuardService {
     }
   }
 
+  static bool _everywhereHeld = false;
+
+  /// Feature: "Block screenshots everywhere". Holds the same protection that
+  /// chats use for the whole app, for as long as it is switched on.
+  static Future<void> setBlockEverywhere(bool on) async {
+    if (on && !_everywhereHeld) {
+      _everywhereHeld = true;
+      await acquire();
+    } else if (!on && _everywhereHeld) {
+      _everywhereHeld = false;
+      await release();
+    }
+  }
+
   /// Call from initState() of any screen that should never be
   /// screenshotted or screen-recorded (1:1 chat, group chat, fullscreen
   /// media viewers, the safety-number verification screen). Must be
