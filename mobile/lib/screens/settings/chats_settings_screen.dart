@@ -119,6 +119,26 @@ class _ChatsSettingsScreenState extends State<ChatsSettingsScreen> {
                 // Feature: home sections (bottom bar). Both can be switched off
                 // to keep the home screen as clean as you like.
                 ValueListenableBuilder<bool>(
+                  valueListenable: HomeSectionsService.storiesTab,
+                  builder: (context, on, _) => SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.auto_awesome_motion_outlined),
+                    title: const Text('Stories section'),
+                    subtitle: const Text('Show the Stories tab in the bottom bar. Off hides it.'),
+                    value: on,
+                    onChanged: (v) => HomeSectionsService.setStoriesTab(v),
+                  ),
+                ),
+                ValueListenableBuilder<bool>(
+                  valueListenable: HomeSectionsService.storiesOnHome,
+                  builder: (context, on, _) => SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.view_carousel_outlined),
+                    title: const Text('Stories on top of Chats'),
+                    subtitle: const Text('Also show the stories row at the top of the Chats screen. Off by default.'),
+                    value: on,
+                    onChanged: (v) => HomeSectionsService.setStoriesOnHome(v),
+                  ),
+                ),
+                ValueListenableBuilder<bool>(
                   valueListenable: HomeSectionsService.announcementsTab,
                   builder: (context, on, _) => SwitchListTile.adaptive(
                     secondary: const Icon(Icons.campaign_outlined),
