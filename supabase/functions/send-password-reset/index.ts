@@ -152,18 +152,20 @@ async function sendEmail(opts: { to: string; subject: string; html: string; text
       tls: true,
       auth: { username: GMAIL_ADDRESS, password: GMAIL_APP_PASSWORD },
     },
-    // Fixes stray "=20" (and similar =XX escapes) showing up at line
-    // breaks in the received email — see _shared/email.ts's copy of this
-    // same comment for the full explanation.
-    debug: { encodeLB: true },
   });
   try {
+    // FIX for the stray "=20" / "=3D" characters in received emails: the
+    // library's default "quoted-printable" body encoding is what produced
+    // them (some mail apps show the raw escapes). Base64 has no such
+    // escapes, so both the plain and HTML versions are sent as base64.
     await client.send({
       from: `${FROM_NAME} <${GMAIL_ADDRESS}>`,
       to: opts.to,
       subject: opts.subject,
-      content: opts.text,
-      html: opts.html,
+      mimeContent: [
+        { mimeType: 'text/plain; charset="utf-8"', content: opts.text, transferEncoding: "base64" },
+        { mimeType: 'text/html; charset="utf-8"', content: opts.html, transferEncoding: "base64" },
+      ],
     });
   } finally {
     await client.close();
