@@ -17,6 +17,9 @@ class BrowserSettingsService {
   static const _kBlocked = 'br_blocked_count';
   static const _kHistory = 'br_save_history';
   static const _kHigh = 'br_high_privacy';
+  static const _kAds = 'br_block_ads';
+  static const _kCookieBanners = 'br_block_cookie_banners';
+  static const _kPopups = 'br_block_popups';
   static const _kStrip = 'br_strip_params';
 
   /// Links open inside NWisp. On by default.
@@ -34,6 +37,17 @@ class BrowserSettingsService {
   /// WebRTC leak protection (hides your real IP), no Referer sent to sites,
   /// sensors/camera/mic/battery APIs hidden from pages.
   final highPrivacy = ValueNotifier<bool>(true);
+
+  /// Hides ads on websites and strips ads from YouTube's player data
+  /// (skips whatever still gets through). Best effort — see the note in
+  /// the browser settings screen.
+  final blockAds = ValueNotifier<bool>(true);
+
+  /// Hides "accept cookies" pop-up banners.
+  final blockCookieBanners = ValueNotifier<bool>(true);
+
+  /// Stops pages from opening extra windows / pop-ups on their own.
+  final blockPopups = ValueNotifier<bool>(true);
 
   /// Removes tracking parts from links (utm_*, fbclid, gclid …) before opening.
   final stripTrackingParams = ValueNotifier<bool>(true);
@@ -68,6 +82,9 @@ class BrowserSettingsService {
     desktopMode.value = p.getBool(_kDesktop) ?? false;
     saveHistory.value = p.getBool(_kHistory) ?? false;
     highPrivacy.value = p.getBool(_kHigh) ?? true;
+    blockAds.value = p.getBool(_kAds) ?? true;
+    blockCookieBanners.value = p.getBool(_kCookieBanners) ?? true;
+    blockPopups.value = p.getBool(_kPopups) ?? true;
     stripTrackingParams.value = p.getBool(_kStrip) ?? true;
     trackersBlockedTotal = p.getInt(_kBlocked) ?? 0;
     _loaded = true;
@@ -87,6 +104,9 @@ class BrowserSettingsService {
   Future<void> setDesktopMode(bool v) => _setBool(_kDesktop, desktopMode, v);
   Future<void> setSaveHistory(bool v) => _setBool(_kHistory, saveHistory, v);
   Future<void> setHighPrivacy(bool v) => _setBool(_kHigh, highPrivacy, v);
+  Future<void> setBlockAds(bool v) => _setBool(_kAds, blockAds, v);
+  Future<void> setBlockCookieBanners(bool v) => _setBool(_kCookieBanners, blockCookieBanners, v);
+  Future<void> setBlockPopups(bool v) => _setBool(_kPopups, blockPopups, v);
   Future<void> setStripTrackingParams(bool v) => _setBool(_kStrip, stripTrackingParams, v);
 
   Future<void> setSearchEngine(String id) async {
