@@ -1,6 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../services/nickname_service.dart';
+import '../../widgets/nickname_dialog.dart';
 import '../../services/contact_service.dart';
 import '../../services/conversation_service.dart';
 import '../../widgets/user_avatar.dart';
@@ -22,6 +24,12 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
   late final TabController _tabController = TabController(length: 3, vsync: this);
 
   String? _openingUid;
+
+  @override
+  void initState() {
+    super.initState();
+    NicknameService.instance.load();
+  }
 
   // Long-press-to-multi-select, WhatsApp style: long-press a contact to
   // start selecting more, then tap the checkmark to create a group from
@@ -230,12 +238,20 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                           ),
                       ],
                     ),
-                    title: storedName.isEmpty
-                        ? FutureBuilder<String>(
-                            future: _contactService.usernameFor(uid),
-                            builder: (_, s) => Text(s.data ?? 'Unknown'),
-                          )
-                        : Text(username),
+                    title: ValueListenableBuilder<int>(
+                      valueListenable: NicknameService.instance.changes,
+                      builder: (_, __, ___) {
+                        final nick = NicknameService.instance.nicknameFor(uid);
+                        if (nick != null) return Text(nick);
+                        return storedName.isEmpty
+                            ? FutureBuilder<String>(
+                                future: _contactService.usernameFor(uid),
+                                builder: (_, s) => Text(s.data ?? 'Unknown'),
+                              )
+                            : Text(username);
+                      },
+                    ),
+                    subtitle: NicknameService.instance.nicknameFor(uid) != null ? Text('@$username') : null,
                     trailing: _selectionMode
                         ? null
                         : (isOpening
@@ -245,9 +261,11 @@ class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProvid
                                 onSelected: (value) {
                                   if (value == 'message') _openChat(uid, username);
                                   if (value == 'remove') _confirmRemove(uid, username);
+                                  if (value == 'nick') showNicknameDialog(context, uid: uid, realName: username);
                                 },
                                 itemBuilder: (_) => const [
                                   PopupMenuItem(value: 'message', child: Text('Message')),
+                                  PopupMenuItem(value: 'nick', child: Text('Set nickname')),
                                   PopupMenuItem(value: 'remove', child: Text('Remove contact')),
                                 ],
                               )),
