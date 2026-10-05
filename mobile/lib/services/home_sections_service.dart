@@ -15,6 +15,8 @@ class HomeSectionsService {
   static const _kAnnouncements = 'home_section_announcements';
   static const _kCommunity = 'home_section_community';
   static const _kNearby = 'home_section_nearby';
+  static const _kStoriesTab = 'home_section_stories_tab';
+  static const _kStoriesOnHome = 'home_stories_on_home';
 
   /// ON: announcement-only groups live in their own "Announcements" tab and
   /// are kept OUT of the Chats list. OFF: they are mixed into Chats like any
@@ -29,6 +31,13 @@ class HomeSectionsService {
   /// is shown. Switch it off in Settings > Chats if you don't need it.
   static final ValueNotifier<bool> nearbyTab = ValueNotifier(true);
 
+  /// ON: the \"Stories\" tab is in the bottom bar.
+  static final ValueNotifier<bool> storiesTab = ValueNotifier(true);
+
+  /// ON: a stories row also sits at the top of the Chats screen. OFF by
+  /// default — stories live in their own tab; turn this on in Settings > Chats.
+  static final ValueNotifier<bool> storiesOnHome = ValueNotifier(false);
+
   static bool _loaded = false;
 
   static Future<void> load() async {
@@ -37,6 +46,8 @@ class HomeSectionsService {
     announcementsTab.value = prefs.getBool(_kAnnouncements) ?? true;
     communityTab.value = prefs.getBool(_kCommunity) ?? true;
     nearbyTab.value = prefs.getBool(_kNearby) ?? true;
+    storiesTab.value = prefs.getBool(_kStoriesTab) ?? true;
+    storiesOnHome.value = prefs.getBool(_kStoriesOnHome) ?? false;
     _loaded = true;
   }
 
@@ -50,6 +61,18 @@ class HomeSectionsService {
     nearbyTab.value = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kNearby, value);
+  }
+
+  static Future<void> setStoriesTab(bool value) async {
+    storiesTab.value = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kStoriesTab, value);
+  }
+
+  static Future<void> setStoriesOnHome(bool value) async {
+    storiesOnHome.value = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kStoriesOnHome, value);
   }
 
   static Future<void> setCommunityTab(bool value) async {
