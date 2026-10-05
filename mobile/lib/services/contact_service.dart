@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ContactService {
   final _db = FirebaseFirestore.instance;
@@ -166,6 +167,7 @@ class ContactService {
       'addedAt': FieldValue.serverTimestamp(),
     });
     await batch.commit();
+    await clearUnfriended(fromUid);
   }
 
   Future<void> declineRequest(String requestId) {
@@ -200,5 +202,32 @@ class ContactService {
     batch.delete(_db.collection('users').doc(_myUid).collection('contacts').doc(contactUid));
     batch.delete(_db.collection('users').doc(contactUid).collection('contacts').doc(_myUid));
     await batch.commit();
+    // Remember on this phone that I removed them, so their chat asks for a
+    // new request before I can write to them again (history stays readable).
+    await markUnfriended(contactUid);
+  }
+
+  String get _unfriendKey => 'unfriended_$_myUid';
+
+  Future<Set<String>> unfriendedUids() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (prefs.getStringList(_unfriendKey) ?? const <String>[]).toSet();
+  }
+
+  Future<void> markUnfriended(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    final set = (prefs.getStringList(_unfriendKey) ?? const <String>[]).toSet()..add(uid);
+    await prefs.setStringList(_unfriendKey, set.toList());
+  }
+
+  Future<void> clearUnfriended(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    final set = (prefs.getStringList(_unfriendKey) ?? const <String>[]).toSet();
+    if (set.remove(uid)) await prefs.setStringList(_unfriendKey, set.toList());
+  }
+
+  /// Live "is this person in my contacts" for one uid.
+  Stream<bool> isContactStream(String uid) {
+    return _db.collection('users').doc(_myUid).collection('contacts').doc(uid).snapshots().map((d) => d.exists);
   }
 }
