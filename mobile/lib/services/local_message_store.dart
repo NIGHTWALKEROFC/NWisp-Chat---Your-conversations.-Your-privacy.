@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'auto_download_service.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import '../models/local_message.dart';
@@ -658,6 +660,155 @@ class LocalMessageStore {
     return jsonDecode(json) as Map<String, dynamic>;
   }
 
+  // ---- Backup / restore ---------------------------------------------------
+
+  /// Every message on this phone, oldest first (decrypted) — for the backup.
+  static Future<List<LocalMessage>> exportAllMessages() async {
+    final rows = await _db!.query('messages', orderBy: 'created_at ASC');
+    final result = <LocalMessage>[];
+    for (final r in rows) {
+      try {
+        result.add(await _rowToMessage(r));
+      } catch (_) {
+        // A row that can't be read (e.g. written under an older key) is
+        // skipped rather than failing the whole backup.
+      }
+    }
+    return result;
+  }
+
+  /// Puts one backed-up message back. An existing message with the same id is
+  /// left untouched. Returns true if it was added.
+  static Future<bool> importMessage({
+    required String id,
+    required String conversationId,
+    required String peerUid,
+    required String senderUid,
+    required bool isMine,
+    required String text,
+    required String messageType,
+    String? mediaPath,
+    String? replyToId,
+    Map<String, String> reactions = const {},
+    required String status,
+    required DateTime createdAt,
+    DateTime? expiresAt,
+    DateTime? editedAt,
+    bool isViewOnce = false,
+    bool viewOnceConsumed = false,
+    bool starred = false,
+    bool isForwarded = false,
+  }) async {
+    final existing = await _db!.query('messages', columns: ['id'], where: 'id = ?', whereArgs: [id], limit: 1);
+    if (existing.isNotEmpty) return false;
+    final (encText, nonce) = await CryptoService.encryptLocal(text);
+    await _db!.insert('messages', {
+      'id': id,
+      'conversation_id': conversationId,
+      'peer_uid': peerUid,
+      'sender_uid': senderUid,
+      'is_mine': isMine ? 1 : 0,
+      'enc_text': encText,
+      'enc_nonce': nonce,
+      'message_type': messageType,
+      'media_path': mediaPath,
+      'reply_to_id': replyToId,
+      'reactions': jsonEncode(reactions),
+      // A message that was still "sending" when the backup was made never
+      // left that phone — show it as failed so it can be retried.
+      'status': status == 'sending' ? 'failed' : status,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'expires_at': expiresAt?.millisecondsSinceEpoch,
+      'edited_at': editedAt?.millisecondsSinceEpoch,
+      'pending_media_meta': null,
+      'is_view_once': isViewOnce ? 1 : 0,
+      'view_once_consumed': viewOnceConsumed ? 1 : 0,
+      'starred': starred ? 1 : 0,
+      'is_forwarded': isForwarded ? 1 : 0,
+    });
+    return true;
+  }
+
+  /// Refresh lists after a restore.
+  static void notifyAfterRestore() {
+    _notifySummaries();
+  }
+
+  // ---- Storage manager ----------------------------------------------------
+
+  /// Every saved media file, with its size, for the Storage manager.
+  static Future<List<MediaFileInfo>> mediaFiles() async {
+    final rows = await _db!.query(
+      'messages',
+      columns: ['id', 'conversation_id', 'message_type', 'media_path'],
+      where: 'media_path IS NOT NULL',
+    );
+    final result = <MediaFileInfo>[];
+    for (final r in rows) {
+      final path = r['media_path'] as String;
+      try {
+        final f = File(path);
+        if (!await f.exists()) continue;
+        result.add(MediaFileInfo(
+          messageId: r['id'] as String,
+          conversationId: r['conversation_id'] as String,
+          type: r['message_type'] as String,
+          bytes: await f.length(),
+        ));
+      } catch (_) {}
+    }
+    return result;
+  }
+
+  /// Names of the groups this phone knows about (conversationId → name).
+  static Future<Map<String, String>> groupNames() async {
+    final rows = await _db!.query('group_meta', columns: ['id', 'name']);
+    return {for (final r in rows) r['id'] as String: (r['name'] as String?) ?? 'Group'};
+  }
+
+  /// Deletes the saved media files (not the messages) for the given kinds,
+  /// optionally in one chat only. The messages stay and show "unavailable".
+  /// Returns how many bytes were freed.
+  static Future<int> clearMedia({String? conversationId, required Set<String> types}) async {
+    final where = StringBuffer('media_path IS NOT NULL AND message_type IN (${List.filled(types.length, '?').join(',')})');
+    final args = <Object?>[...types];
+    if (conversationId != null) {
+      where.write(' AND conversation_id = ?');
+      args.add(conversationId);
+    }
+    final rows = await _db!.query('messages', columns: ['id', 'conversation_id', 'media_path'], where: where.toString(), whereArgs: args);
+    var freed = 0;
+    final touched = <String>{};
+    for (final r in rows) {
+      final path = r['media_path'] as String;
+      try {
+        final f = File(path);
+        if (await f.exists()) {
+          freed += await f.length();
+          await f.delete();
+        }
+      } catch (_) {}
+      await _db!.update('messages', {'media_path': null}, where: 'id = ?', whereArgs: [r['id']]);
+      touched.add(r['conversation_id'] as String);
+    }
+    for (final c in touched) {
+      _notifyConversation(c);
+    }
+    if (touched.isNotEmpty) _notifySummaries();
+    return freed;
+  }
+
+  /// Received media that was held back by a download rule and is still
+  /// waiting (see AutoDownloadService).
+  static Future<List<PendingDownload>> pendingDownloads() async {
+    final rows = await _db!.query(
+      'messages',
+      columns: ['id', 'message_type'],
+      where: 'is_mine = 0 AND pending_media_meta IS NOT NULL AND media_path IS NULL',
+    );
+    return rows.map((r) => PendingDownload(r['id'] as String, r['message_type'] as String)).toList();
+  }
+
   /// Completes a manual download: sets the real local media path and
   /// caption, and clears the pending-download meta (its job is done —
   /// nothing sensitive should linger in it longer than necessary).
@@ -1313,6 +1464,14 @@ class LocalMessageStore {
       // a JSON payload ({"shareId":...}) meant for the bubble to parse,
       // not something to show as-is in the chat list preview.
       if (r['message_type'] == 'live_location') text = '📍 Live location';
+      if (r['message_type'] == 'poll') {
+        // Show the poll's question, not its raw JSON.
+        try {
+          text = '📊 ' + ((jsonDecode(text) as Map)['q']?.toString() ?? 'Poll');
+        } catch (_) {
+          text = '📊 Poll';
+        }
+      }
       result.add(ConversationSummary(
         conversationId: conversationId,
         peerUid: r['peer_uid'] as String,
@@ -1340,4 +1499,14 @@ class LocalMessageStore {
     _notifySummaries();
     return _summaryController.stream;
   }
+}
+
+
+/// One saved media file, as the Storage manager sees it.
+class MediaFileInfo {
+  final String messageId;
+  final String conversationId;
+  final String type; // image | video | voice
+  final int bytes;
+  const MediaFileInfo({required this.messageId, required this.conversationId, required this.type, required this.bytes});
 }
