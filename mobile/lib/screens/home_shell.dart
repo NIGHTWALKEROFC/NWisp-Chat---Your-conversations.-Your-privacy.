@@ -11,6 +11,8 @@ import '../services/incoming_call_notifier.dart';
 import '../services/group_service.dart';
 import '../services/secret_chat_service.dart';
 import '../services/home_sections_service.dart';
+import '../services/permission_service.dart';
+import 'settings/permissions_screen.dart';
 import '../services/local_message_store.dart';
 import 'announcements_screen.dart';
 import 'chat_list_screen.dart';
@@ -140,11 +142,19 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    // One-time permissions screen for people who installed before it existed.
+    PermissionService.introSeen().then((seen) async {
+      if (seen || !mounted) return;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PermissionsScreen(intro: true)));
+    });
     HomeSectionsService.load().then((_) {
       if (mounted) setState(() => _ready = true);
     });
     HomeSectionsService.announcementsTab.addListener(_onSettingChanged);
     HomeSectionsService.communityTab.addListener(_onSettingChanged);
+    HomeSectionsService.storiesTab.addListener(_onSettingChanged);
     HomeSectionsService.nearbyTab.addListener(_onSettingChanged);
     CallService.instance.incoming.addListener(_onIncomingCall);
     GroupCallService.instance.incoming.addListener(_onIncomingGroupCall);
@@ -173,6 +183,7 @@ class _HomeShellState extends State<HomeShell> {
   void dispose() {
     HomeSectionsService.announcementsTab.removeListener(_onSettingChanged);
     HomeSectionsService.communityTab.removeListener(_onSettingChanged);
+    HomeSectionsService.storiesTab.removeListener(_onSettingChanged);
     HomeSectionsService.nearbyTab.removeListener(_onSettingChanged);
     CallService.instance.incoming.removeListener(_onIncomingCall);
     GroupCallService.instance.incoming.removeListener(_onIncomingGroupCall);
@@ -211,7 +222,7 @@ class _HomeShellState extends State<HomeShell> {
 
     final tabs = <_Tab>[
       const _Tab('chats', 'Chats', Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded),
-      const _Tab('stories', 'Stories', Icons.auto_awesome_motion_outlined, Icons.auto_awesome_motion),
+      if (HomeSectionsService.storiesTab.value) const _Tab('stories', 'Stories', Icons.auto_awesome_motion_outlined, Icons.auto_awesome_motion),
       if (showAnnouncements) const _Tab('announcements', 'Announcements', Icons.campaign_outlined, Icons.campaign),
       if (showCommunity) const _Tab('community', 'Community', Icons.groups_2_outlined, Icons.groups_2),
       // Feature: Nearby chat (Bluetooth / Wi-Fi, no internet). Can be switched off in Settings > Chats.
