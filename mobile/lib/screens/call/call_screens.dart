@@ -9,6 +9,19 @@ import '../../widgets/user_avatar.dart';
 String _mmss(int s) => '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
 
 /// Full-screen ringing screen for an incoming voice call.
+/// BUGFIX (\"after ending a call the screen freezes until the app is removed
+/// from recent apps\"): every call screen is wrapped in PopScope(canPop:
+/// false) so the back button can't leave a live call. `Navigator.maybePop()`
+/// respects that lock — so when the call ended, the screen asked to close
+/// itself and was refused, forever. This removes the call page itself,
+/// which a PopScope can't block.
+void _closeCallRoute(BuildContext context) {
+  final route = ModalRoute.of(context);
+  if (route != null && route.isActive) {
+    Navigator.of(context).removeRoute(route);
+  }
+}
+
 class IncomingCallScreen extends StatelessWidget {
   final IncomingCall call;
   const IncomingCallScreen({super.key, required this.call});
@@ -22,7 +35,7 @@ class IncomingCallScreen extends StatelessWidget {
     } catch (e) {
       messenger.showSnackBar(const SnackBar(content: Text("Couldn't answer — check microphone permission.")));
       await CallService.instance.declineCall(call);
-      nav.maybePop();
+      nav.pop();
     }
   }
 
@@ -57,7 +70,7 @@ class IncomingCallScreen extends StatelessWidget {
                       onTap: () async {
                         final nav = Navigator.of(context);
                         await CallService.instance.declineCall(call);
-                        nav.maybePop();
+                        nav.pop();
                       },
                     ),
                     _RoundButton(
@@ -105,7 +118,7 @@ class _VoiceCallScreenState extends State<VoiceCallScreen> {
       Future.delayed(const Duration(milliseconds: 900), () {
         if (!mounted) return;
         final messenger = ScaffoldMessenger.maybeOf(context);
-        Navigator.of(context).maybePop();
+        _closeCallRoute(context);
         // Feature: "call me back" — when nobody picked up, offer to leave a
         // short note in the chat. Shown on the screen we go back to.
         const unanswered = {'No answer', 'Call declined', 'Busy on another call'};
@@ -378,7 +391,7 @@ class GroupIncomingCallScreen extends StatelessWidget {
                       onTap: () async {
                         final nav = Navigator.of(context);
                         await GroupCallService.instance.ignore(call);
-                        nav.maybePop();
+                        nav.pop();
                       },
                     ),
                     _RoundButton(
@@ -393,7 +406,7 @@ class GroupIncomingCallScreen extends StatelessWidget {
                           nav.pushReplacement(MaterialPageRoute(builder: (_) => GroupCallScreen(session: s)));
                         } catch (e) {
                           messenger.showSnackBar(SnackBar(content: Text(e is StateError ? e.message.toString() : "Couldn't join the call.")));
-                          nav.maybePop();
+                          nav.pop();
                         }
                       },
                     ),
@@ -434,7 +447,7 @@ class _GroupCallScreenState extends State<GroupCallScreen> {
     if (s.ended && !_leaving) {
       _leaving = true;
       Future.delayed(const Duration(milliseconds: 700), () {
-        if (mounted) Navigator.of(context).maybePop();
+        if (mounted) _closeCallRoute(context);
       });
     }
   }
