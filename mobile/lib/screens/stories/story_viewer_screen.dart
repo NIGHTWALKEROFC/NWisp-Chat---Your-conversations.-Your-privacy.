@@ -152,6 +152,12 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
     }
   }
 
+  Future<void> _openViewers() async {
+    _pause();
+    await showStoryViewersSheet(context, _current['id'] as String);
+    if (mounted) _resume();
+  }
+
   Future<void> _confirmDelete() async {
     _pause();
     final ok = await showDialog<bool>(
@@ -353,6 +359,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
               _goNext();
             }
           },
+          // Swipe up on your own story → viewers panel (WhatsApp / Instagram).
+          onVerticalDragEnd: (d) {
+            if (_isMine && (d.primaryVelocity ?? 0) < -300) _openViewers();
+          },
           onLongPressStart: (_) => _pause(),
           onLongPressEnd: (_) => _resume(),
           child: Stack(
@@ -444,16 +454,38 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> with SingleTicker
                     else
                       const Spacer(),
                     if (_isMine)
-                      TextButton.icon(
-                        onPressed: () {
-                          _pause();
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => StoryViewersScreen(storyId: _current['id'] as String)),
-                          ).then((_) => _resume());
+                      StreamBuilder<List<Map<String, dynamic>>>(
+                        stream: _storyService.feed(),
+                        builder: (context, snap) {
+                          var views = 0;
+                          var likes = 0;
+                          for (final s in snap.data ?? const <Map<String, dynamic>>[]) {
+                            if (s['id'] == _current['id']) {
+                              views = (s['viewers'] as Map).length;
+                              likes = (s['likes'] as List).length;
+                            }
+                          }
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(20),
+                            onTap: _openViewers,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.keyboard_arrow_up_rounded, color: Colors.white),
+                                  const Icon(Icons.visibility_outlined, color: Colors.white, size: 20),
+                                  const SizedBox(width: 4),
+                                  Text('$views', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                                  const SizedBox(width: 14),
+                                  const Icon(Icons.favorite, color: Colors.redAccent, size: 20),
+                                  const SizedBox(width: 4),
+                                  Text('$likes', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                                ],
+                              ),
+                            ),
+                          );
                         },
-                        icon: const Icon(Icons.visibility_outlined, color: Colors.white),
-                        label: const Text('Viewers', style: TextStyle(color: Colors.white)),
                       ),
                   ],
                 ),
