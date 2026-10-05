@@ -721,6 +721,15 @@ service cloud.firestore {
       }
     }
 
+    // Feature: why people delete their account. A signed-in person can only
+    // ADD their own entry; nobody can read, change or delete entries from the
+    // app. The app owner reads them in the Firebase console.
+    match /accountDeletions/{entryId} {
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid;
+      allow read, update, delete: if false;
+    }
+
     match /reports/{reportId} {
       allow read: if false;
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
