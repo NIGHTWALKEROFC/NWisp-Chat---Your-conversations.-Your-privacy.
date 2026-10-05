@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/browser_data_service.dart';
 import '../../services/browser_settings_service.dart';
+import 'download_manager_screen.dart';
 import '../../widgets/nwisp_ui.dart';
 import 'browser_library_screen.dart';
 
@@ -173,6 +174,14 @@ class _BrowserSettingsScreenState extends State<BrowserSettingsScreen> {
                         title: const Text('Bookmarks & history', style: TextStyle(fontWeight: FontWeight.w600)),
                         trailing: const Icon(Icons.chevron_right),
                         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BrowserLibraryScreen())),
+                      ),
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                        leading: const Icon(Icons.download_done_rounded),
+                        title: const Text('Downloads', style: TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: const Text('Progress, saved files and their folder'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DownloadManagerScreen())),
                       ),
                       const Divider(height: 1, indent: 56),
                       ListTile(
