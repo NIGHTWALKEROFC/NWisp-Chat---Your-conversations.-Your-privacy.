@@ -39,12 +39,17 @@ import 'security/chat_pin_guard.dart';
 import 'settings/account_security_screen.dart';
 import 'settings/edit_profile_screen.dart';
 import 'bots/create_bot_screen.dart';
+import 'community/create_community_screen.dart';
+import 'contacts/qr_code_screen.dart';
 import 'browser/in_app_browser_screen.dart';
 import 'secret/secret_chat_screen.dart';
 import 'settings/settings_screen.dart';
 import 'starred_messages_screen.dart';
 import '../services/chat_wallpaper_service.dart';
 import '../services/home_background_service.dart';
+import '../services/bot_service.dart';
+import '../widgets/bot_badge.dart';
+import 'bots/bot_chat_screen.dart';
 
 /// A row shown on the home screen — either a real ConversationSummary (has
 /// at least one local message) or a placeholder for a conversation/group
@@ -140,6 +145,181 @@ class _ChatListScreenState extends State<ChatListScreen> {
   /// below is narrowed to just that.
   bool _showHiddenOnly = false;
   String? _hiddenViewChatId;
+
+  // ---- Feature: bots shown in the chat list (Telegram style) --------------
+  List<BotInfo> _bots = [];
+  bool _botOpenBusy = false;
+
+  Future<void> _loadBots() async {
+    try {
+      final list = await BotService.instance.myChats();
+      if (mounted) setState(() => _bots = list);
+    } catch (_) {
+      // Bots are optional — never break the chat list over them.
+    }
+  }
+
+  // ---- Feature: search inside the chat list ---------------------------------
+  final _searchCtrl = TextEditingController();
+  String _query = '';
+
+  // ---- Feature: multi-select (WhatsApp style) -------------------------------
+  final Set<String> _selected = {};
+  List<_ChatRow> _lastRows = [];
+  bool get _selecting => _selected.isNotEmpty;
+
+  void _toggleSelect(String id) {
+    setState(() {
+      if (!_selected.remove(id)) _selected.add(id);
+    });
+  }
+
+  List<_ChatRow> get _selectedRows => _lastRows.where((r) => _selected.contains(r.conversationId)).toList();
+
+  void _clearSelection() => setState(_selected.clear);
+
+  Future<void> _bulkPin() async {
+    final rows = _selectedRows;
+    final pin = rows.any((r) => !r.pinned);
+    for (final r in rows) {
+      if (r.pinned == pin) continue;
+      if (r.isGroup) {
+        await GroupService.instance.setPinned(r.conversationId, pin);
+      } else {
+        await _conversationService.setPinned(r.conversationId, pin);
+      }
+    }
+    _clearSelection();
+    _snack(pin ? 'Pinned' : 'Unpinned');
+  }
+
+  Future<void> _bulkMute() async {
+    final rows = _selectedRows;
+    final anyUnmuted = rows.any((r) => !r.muted);
+    try {
+      if (!anyUnmuted) {
+        for (final r in rows) {
+          await _setMutedForever(r, false);
+        }
+        _snack('Notifications are back on');
+      } else {
+        final choice = await showMuteDurationSheet(context);
+        if (choice == null || !mounted) return;
+        for (final r in rows) {
+          if (r.muted) continue;
+          if (choice.isForever) {
+            await _setMutedForever(r, true);
+          } else {
+            await _muteForDuration(r, choice.duration!);
+          }
+        }
+        _snack('Muted ${choice.label}');
+      }
+      _clearSelection();
+    } catch (_) {
+      _snack("Couldn't change mute — check your connection and try again.");
+    }
+  }
+
+  Future<void> _bulkArchive() async {
+    final rows = _selectedRows;
+    final archive = rows.any((r) => !r.archived);
+    try {
+      for (final r in rows) {
+        if (r.archived == archive) continue;
+        if (r.isGroup) {
+          await GroupService.instance.setArchived(r.conversationId, archive);
+        } else {
+          await _conversationService.setArchived(r.conversationId, archive);
+        }
+      }
+      _clearSelection();
+      _snack(archive ? 'Chats archived' : 'Chats moved back');
+    } catch (_) {
+      _snack("Couldn't update these chats — check your connection and try again.");
+    }
+  }
+
+  Future<void> _bulkDelete() async {
+    final rows = _selectedRows;
+    if (rows.isEmpty) return;
+    final scheme = Theme.of(context).colorScheme;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(rows.length == 1 ? 'Delete this chat?' : 'Delete ${rows.length} chats?'),
+        content: const Text(
+          "This removes the chats and their messages from this device only — it won't notify or affect anyone else. "
+          'A chat comes back when either of you sends a new message.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: scheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    for (final r in rows) {
+      await LocalMessageStore.clearConversation(r.conversationId);
+      await LocalMessageStore.markChatDeletedLocally(r.conversationId);
+    }
+    _clearSelection();
+  }
+
+  Future<void> _bulkMarkUnread() async {
+    final rows = _selectedRows.where((r) => !r.isPlaceholder && r.unreadCount == 0).toList();
+    final markUnread = rows.any((r) => !r.markedUnread);
+    for (final r in rows) {
+      await LocalMessageStore.setManualUnread(r.conversationId, markUnread);
+    }
+    _clearSelection();
+  }
+
+  AppBar _selectionAppBar(ColorScheme scheme) {
+    final rows = _selectedRows;
+    final allPinned = rows.isNotEmpty && rows.every((r) => r.pinned);
+    final allMuted = rows.isNotEmpty && rows.every((r) => r.muted);
+    final allArchived = rows.isNotEmpty && rows.every((r) => r.archived);
+    return AppBar(
+      leading: IconButton(icon: const Icon(Icons.close), onPressed: _clearSelection),
+      title: Text('${_selected.length} selected'),
+      actions: [
+        IconButton(
+          icon: Icon(allPinned ? Icons.push_pin : Icons.push_pin_outlined),
+          tooltip: allPinned ? 'Unpin' : 'Pin',
+          onPressed: _bulkPin,
+        ),
+        IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Delete', onPressed: _bulkDelete),
+        IconButton(
+          icon: Icon(allMuted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+          tooltip: allMuted ? 'Unmute' : 'Mute',
+          onPressed: _bulkMute,
+        ),
+        IconButton(
+          icon: Icon(allArchived ? Icons.unarchive_outlined : Icons.archive_outlined),
+          tooltip: allArchived ? 'Unarchive' : 'Archive',
+          onPressed: _bulkArchive,
+        ),
+        PopupMenuButton<String>(
+          onSelected: (v) {
+            if (v == 'all') {
+              setState(() => _selected.addAll(_lastRows.where((r) => !NoteToSelfService.isNotes(r.conversationId)).map((r) => r.conversationId)));
+            } else if (v == 'unread') {
+              _bulkMarkUnread();
+            }
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'all', child: Text('Select all')),
+            PopupMenuItem(value: 'unread', child: Text('Mark as read / unread')),
+          ],
+        ),
+      ],
+    );
+  }
   Set<String> _hiddenIds = {}; // union of common + custom, used to filter the NORMAL view
 
   Future<void> _loadHiddenIds() async {
@@ -192,6 +372,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   bool _separateGroupsAndChats = false;
   static const _archivedHeaderMarker = '__archived_header_marker__';
   static const _securityRowMarker = '__security_row_marker__';
+  static const _openBotMarker = '__open_bot_marker__';
 
   /// Feature: "NWisp Chat Notifications" — the read-only account-alerts chat.
   /// [_securityNotices] is its newest-first message list; the row only exists
@@ -250,7 +431,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
     super.initState();
     HomeSectionsService.announcementsTab.addListener(_onSectionSettingChanged);
     HomeSectionsService.communityTab.addListener(_onSectionSettingChanged);
+    HomeSectionsService.storiesOnHome.addListener(_onSectionSettingChanged);
     _loadHiddenIds();
+    _loadBots();
     _startSecurityWatch();
     _manualUnreadSub = LocalMessageStore.watchManualUnread().listen((ids) {
       if (mounted) setState(() => _manualUnread = ids);
@@ -326,6 +509,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void dispose() {
     HomeSectionsService.announcementsTab.removeListener(_onSectionSettingChanged);
     HomeSectionsService.communityTab.removeListener(_onSectionSettingChanged);
+    HomeSectionsService.storiesOnHome.removeListener(_onSectionSettingChanged);
     SecurityChatService.instance.readTick.removeListener(_onSecurityRead);
     _securitySub?.cancel();
     _localSub.cancel();
@@ -337,6 +521,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _draftsSub?.cancel();
     _freezeSub?.cancel();
     _freezeSweepTimer?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -689,6 +874,15 @@ class _ChatListScreenState extends State<ChatListScreen> {
       case 'settings':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
         break;
+      case 'new_community':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateCommunityScreen()));
+        break;
+      case 'contacts':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ContactsScreen()));
+        break;
+      case 'qr':
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const QrCodeScreen()));
+        break;
       case 'new_bot':
         Navigator.push(context, MaterialPageRoute(builder: (_) => const CreateBotScreen()));
         break;
@@ -749,7 +943,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         const Positioned.fill(child: _HomeBackgroundView()),
         Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
+      appBar: _selecting ? _selectionAppBar(scheme) : AppBar(
         leading: (_showArchived || _showHiddenOnly)
             ? IconButton(
                 icon: const Icon(Icons.arrow_back),
@@ -827,12 +1021,37 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 child: ListTile(leading: Icon(Icons.groups_rounded), title: Text('New group'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuItem(
-                value: 'new_bot',
-                child: ListTile(leading: Icon(Icons.smart_toy_outlined), title: Text('New bot'), contentPadding: EdgeInsets.zero),
+                value: 'broadcast_lists',
+                child: ListTile(leading: Icon(Icons.campaign_outlined), title: Text('New broadcast'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'new_community',
+                child: ListTile(leading: Icon(Icons.groups_2_outlined), title: Text('New community'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuItem(
                 value: 'secret_chat',
                 child: ListTile(leading: Icon(Icons.lock_clock_outlined), title: Text('Secret chat'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'new_bot',
+                child: ListTile(leading: Icon(Icons.smart_toy_outlined), title: Text('New bot'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'contacts',
+                child: ListTile(leading: Icon(Icons.people_alt_outlined), title: Text('Contacts & requests'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'qr',
+                child: ListTile(leading: Icon(Icons.qr_code_scanner_rounded), title: Text('Scan / show QR'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'note_to_self',
+                child: ListTile(leading: Icon(Icons.edit_note), title: Text('Note to self'), contentPadding: EdgeInsets.zero),
+              ),
+              PopupMenuItem(
+                value: 'folders',
+                child: ListTile(leading: Icon(Icons.folder_open_outlined), title: Text('Chat folders'), contentPadding: EdgeInsets.zero),
               ),
               PopupMenuDivider(),
               PopupMenuItem(
@@ -855,7 +1074,40 @@ class _ChatListScreenState extends State<ChatListScreen> {
         children: [
           if (_peersWithChangedIdentity.isNotEmpty) _buildIdentityChangeBanner(scheme, myUid),
           // Stories row from the new design — normal chat view only.
-          if (!_showHiddenOnly && !_showArchived) const StoriesStrip(),
+          if (!_showHiddenOnly && !_showArchived && HomeSectionsService.storiesOnHome.value) const StoriesStrip(),
+          if (!_showHiddenOnly && !_showArchived && !_selecting)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (v) {
+                  setState(() => _query = v.trim().toLowerCase());
+                  // Make sure names are known so people can be found by name.
+                  for (final r in _lastRows) {
+                    if (!r.isGroup) _usernameFor(r.peerUid).then((_) {
+                      if (mounted && _query.isNotEmpty) setState(() {});
+                    });
+                  }
+                },
+                decoration: InputDecoration(
+                  isDense: true,
+                  prefixIcon: const Icon(Icons.search),
+                  hintText: 'Search chats, people and bots',
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => setState(() {
+                            _searchCtrl.clear();
+                            _query = '';
+                          }),
+                        ),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(28), borderSide: BorderSide.none),
+                  filled: true,
+                  fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                ),
+              ),
+            ),
           if (_folders.isNotEmpty && !_showHiddenOnly && !_showArchived) _buildFolderChipsRow(scheme),
           Expanded(
             child: Builder(
@@ -887,12 +1139,25 @@ class _ChatListScreenState extends State<ChatListScreen> {
           final selectedFolder = _selectedFolderId == null
               ? null
               : _folders.cast<ChatFolder?>().firstWhere((f) => f!.id == _selectedFolderId, orElse: () => null);
-          final rows = (selectedFolder != null && !_showHiddenOnly && !_showArchived)
+          var rows = (selectedFolder != null && !_showHiddenOnly && !_showArchived)
               ? unfiltered.where((r) => selectedFolder.conversationIds.contains(r.conversationId)).toList()
               : unfiltered;
+          // Feature: search box above the list.
+          final searching = _query.isNotEmpty && !_showHiddenOnly && !_showArchived;
+          if (searching) {
+            rows = rows.where((r) {
+              final name = r.isGroup ? (r.title ?? '') : (_usernameCache[r.peerUid] ?? '');
+              return name.toLowerCase().contains(_query) || r.lastText.toLowerCase().contains(_query);
+            }).toList();
+          }
+          _lastRows = rows;
+          final bots = (_showHiddenOnly || _showArchived || selectedFolder != null)
+              ? <BotInfo>[]
+              : _bots.where((b) => !searching || b.name.toLowerCase().contains(_query) || b.username.contains(_query)).toList();
+          final showOpenBot = searching && _query.replaceFirst('@', '').endsWith('_bot') && !_bots.any((b) => b.username == _query.replaceFirst('@', ''));
           // The notifications row only lives in the normal, unfiltered view.
           final showSecurityRow = _securityNotices.isNotEmpty && !_showHiddenOnly && !_showArchived && selectedFolder == null;
-          if (rows.isEmpty && !showSecurityRow && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
+          if (rows.isEmpty && bots.isEmpty && !showOpenBot && !showSecurityRow && !(_showArchived == false && !_showHiddenOnly && archivedCount > 0)) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
@@ -931,7 +1196,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
           // exactly like before, whether or not sectioning is on.
           final showArchivedHeader = !_showArchived && !_showHiddenOnly && archivedCount > 0;
           final List<Object> items = [];
-          if (showArchivedHeader) items.add(_archivedHeaderMarker);
+          if (showArchivedHeader && !searching) items.add(_archivedHeaderMarker);
+          if (showOpenBot) items.add(_openBotMarker);
+          items.addAll(bots);
           if (_separateGroupsAndChats && !_showHiddenOnly && !_showArchived) {
             final direct = rows.where((r) => !r.isGroup).toList();
             final groups = rows.where((r) => r.isGroup).toList();
@@ -962,6 +1229,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   onTap: () => setState(() => _showArchived = true),
                 );
               }
+              if (item == _openBotMarker) {
+                final u = _query.replaceFirst('@', '');
+                return ListTile(
+                  leading: CircleAvatar(backgroundColor: scheme.primaryContainer, child: Icon(Icons.smart_toy_outlined, color: scheme.onPrimaryContainer)),
+                  title: Text('Open @$u'),
+                  subtitle: const Text('Look for this bot'),
+                  trailing: _botOpenBusy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.chevron_right),
+                  onTap: () => _openBotByName(u),
+                );
+              }
+              if (item is BotInfo) return _botTile(context, scheme, item);
               if (item == _securityRowMarker) {
                 return SecurityChatTile(
                   latest: _securityNotices.first,
@@ -1275,6 +1553,55 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
+  Future<void> _openBotByName(String u) async {
+    setState(() => _botOpenBusy = true);
+    try {
+      final r = await BotService.instance.getBot(u);
+      if (!mounted) return;
+      if (r.bot == null) {
+        _snack(r.reason == 'private' ? "@$u exists but isn't open to everyone yet." : 'No bot called @$u.');
+      } else {
+        await Navigator.push(context, MaterialPageRoute(builder: (_) => BotChatScreen(username: u)));
+        _loadBots();
+      }
+    } catch (e) {
+      _snack(e.toString());
+    } finally {
+      if (mounted) setState(() => _botOpenBusy = false);
+    }
+  }
+
+  Widget _botTile(BuildContext context, ColorScheme scheme, BotInfo b) {
+    return ListTile(
+      leading: BotAvatar(photoData: b.photoData, name: b.name),
+      title: Row(children: [
+        Flexible(child: Text(b.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600))),
+        const SizedBox(width: 6),
+        const BotBadge(),
+      ]),
+      subtitle: Text(b.description.isNotEmpty ? b.description : '@${b.username}', maxLines: 1, overflow: TextOverflow.ellipsis),
+      onTap: () async {
+        await Navigator.push(context, MaterialPageRoute(builder: (_) => BotChatScreen(username: b.username)));
+        _loadBots();
+      },
+    );
+  }
+
+  Widget _selectBadge(ColorScheme scheme, _ChatRow row, Widget avatar) {
+    if (!_selected.contains(row.conversationId)) return avatar;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        avatar,
+        Positioned(
+          right: -3,
+          bottom: -3,
+          child: CircleAvatar(radius: 9, backgroundColor: scheme.primary, child: Icon(Icons.check, size: 13, color: scheme.onPrimary)),
+        ),
+      ],
+    );
+  }
+
   Widget _chatRowTile(BuildContext context, ColorScheme scheme, _ChatRow row) {
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
@@ -1322,11 +1649,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
     if (row.isGroup) {
       return _withSwipeActions(scheme, row, ListTile(
-        leading: CircleAvatar(
+        selected: _selected.contains(row.conversationId),
+        selectedTileColor: scheme.primary.withValues(alpha: 0.14),
+        leading: _selectBadge(scheme, row, CircleAvatar(
           backgroundColor: scheme.primaryContainer,
           backgroundImage: row.avatarUrl != null ? NetworkImage(row.avatarUrl!) : null,
           child: row.avatarUrl == null ? const Icon(Icons.groups_rounded) : null,
-        ),
+        )),
         title: Text(row.title ?? 'Group', style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
         subtitle: row.draftText != null
             ? _draftSubtitle(scheme, row.draftText!)
@@ -1342,12 +1671,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   ),
         trailing: trailing,
         onTap: () async {
+          if (_selecting) {
+            _toggleSelect(row.conversationId);
+            return;
+          }
           if (!await requireChatPinIfLocked(context, row.conversationId)) return;
           if (!context.mounted) return;
           await Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: row.conversationId)));
           await _loadHiddenIds();
         },
-        onLongPress: () => _showChatOptions(context, scheme, row),
+        onLongPress: () => _toggleSelect(row.conversationId),
       ));
     }
 
@@ -1357,7 +1690,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
       builder: (context, nameSnap) {
         final username = nameSnap.data ?? '…';
         return _withSwipeActions(scheme, row, ListTile(
-          leading: UserAvatar(uid: row.peerUid, name: username),
+          selected: _selected.contains(row.conversationId),
+          selectedTileColor: scheme.primary.withValues(alpha: 0.14),
+          leading: _selectBadge(scheme, row, UserAvatar(uid: row.peerUid, name: username)),
           title: Text(username, style: emphasize ? const TextStyle(fontWeight: FontWeight.w700) : null),
           subtitle: row.draftText != null
               ? _draftSubtitle(scheme, row.draftText!)
@@ -1369,6 +1704,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 ),
           trailing: trailing,
           onTap: () async {
+            if (_selecting) {
+              _toggleSelect(row.conversationId);
+              return;
+            }
             if (!await requireChatPinIfLocked(context, row.conversationId)) return;
             if (!context.mounted) return;
             await Navigator.push(
@@ -1379,7 +1718,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             );
             await _loadHiddenIds();
           },
-          onLongPress: () => _showChatOptions(context, scheme, row),
+          onLongPress: () => _toggleSelect(row.conversationId),
         ));
       },
     );
