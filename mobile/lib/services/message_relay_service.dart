@@ -192,6 +192,69 @@ class MessageRelayService {
       // again on the next reconnect/app start regardless.
     }
     _subscribe();
+    _startPolling();
+  }
+
+  // BUGFIX (\"messages are sent but the other side only receives them rarely,
+  // or after a call / an app restart\"): receiving depended ONLY on Supabase
+  // Realtime pushing each new row. When Realtime doesn't push (the table is
+  // not in the `supabase_realtime` publication, or the socket silently
+  // dropped) nothing arrived until the next full catch-up — which only ran at
+  // app start or when a reconnect happened (a call ending reconnects the
+  // network, hence \"it loads after the call\"). A light poll now checks the
+  // inbox every few seconds as a safety net. Realtime still delivers instantly
+  // when it works.
+  static Timer? _pollTimer;
+  static bool _polling = false;
+
+  static void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      if (_polling || FirebaseAuth.instance.currentUser == null) return;
+      _polling = true;
+      try {
+        await _catchUp();
+      } catch (_) {
+        // offline — try again on the next tick
+      } finally {
+        _polling = false;
+      }
+    });
+  }
+
+  /// Checks the inbox right now (e.g. when the app comes back to the front).
+  static Future<void> refreshNow() async {
+    if (_polling || FirebaseAuth.instance.currentUser == null) return;
+    _polling = true;
+    try {
+      await _catchUp();
+    } catch (_) {} finally {
+      _polling = false;
+    }
+  }
+
+  // Signal's ratchet is order-sensitive and can't decrypt the same message
+  // twice, so rows are handled strictly one at a time and never twice at once
+  // (realtime + the poll above can both see the same row).
+  static Future<void> _queue = Future.value();
+  static final Set<dynamic> _inFlight = {};
+
+  static Future<void> _handleRowOnce(Map<String, dynamic> row) {
+    final id = row['id'];
+    if (_inFlight.contains(id)) return Future.value();
+    _inFlight.add(id);
+    final completer = Completer<void>();
+    _queue = _queue.then((_) async {
+      try {
+        await _handleRow(row);
+        completer.complete();
+      } catch (e, st) {
+        completer.completeError(e, st);
+      } finally {
+        _inFlight.remove(id);
+      }
+    });
+    return completer.future;
   }
 
   static void _subscribe() {
@@ -205,7 +268,7 @@ class MessageRelayService {
           table: 'message_relay',
           filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'recipient_uid', value: myUid),
           callback: (payload) {
-            _handleRow(payload.newRecord).catchError((Object e) {
+            _handleRowOnce(payload.newRecord).catchError((Object e) {
               // BUGFIX: this used to swallow the error completely — a
               // message stuck failing to decrypt (e.g. a Signal session
               // that's gotten out of sync between two people) looked
@@ -243,16 +306,18 @@ class MessageRelayService {
   }
 
   static void stop() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
     _reconnectTimer?.cancel();
     _channel?.unsubscribe();
     _channel = null;
   }
 
   static Future<void> _catchUp() async {
-    final rows = await _client.from('message_relay').select().eq('recipient_uid', _myUid);
+    final rows = await _client.from('message_relay').select().eq('recipient_uid', _myUid).order('created_at', ascending: true);
     for (final row in rows) {
       try {
-        await _handleRow(row);
+        await _handleRowOnce(row);
       } catch (e) {
         // Leave this one for the next catch-up rather than letting one bad
         // row block the rest of the inbox from being processed — but log
