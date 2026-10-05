@@ -169,7 +169,7 @@ class AccountLifecycleService {
   ///  - `contactRequests` / `groupInviteRequests` / block docs that
   ///    OTHER people created referencing this uid are their documents,
   ///    not this account's, and are left alone.
-  static Future<void> deleteAccount(String password) async {
+  static Future<void> deleteAccount(String password, {String reason = '', String reasonDetails = ''}) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No signed-in user');
     final uid = user.uid;
@@ -186,6 +186,20 @@ class AccountLifecycleService {
     final userRef = _db.collection('users').doc(uid);
     final userSnap = await userRef.get();
     final usernameLower = userSnap.data()?['usernameLower'] as String?;
+
+    // Feature: remember WHY people leave. Written while the account still
+    // exists (the rules need a signed-in user). Best-effort — a failure here
+    // never blocks the person from deleting their account.
+    try {
+      await _db.collection('accountDeletions').add({
+        'uid': uid,
+        'username': (userSnap.data()?['username'] as String?) ?? usernameLower ?? '',
+        'email': user.email ?? '',
+        'reason': reason,
+        'details': reasonDetails.trim(),
+        'deletedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
 
     // 1) Supabase: drop every message_relay row this account is party to.
     // Best-effort — a row this fails to remove either purges itself once
