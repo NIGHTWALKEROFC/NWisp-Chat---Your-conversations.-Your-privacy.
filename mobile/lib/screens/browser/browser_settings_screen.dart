@@ -105,6 +105,12 @@ class _BrowserSettingsScreenState extends State<BrowserSettingsScreen> {
                     children: [
                       _switch(s.highPrivacy, 'High privacy mode', 'Hides your device fingerprint, blocks WebRTC IP leaks, sends no Referer, hides camera/mic/sensor/battery info from sites', s.setHighPrivacy, icon: Icons.security_rounded),
                       const Divider(height: 1, indent: 56),
+                      _switch(s.blockAds, 'Block ads (incl. YouTube)', 'Hides ads on websites and removes YouTube ads. Best effort — YouTube changes often, so an ad can still slip through now and then', s.setBlockAds, icon: Icons.ads_click),
+                      const Divider(height: 1, indent: 56),
+                      _switch(s.blockCookieBanners, 'Hide cookie banners', 'Hides the "accept cookies" pop-ups', s.setBlockCookieBanners, icon: Icons.cookie_outlined),
+                      const Divider(height: 1, indent: 56),
+                      _switch(s.blockPopups, 'Block pop-ups', 'Stops pages opening extra windows or tabs on their own', s.setBlockPopups, icon: Icons.web_asset_off_outlined),
+                      const Divider(height: 1, indent: 56),
                       _switch(s.stripTrackingParams, 'Clean tracking links', 'Removes utm_, fbclid, gclid and similar tracking bits from links', s.setStripTrackingParams, icon: Icons.cleaning_services_outlined),
                       const Divider(height: 1, indent: 56),
                       _switch(s.blockTrackers, 'Block trackers & ads', 'Stops known tracking and advertising servers', s.setBlockTrackers, icon: Icons.block_rounded),
