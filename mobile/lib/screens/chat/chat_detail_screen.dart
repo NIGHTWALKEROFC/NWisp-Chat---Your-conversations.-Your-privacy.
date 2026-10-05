@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
+import '../../services/contact_service.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/chat_wallpaper_service.dart';
 import '../../services/inactivity_wipe_service.dart';
@@ -240,6 +241,16 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
   int _pinnedBannerIndex = 0;
   bool _readReceiptsEnabled = true;
   bool _peerBlockedByMe = false;
+
+  // Feature: unfriend. After I remove someone, their chat stays readable but
+  // writing needs a fresh contact request first (see _buildRerequestBar).
+  final _contactService = ContactService();
+  StreamSubscription<bool>? _contactSub;
+  bool _isContact = true;
+  bool _unfriended = false;
+  bool _rerequestSent = false;
+  bool _rerequestBusy = false;
+  bool get _needsRerequest => _unfriended && !_isContact;
   bool _sendingMedia = false;
 
   // Feature: "clear on exit" ephemeral view mode (ConversationService.
@@ -374,6 +385,17 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
         _ephemeralViewEnabled = doc.data()?['ephemeralViewEnabled'] == true;
       });
     });
+    _contactService.unfriendedUids().then((s) {
+      if (mounted) setState(() => _unfriended = s.contains(widget.peerUid));
+    });
+    _contactService.myPendingOutgoingUids().then((s) {
+      if (mounted) setState(() => _rerequestSent = s.contains(widget.peerUid));
+    }).catchError((_) {});
+    _contactSub = _contactService.isContactStream(widget.peerUid).listen((isContact) {
+      if (!mounted) return;
+      setState(() => _isContact = isContact);
+      if (isContact) _contactService.clearUnfriended(widget.peerUid);
+    }, onError: (_) {});
     _blockSub = _moderationService.myProfileStream().listen((doc) {
       if (!mounted) return;
       final blocked = List<String>.from(doc.data()?['blockedUsers'] ?? []);
@@ -424,6 +446,7 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     }
     _convoSub?.cancel();
     _blockSub?.cancel();
+    _contactSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     _voiceController.dispose();
@@ -1581,33 +1604,35 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     if (forwardedTo != null) _showForwardSnack('Forwarded to $forwardedTo');
   }
 
+  /// How long "Delete for everyone" stays available after sending (WhatsApp
+  /// style). After that only "Delete for me" is offered.
+  static const _deleteForEveryoneWindow = Duration(hours: 48);
+
   Future<void> _deleteSelectedFlow() async {
     final selected = _messages.where((m) => _selectedIds.contains(m.id)).toList();
     if (selected.isEmpty) return;
-    final allMine = selected.every((m) => m.isMine);
-    final choice = await showModalBottomSheet<String>(
+    final now = DateTime.now();
+    final canEveryone = selected.every((m) => m.isMine && now.difference(m.createdAt) <= _deleteForEveryoneWindow) && !_needsRerequest;
+    final scheme = Theme.of(context).colorScheme;
+    final n = selected.length;
+    final choice = await showDialog<String>(
       context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: Text('Delete for me (${selected.length})'),
-              onTap: () => Navigator.pop(sheetContext, 'me'),
+      builder: (ctx) => AlertDialog(
+        title: Text(n == 1 ? 'Delete message?' : 'Delete $n messages?'),
+        actionsAlignment: MainAxisAlignment.end,
+        actionsOverflowDirection: VerticalDirection.down,
+        actions: [
+          if (canEveryone)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'everyone'),
+              child: Text('Delete for everyone', style: TextStyle(color: scheme.error)),
             ),
-            if (allMine)
-              ListTile(
-                leading: Icon(Icons.delete_forever_outlined, color: Theme.of(context).colorScheme.error),
-                title: Text(
-                  'Delete for everyone (${selected.length})',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-                onTap: () => Navigator.pop(sheetContext, 'everyone'),
-              ),
-          ],
-        ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'me'),
+            child: Text('Delete for me', style: TextStyle(color: scheme.error)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ],
       ),
     );
     if (choice == null) return;
@@ -1617,11 +1642,16 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
       }
     } else if (choice == 'everyone') {
       for (final m in selected) {
-        await MessageRelayService.deleteForEveryone(
-          conversationId: widget.conversationId,
-          toUid: widget.peerUid,
-          messageId: m.id,
-        );
+        try {
+          await MessageRelayService.deleteForEveryone(
+            conversationId: widget.conversationId,
+            toUid: widget.peerUid,
+            messageId: m.id,
+          );
+        } catch (_) {
+          // If it can't be removed for them (offline), still remove it here.
+          await MessageRelayService.deleteForMe(m.id);
+        }
       }
     }
     if (mounted) setState(() => _selectedIds.clear());
@@ -1889,6 +1919,8 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
               _buildScheduledBanner(scheme),
               if (_peerBlockedByMe)
                 _buildBlockedBar(scheme)
+              else if (_needsRerequest)
+                _buildRerequestBar(scheme)
               else if (_voiceController.isRecording)
                 VoiceRecordingBar(
                   seconds: _voiceController.seconds,
@@ -1989,6 +2021,49 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildRerequestBar(ColorScheme scheme) {
+    return SafeArea(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        color: scheme.surfaceContainerHigh,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('${widget.peerUsername} is not in your contacts', style: const TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(
+              _rerequestSent
+                  ? 'Request sent. You can write again as soon as they accept. Your earlier messages stay here.'
+                  : 'You removed this contact. Send a new request to chat again. Your earlier messages stay here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 10),
+            FilledButton(
+              onPressed: (_rerequestSent || _rerequestBusy)
+                  ? null
+                  : () async {
+                      setState(() => _rerequestBusy = true);
+                      try {
+                        await _contactService.sendRequest(toUid: widget.peerUid, toUsername: widget.peerUsername, myUsername: '');
+                        if (mounted) setState(() => _rerequestSent = true);
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+                        }
+                      } finally {
+                        if (mounted) setState(() => _rerequestBusy = false);
+                      }
+                    },
+              child: Text(_rerequestSent ? 'Request sent' : 'Send request'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2563,9 +2638,14 @@ class _MessageBubble extends StatelessWidget {
           : [scheme.surfaceContainerHigh, scheme.surfaceContainerHighest],
     );
 
+    // BUGFIX: a selected message only changed the counter in the app bar — the
+    // tint was too faint to see. Selected messages now get a clear full-width
+    // highlight and a tick, like WhatsApp.
     return Container(
-      color: selected ? scheme.primary.withValues(alpha: 0.12) : null,
-      child: Dismissible(
+      color: selected ? scheme.primary.withValues(alpha: 0.28) : null,
+      child: Stack(
+        children: [
+      Dismissible(
         key: UniqueKey(),
         direction: DismissDirection.startToEnd,
         confirmDismiss: (_) async {
@@ -2773,6 +2853,22 @@ class _MessageBubble extends StatelessWidget {
             ),
           ),
         ),
+      ),
+          if (selected)
+            Positioned(
+              top: 0,
+              bottom: 0,
+              left: isMine ? 8 : null,
+              right: isMine ? null : 8,
+              child: Center(
+                child: CircleAvatar(
+                  radius: 11,
+                  backgroundColor: scheme.primary,
+                  child: Icon(Icons.check, size: 15, color: scheme.onPrimary),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
