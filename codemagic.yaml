@@ -2,12 +2,15 @@ workflows:
   android-workflow:
     name: Secure Chat - Android
     max_build_duration: 60
-    # Android builds don't need a Mac. A Linux machine downloads the Flutter
-    # SDK much faster, which avoids the "Downloading Flutter release timed out"
-    # failure.
-    instance_type: linux_x2
     environment:
-      flutter: stable
+      # "default" uses the Flutter version that is already installed on
+      # Codemagic's build machine, so nothing big has to be downloaded.
+      # ("stable" downloads the newest Flutter on every build, and that
+      # download is what kept timing out.) No instance_type line on purpose:
+      # the free plan only allows the default Mac machine, and asking for
+      # linux_x2 gave "instance type is not available with the current
+      # billing plan".
+      flutter: default
       vars:
         PACKAGE_NAME: "com.nightwalker.securechat"
         SUPABASE_URL: "https://bgbmrtwbndoewwwjxnxa.supabase.co"
