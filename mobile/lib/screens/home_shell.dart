@@ -12,6 +12,13 @@ import '../services/group_service.dart';
 import '../services/secret_chat_service.dart';
 import '../services/home_sections_service.dart';
 import '../services/permission_service.dart';
+import '../services/quick_actions_service.dart';
+import '../services/share_intake_service.dart';
+import 'share_target_screen.dart';
+import 'contacts/contacts_screen.dart';
+import 'contacts/qr_code_screen.dart';
+import 'groups/create_group_screen.dart';
+import 'stories/story_composer_screen.dart';
 import 'settings/permissions_screen.dart';
 import '../services/local_message_store.dart';
 import 'announcements_screen.dart';
@@ -142,6 +149,16 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
+    // Feature: long-press app-icon shortcuts + Share to NWisp. Both only ever
+    // act here, after sign-in and unlock, so neither can skip the app lock.
+    QuickActionsService.instance.init();
+    QuickActionsService.instance.pending.addListener(_runShortcut);
+    ShareIntakeService.instance.init();
+    ShareIntakeService.instance.pending.addListener(_runShare);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _runShortcut();
+      _runShare();
+    });
     // One-time permissions screen for people who installed before it existed.
     PermissionService.introSeen().then((seen) async {
       if (seen || !mounted) return;
@@ -175,6 +192,27 @@ class _HomeShellState extends State<HomeShell> {
     });
   }
 
+  void _runShortcut() {
+    final type = QuickActionsService.instance.pending.value;
+    if (type == null || !mounted) return;
+    QuickActionsService.instance.clear();
+    final Widget? page = switch (type) {
+      'new_message' => const ContactsScreen(),
+      'scan_qr' => const QrCodeScreen(),
+      'add_story' => const StoryComposerScreen(),
+      'new_group' => const CreateGroupScreen(),
+      _ => null,
+    };
+    if (page != null) Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  void _runShare() {
+    final content = ShareIntakeService.instance.pending.value;
+    if (content == null || !mounted) return;
+    ShareIntakeService.instance.clear();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => ShareTargetScreen(content: content)));
+  }
+
   void _onSettingChanged() {
     if (mounted) setState(() {});
   }
@@ -183,6 +221,8 @@ class _HomeShellState extends State<HomeShell> {
   void dispose() {
     HomeSectionsService.announcementsTab.removeListener(_onSettingChanged);
     HomeSectionsService.communityTab.removeListener(_onSettingChanged);
+    QuickActionsService.instance.pending.removeListener(_runShortcut);
+    ShareIntakeService.instance.pending.removeListener(_runShare);
     HomeSectionsService.storiesTab.removeListener(_onSettingChanged);
     HomeSectionsService.nearbyTab.removeListener(_onSettingChanged);
     CallService.instance.incoming.removeListener(_onIncomingCall);
