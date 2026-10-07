@@ -39,9 +39,25 @@ android {
         multiDexEnabled true
     }
 
+    // Feature: fixed signing key (needed for the update guard's copy check).
+    // When Codemagic has your keystore attached it provides these four
+    // variables; the build then signs with YOUR key, so every build carries the
+    // same signature. Without them the build signs with the debug key exactly
+    // as before, so nothing breaks.
+    signingConfigs {
+        release {
+            if (System.getenv("CM_KEYSTORE_PATH")) {
+                storeFile file(System.getenv("CM_KEYSTORE_PATH"))
+                storePassword System.getenv("CM_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("CM_KEY_ALIAS")
+                keyPassword System.getenv("CM_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig System.getenv("CM_KEYSTORE_PATH") ? signingConfigs.release : signingConfigs.debug
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
