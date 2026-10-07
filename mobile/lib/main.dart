@@ -27,6 +27,9 @@ import 'services/screenshot_guard_service.dart';
 import 'services/settings_service.dart';
 import 'services/session_service.dart';
 import 'services/story_service.dart';
+import 'services/integrity_service.dart';
+import 'services/update_service.dart';
+import 'widgets/update_ui.dart';
 import 'services/auto_download_service.dart';
 import 'services/reminder_service.dart';
 import 'services/nickname_service.dart';
@@ -64,6 +67,10 @@ void main() async {
   // Feature: "Report a problem" — remembers recent errors so a report can attach
   // them. Hooked first so errors during startup are caught too.
   CrashReportService.install();
+  // Feature: update guard. Reads this app's own version and checks it is the
+  // original signed copy, then looks for updates in the background.
+  await IntegrityService.instance.init();
+  unawaited(UpdateService.instance.init());
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await Supabase.initialize(
     url: const String.fromEnvironment('SUPABASE_URL'),
@@ -708,7 +715,9 @@ class SecureChatApp extends StatelessWidget {
         final base = media.textScaler.scale(1.0);
         return MediaQuery(
           data: media.copyWith(textScaler: TextScaler.linear(base * themeService.fontScale)),
-          child: child ?? const SizedBox.shrink(),
+          // Feature: update guard — covers the whole app when an update is
+          // required or this is a modified copy (see UpdateGate).
+          child: UpdateGate(navigatorKey: navigatorKey, child: child ?? const SizedBox.shrink()),
         );
       },
       home: const AuthGate(),
