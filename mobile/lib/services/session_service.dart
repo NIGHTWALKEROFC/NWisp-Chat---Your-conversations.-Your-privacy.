@@ -1,3 +1,4 @@
+import 'update_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'chat_lock_service.dart';
 import 'crypto_service.dart';
@@ -39,6 +40,9 @@ class SessionService {
   }
 
   static Future<void> _prepare(String uid) async {
+    // Update guard: no encryption keys are prepared for an app that must
+    // update or is a modified copy.
+    if (UpdateService.blocked) throw Exception('Update NWisp to continue.');
     final activeUid = await SecureStorageService.getActiveUid();
     final switchedAccount = activeUid != null && activeUid != uid;
 
