@@ -31,7 +31,7 @@ class CrashReportService {
 
   static const _channel = MethodChannel('com.nightwalker.securechat/report');
   static const _kErrors = 'recent_error_log';
-  static const _maxErrors = 5;
+  static const _maxErrors = 25;
 
   /// Hooks the two global error handlers. Call once, first thing in main().
   /// The normal behaviour of each handler is kept — errors still print
@@ -69,7 +69,7 @@ class CrashReportService {
           return; // same error as the last one — don't fill the list with repeats
         }
         final summary = '${DateTime.now().toIso8601String()} $what';
-        final frames = (stack?.toString() ?? '').split('\n').where((l) => l.trim().isNotEmpty).take(6).join('\n');
+        final frames = (stack?.toString() ?? '').split('\n').where((l) => l.trim().isNotEmpty).take(14).join('\n');
         list.add(frames.isEmpty ? summary : '$summary\n$frames');
         while (list.length > _maxErrors) {
           list.removeAt(0);
@@ -79,6 +79,49 @@ class CrashReportService {
         // Recording an error must never cause another one.
       }
     });
+  }
+
+  // ---- Feature: crash log you control --------------------------------------
+  // Everything stays on this phone. The Crash reports screen (Settings) shows
+  // it, and the person decides whether to copy or share it — nothing is
+  // uploaded by the app.
+  static const _kNativeLog = 'crash_native_log_v1';
+
+  static Future<void> _saveNative(String text) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_kNativeLog) ?? <String>[];
+      list.add(text);
+      while (list.length > 10) {
+        list.removeAt(0);
+      }
+      await prefs.setStringList(_kNativeLog, list);
+    } catch (_) {}
+  }
+
+  static Future<List<String>> nativeCrashes() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getStringList(_kNativeLog) ?? const <String>[];
+    } catch (_) {
+      return const <String>[];
+    }
+  }
+
+  static Future<void> clearAll() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kErrors);
+      await prefs.remove(_kNativeLog);
+    } catch (_) {}
+  }
+
+  /// Hides things a report doesn't need: email addresses, long ids and tokens.
+  static String scrub(String text) {
+    return text
+        .replaceAll(RegExp(r'[\w.+-]+@[\w-]+(\.[\w-]+)+'), '[email]')
+        .replaceAll(RegExp(r'eyJ[\w-]+\.[\w-]+\.[\w-]+'), '[token]')
+        .replaceAll(RegExp(r'\b[A-Za-z0-9]{24,}\b'), '[id]');
   }
 
   static Future<List<String>> recentErrors() async {
@@ -105,6 +148,7 @@ class CrashReportService {
   static Future<void> promptIfCrashed(GlobalKey<NavigatorState> navigatorKey) async {
     final raw = await takeNativeCrash();
     if (raw == null || raw.trim().isEmpty) return;
+    await _saveNative(raw);
 
     // File format: "time=<ms>\nthread=<name>\n<stack trace>".
     final lines = raw.split('\n');
