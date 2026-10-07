@@ -9,6 +9,7 @@ import '../../models/local_message.dart';
 import '../../services/auth_service.dart';
 import '../../services/contact_service.dart';
 import '../../services/nickname_service.dart';
+import '../../services/share_intake_service.dart';
 import '../../widgets/reminder_picker.dart';
 import '../../services/chat_lock_service.dart';
 import '../../services/chat_wallpaper_service.dart';
@@ -65,18 +66,23 @@ class ChatDetailScreen extends StatelessWidget {
   final String peerUid;
   final String peerUsername;
 
+  /// Feature: share to NWisp — text/pictures another app shared, to put in
+  /// this chat (see ShareTargetScreen).
+  final SharedContent? share;
+
   const ChatDetailScreen({
     super.key,
     required this.conversationId,
     required this.peerUid,
     required this.peerUsername,
+    this.share,
   });
 
   @override
   Widget build(BuildContext context) {
     return ChatThemeScope(
       conversationId: conversationId,
-      child: _ChatDetailBody(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername),
+      child: _ChatDetailBody(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername, share: share),
     );
   }
 }
@@ -85,11 +91,13 @@ class _ChatDetailBody extends StatefulWidget {
   final String conversationId;
   final String peerUid;
   final String peerUsername;
+  final SharedContent? share;
 
   const _ChatDetailBody({
     required this.conversationId,
     required this.peerUid,
     required this.peerUsername,
+    this.share,
   });
 
   @override
@@ -330,6 +338,9 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
     // Feature: paged loading — only the newest messages are read from disk
     // (see LocalMessageStore.startPaging); older ones load as you scroll up.
     LocalMessageStore.startPaging(widget.conversationId);
+    if (widget.share != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _applyShare(widget.share!));
+    }
     // Feature: message drafts — restore whatever was left unsent last time
     // this chat was open. Only fills the box if it's still empty (it will
     // be, this early in initState) so it never clobbers anything.
@@ -929,6 +940,38 @@ class _ChatDetailScreenState extends State<_ChatDetailBody> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Couldn't send request: $e")));
     }
+  }
+
+  /// Feature: share to NWisp — puts shared text in the message box (to look
+  /// over and send) and walks through shared pictures/videos in the preview.
+  Future<void> _applyShare(SharedContent c) async {
+    final text = c.text?.trim() ?? '';
+    if (text.isNotEmpty) {
+      _textController.text = text;
+      _textController.selection = TextSelection.collapsed(offset: text.length);
+    }
+    for (final f in c.files) {
+      if (!mounted) return;
+      final video = f.isVideo;
+      final result = await showMediaPreview(
+        context,
+        file: File(f.path),
+        isVideo: video,
+        recipientLabel: widget.peerUsername,
+        initialViewOnce: false,
+      );
+      if (result == null || !mounted) continue;
+      await _sendMedia(
+        file: result.file,
+        messageType: video ? 'video' : 'image',
+        mime: video ? 'video/mp4' : 'image/jpeg',
+        compress: video
+            ? (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync()
+            : (file) => MediaCompressionService.compressImage(file),
+        viewOnce: result.viewOnce,
+      );
+    }
+    ShareIntakeService.instance.clear();
   }
 
   Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
