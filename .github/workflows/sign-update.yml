@@ -1,0 +1,93 @@
+name: Sign update file
+
+# Whenever you edit update/update.json (for example to announce a new version),
+# this signs it and writes update/update.signed.json — the file the app reads.
+# The app only trusts a file signed with YOUR private key, so nobody else can
+# push a fake "update" to your users.
+#
+# One-time setup: GitHub repo -> Settings -> Secrets and variables -> Actions
+# -> New repository secret -> name  UPDATE_SIGNING_KEY  -> value: the whole
+# private key text (including the BEGIN/END lines).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'update/update.json'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check and sign
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const crypto = require('crypto');
+
+          const keyPem = process.env.UPDATE_SIGNING_KEY;
+          if (!keyPem || !keyPem.includes('PRIVATE KEY')) {
+            console.error('The secret UPDATE_SIGNING_KEY is missing or is not a private key.');
+            process.exit(1);
+          }
+
+          let data;
+          try {
+            data = JSON.parse(fs.readFileSync('update/update.json', 'utf8'));
+          } catch (e) {
+            console.error('update/update.json is not valid JSON: ' + e.message);
+            process.exit(1);
+          }
+
+          const problems = [];
+          const code = Number(data.versionCode);
+          const min = Number(data.minSupportedVersionCode ?? 1);
+          if (!data.versionName || typeof data.versionName !== 'string') problems.push('versionName is missing');
+          if (!Number.isInteger(code) || code < 1) problems.push('versionCode must be a whole number, 1 or more');
+          if (!Number.isInteger(min) || min < 1 || min > code) problems.push('minSupportedVersionCode must be a whole number between 1 and versionCode');
+          if (!/^https:\/\//.test(String(data.downloadUrl || ''))) problems.push('downloadUrl must start with https://');
+          for (const a of (data.alternateUrls || [])) {
+            if (!/^https:\/\//.test(String(a.url || ''))) problems.push('every alternateUrls url must start with https://');
+          }
+          if (problems.length) {
+            console.error('Not signed. Please fix:\n - ' + problems.join('\n - '));
+            process.exit(1);
+          }
+
+          // issuedAt only ever goes up, so an old signed file can't be replayed.
+          data.issuedAt = Math.floor(Date.now() / 1000);
+
+          const payload = Buffer.from(JSON.stringify(data), 'utf8');
+          const key = crypto.createPrivateKey(keyPem);
+          const sig = crypto.sign(null, payload, key);
+
+          fs.writeFileSync('update/update.signed.json', JSON.stringify({
+            alg: 'ed25519',
+            payload: payload.toString('base64'),
+            sig: sig.toString('base64'),
+          }, null, 2) + '\n');
+          console.log('Signed version ' + data.versionName + ' (code ' + code + ', minimum ' + min + ')');
+          NODE
+
+      - name: Save the signed file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add update/update.signed.json
+          if git diff --cached --quiet; then
+            echo "Nothing changed."
+          else
+            git commit -m "Sign update file"
+            git push
+          fi
