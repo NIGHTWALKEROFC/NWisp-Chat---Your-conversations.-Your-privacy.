@@ -1,0 +1,19 @@
+{
+  "versionName": "1.0.0",
+  "versionCode": 1,
+  "minSupportedVersionCode": 1,
+  "forceUpdate": false,
+  "releaseDate": "2026-10-06",
+  "downloadUrl": "https://example.com/replace-with-your-apk-download-link",
+  "alternateUrls": [
+    { "label": "Mirror link", "url": "https://example.com/replace-with-a-second-link" }
+  ],
+  "sizeMb": 40,
+  "message": "",
+  "whatsNew": [
+    "First version"
+  ],
+  "improved": [],
+  "fixed": [],
+  "history": []
+}
