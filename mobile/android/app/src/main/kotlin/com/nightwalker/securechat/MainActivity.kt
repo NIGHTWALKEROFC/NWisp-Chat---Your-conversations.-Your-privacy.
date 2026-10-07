@@ -321,12 +321,104 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installCrashRecorder()
         applyCallIntent(intent)
+        collectShare(intent)
         super.onCreate(savedInstanceState)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         applyCallIntent(intent)
+        if (collectShare(intent)) {
+            // The app was already running: tell Dart straight away.
+            runOnUiThread { shareChannel?.invokeMethod("shareReceived", null) }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Feature: Share to NWisp from other apps.
+    // Android hands the shared text / pictures / videos to this Activity
+    // (see the SEND intent filters in AndroidManifest.xml). Shared files
+    // arrive as temporary "content://" addresses that stop working soon, so
+    // each is copied into the app's own cache folder right away. Dart picks
+    // the result up with "takePending".
+    // ------------------------------------------------------------------
+    private val shareChannelName = "com.nightwalker.securechat/share"
+    private var shareChannel: MethodChannel? = null
+    private var pendingShare: Map<String, Any?>? = null
+
+    private fun collectShare(intent: Intent?): Boolean {
+        if (intent == null) return false
+        val action = intent.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return false
+        try {
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+            val uris = ArrayList<Uri>()
+            @Suppress("DEPRECATION")
+            if (action == Intent.ACTION_SEND) {
+                val u = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) else intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                if (u != null) uris.add(u)
+            } else {
+                val l = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java) else intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                if (l != null) uris.addAll(l)
+            }
+            val dir = File(cacheDir, "shared")
+            if (dir.exists()) dir.listFiles()?.forEach { it.delete() } else dir.mkdirs()
+            val files = ArrayList<Map<String, String>>()
+            for ((i, uri) in uris.take(10).withIndex()) {
+                val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+                if (!mime.startsWith("image/") && !mime.startsWith("video/")) continue
+                val ext = when {
+                    mime == "image/png" -> "png"
+                    mime == "image/webp" -> "webp"
+                    mime == "image/gif" -> "gif"
+                    mime.startsWith("image/") -> "jpg"
+                    mime == "video/webm" -> "webm"
+                    else -> "mp4"
+                }
+                val out = File(dir, "share_${System.currentTimeMillis()}_$i.$ext")
+                contentResolver.openInputStream(uri)?.use { input -> out.outputStream().use { input.copyTo(it) } }
+                if (out.exists() && out.length() > 0) files.add(mapOf("path" to out.absolutePath, "mime" to mime))
+            }
+            if (text.isNullOrBlank() && files.isEmpty()) return false
+            pendingShare = mapOf("text" to text, "files" to files)
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Feature: update guard / tamper check. Reports this app's own version
+    // and the SHA-256 fingerprint of the certificate it is SIGNED with. A copy
+    // that was edited and re-signed (MT Manager, apktool …) is signed with a
+    // different certificate, which the Dart side (IntegrityService) notices.
+    // ------------------------------------------------------------------
+    private val integrityChannelName = "com.nightwalker.securechat/integrity"
+
+    @Suppress("DEPRECATION")
+    private fun appInfo(): Map<String, Any?> {
+        val out = HashMap<String, Any?>()
+        try {
+            val flags = if (Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES else android.content.pm.PackageManager.GET_SIGNATURES
+            val info = packageManager.getPackageInfo(packageName, flags)
+            out["versionName"] = info.versionName
+            out["versionCode"] = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+            val sigs = if (Build.VERSION.SDK_INT >= 28) {
+                val si = info.signingInfo
+                if (si == null) emptyArray<android.content.pm.Signature>() else if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+            } else info.signatures
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            out["certs"] = (sigs ?: emptyArray<android.content.pm.Signature>()).map { s ->
+                md.reset()
+                md.digest(s.toByteArray()).joinToString("") { b -> "%02x".format(b) }
+            }
+            out["debuggable"] = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+            val installer = if (Build.VERSION.SDK_INT >= 30) packageManager.getInstallSourceInfo(packageName).installingPackageName else packageManager.getInstallerPackageName(packageName)
+            out["installer"] = installer
+        } catch (e: Exception) {
+            out["error"] = e.toString()
+        }
+        return out
     }
 
     private val soundRequestCode = 4711
@@ -334,6 +426,28 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, integrityChannelName).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "appInfo" -> result.success(appInfo())
+                "killProcess" -> {
+                    result.success(true)
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }
+                else -> result.notImplemented()
+            }
+        }
+        val sc = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, shareChannelName)
+        shareChannel = sc
+        sc.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "takePending" -> {
+                    val s = pendingShare
+                    pendingShare = null
+                    result.success(s)
+                }
+                else -> result.notImplemented()
+            }
+        }
         val ch = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
         channel = ch
         ch.setMethodCallHandler { call, result ->
