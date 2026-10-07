@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import * as jose from "https://esm.sh/jose@5";
+import { rejectIfOutdated } from "../_shared/version_gate.ts";
 
 const FIREBASE_PROJECT_ID = Deno.env.get("FIREBASE_PROJECT_ID")!; // set this secret to "nwisp-c2f49" in Supabase dashboard
 const JWKS = jose.createRemoteJWKSet(
@@ -118,6 +119,9 @@ class BlockedForStoryError extends Error {}
 // just "did they block me").
 Deno.serve(async (req) => {
   try {
+    // Feature: minimum app version (see _shared/version_gate.ts).
+    const outdated = await rejectIfOutdated(req);
+    if (outdated) return outdated;
     const authHeader = req.headers.get("Authorization") || "";
     const idToken = authHeader.replace("Bearer ", "");
 
