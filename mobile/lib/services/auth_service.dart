@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'app_version.dart';
+import 'update_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -55,7 +57,7 @@ class AuthService {
     Map<String, dynamic> body, {
     bool includeIdToken = false,
   }) async {
-    final headers = {'Content-Type': 'application/json'};
+    final headers = {'Content-Type': 'application/json', ...AppVersion.headers};
     if (includeIdToken) {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) throw Exception('No signed-in user');
@@ -512,6 +514,7 @@ class AuthService {
   /// them; kept here so any other/future caller that doesn't care about
   /// that flow can still call one simple method.
   Future<UserCredential> loginWithEmail(String email, String password) async {
+    if (UpdateService.blocked) throw Exception('Please update NWisp to sign in.');
     final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
     await finishLogin(cred.user!.uid);
     return cred;
