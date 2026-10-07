@@ -16,6 +16,7 @@ import 'pin_service.dart';
 import 'signal_session_service.dart';
 import 'story_service.dart';
 import 'poll_service.dart';
+import 'update_service.dart';
 import 'auto_download_service.dart';
 import 'traffic_camouflage_service.dart';
 export 'signal_store.dart' show IdentityChangedException;
@@ -186,6 +187,9 @@ class MessageRelayService {
   /// Call once after sign-in (see main.dart). Subscribes to incoming rows
   /// and also catches up on anything that arrived while the app was closed.
   static Future<void> start() async {
+    // Update guard: an app that must update (or is a modified copy) does not
+    // receive messages at all.
+    if (UpdateService.blocked) return;
     try {
       await _catchUp();
     } catch (_) {
@@ -680,6 +684,7 @@ class MessageRelayService {
     bool silent = false,
   }) async {
     if (FirebaseAuth.instance.currentUser == null) throw NotSignedInException();
+    if (UpdateService.blocked) throw Exception('Update NWisp to keep sending messages.');
 
     await _checkNotBlocked(recipientUid);
     await _checkNotFrozen(recipientUid);
