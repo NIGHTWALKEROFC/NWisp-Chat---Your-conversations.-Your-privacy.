@@ -40,6 +40,12 @@ workflows:
         # TURN_URL: "turn:your-relay-host:3478"
         # TURN_USER: "your-username"
         # TURN_PASS: "your-password"
+        #
+        # Update guard "copy check" (optional). Leave it OUT until you build with
+        # your own fixed signing key. Then add EXPECTED_CERT_SHA256 in Codemagic
+        # (app > Environment variables) with the fingerprint shown in the app at
+        # Settings > App updates > "App signature". An undefined variable is
+        # simply empty, which switches the check off.
     scripts:
       - name: Get Flutter packages
         script: |
@@ -63,7 +69,8 @@ workflows:
             --dart-define=TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY \
             "--dart-define=TURN_URL=$TURN_URL" \
             "--dart-define=TURN_USER=$TURN_USER" \
-            "--dart-define=TURN_PASS=$TURN_PASS"
+            "--dart-define=TURN_PASS=$TURN_PASS" \
+            "--dart-define=EXPECTED_CERT_SHA256=$EXPECTED_CERT_SHA256"
     artifacts:
       - mobile/build/**/outputs/**/*.apk
       # Keep these: they let you read crash stack traces from obfuscated builds.
