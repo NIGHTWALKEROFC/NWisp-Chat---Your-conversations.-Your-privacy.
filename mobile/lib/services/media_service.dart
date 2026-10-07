@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'app_version.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
@@ -92,7 +93,7 @@ class MediaService {
     final idToken = await _idToken();
     final res = await http.post(
       Uri.parse(_edgeFunctionUrl),
-      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
+      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json', ...AppVersion.headers},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'upload'}),
     );
     if (res.statusCode != 200) _throwWithDetail('Failed to get upload URL', res);
@@ -130,7 +131,7 @@ class MediaService {
     final idToken = await _idToken();
     final res = await http.post(
       Uri.parse(_edgeFunctionUrl),
-      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
+      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json', ...AppVersion.headers},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'upload'}),
     );
     if (res.statusCode != 200) _throwWithDetail('Failed to get upload URL', res);
@@ -160,7 +161,7 @@ class MediaService {
     final idToken = await _idToken();
     final res = await http.post(
       Uri.parse(_edgeFunctionUrl),
-      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
+      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json', ...AppVersion.headers},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'download'}),
     );
     if (res.statusCode != 200) _throwWithDetail('Failed to get download URL', res);
@@ -184,7 +185,7 @@ class MediaService {
     final idToken = await _idToken();
     final res = await http.post(
       Uri.parse(_edgeFunctionUrl),
-      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json'},
+      headers: {'Authorization': 'Bearer $idToken', 'Content-Type': 'application/json', ...AppVersion.headers},
       body: jsonEncode({'bucket': bucket, 'path': path, 'mode': 'delete'}),
     );
     if (res.statusCode != 200) _throwWithDetail('Failed to delete remote media', res);
