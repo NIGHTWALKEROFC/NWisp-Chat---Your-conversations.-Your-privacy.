@@ -23,6 +23,7 @@ import '../../widgets/attachment_menu.dart';
 import '../../widgets/poll_bubble.dart';
 import '../../services/poll_service.dart';
 import '../../services/nickname_service.dart';
+import '../../services/share_intake_service.dart';
 import '../../widgets/reminder_picker.dart';
 import '../../widgets/chat_theme_scope.dart';
 import '../../services/media_vault_service.dart';
@@ -64,17 +65,21 @@ String _mediaLabel(String type) {
 /// [_GroupChatBody] below, unchanged.
 class GroupChatScreen extends StatelessWidget {
   final String groupId;
-  const GroupChatScreen({super.key, required this.groupId});
+
+  /// Feature: share to NWisp — see ShareTargetScreen.
+  final SharedContent? share;
+  const GroupChatScreen({super.key, required this.groupId, this.share});
 
   @override
   Widget build(BuildContext context) {
-    return ChatThemeScope(conversationId: groupId, child: _GroupChatBody(groupId: groupId));
+    return ChatThemeScope(conversationId: groupId, child: _GroupChatBody(groupId: groupId, share: share));
   }
 }
 
 class _GroupChatBody extends StatefulWidget {
   final String groupId;
-  const _GroupChatBody({required this.groupId});
+  final SharedContent? share;
+  const _GroupChatBody({required this.groupId, this.share});
 
   @override
   State<_GroupChatBody> createState() => _GroupChatScreenState();
@@ -370,6 +375,9 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
   void initState() {
     super.initState();
     ScreenshotGuardService.acquire();
+    if (widget.share != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _applyShare(widget.share!));
+    }
     // Feature: paged loading — only the newest messages are read from disk
     // (see LocalMessageStore.startPaging); older ones load as you scroll up.
     // Must come before watchConversation below.
@@ -870,6 +878,37 @@ class _GroupChatScreenState extends State<_GroupChatBody> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not send the poll: $e')));
     }
+  }
+
+  Future<void> _applyShare(SharedContent c) async {
+    final text = c.text?.trim() ?? '';
+    if (text.isNotEmpty) {
+      _textController.text = text;
+      _textController.selection = TextSelection.collapsed(offset: text.length);
+    }
+    for (final f in c.files) {
+      if (!mounted) return;
+      final video = f.isVideo;
+      final result = await showMediaPreview(
+        context,
+        file: File(f.path),
+        isVideo: video,
+        recipientLabel: _groupName,
+        initialViewOnce: false,
+      );
+      if (result == null || !mounted) continue;
+      await _sendMedia(
+        file: result.file,
+        messageType: video ? 'video' : 'image',
+        mime: video ? 'video/mp4' : 'image/jpeg',
+        extension: video ? 'mp4' : 'jpg',
+        compress: video
+            ? (file) async => (await MediaCompressionService.compressVideo(file)).readAsBytesSync()
+            : (file) => MediaCompressionService.compressImage(file),
+        viewOnce: result.viewOnce,
+      );
+    }
+    ShareIntakeService.instance.clear();
   }
 
   Future<void> _pickAndSendImage(ImageSource source, {bool viewOnce = false}) async {
