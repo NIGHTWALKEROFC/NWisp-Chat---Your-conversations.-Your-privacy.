@@ -12,6 +12,8 @@ import 'permissions_screen.dart';
 import 'data_storage_screen.dart';
 import 'reminders_screen.dart';
 import 'backup_screen.dart';
+import 'app_update_screen.dart';
+import 'crash_log_screen.dart';
 import '../broadcast/broadcast_lists_screen.dart';
 import '../browser/browser_settings_screen.dart';
 import '../chat/scheduled_messages_screen.dart';
@@ -266,6 +268,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ]),
                 const SizedBox(height: 14),
                 _group([
+                  _row(Icons.system_update_alt_rounded, 'App updates', 'Check for a new version and see what\'s new', const AppUpdateScreen()),
+                  _row(Icons.receipt_long_outlined, 'Crash reports', 'See and copy what went wrong, kept only on this phone', const CrashLogScreen()),
                   _row(Icons.bug_report_outlined, 'Report a problem', 'Report a bug or a security problem', const ReportProblemScreen()),
                 ]),
                 const SizedBox(height: 14),
