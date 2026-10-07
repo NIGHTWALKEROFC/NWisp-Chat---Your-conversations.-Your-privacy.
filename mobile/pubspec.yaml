@@ -81,6 +81,8 @@ dependencies:
   timezone: any
   # Feature: encrypted backup — picks the backup file to restore.
   file_picker: ^8.1.2
+  # Feature: long-press app-icon shortcuts.
+  quick_actions: ^1.0.8
   # Feature: live location sharing (see LiveLocationService). geolocator
   # reads the device's GPS; flutter_map + latlong2 draw the map bubble/full
   # screen view using OpenStreetMap tiles — no API key or billing account
