@@ -393,6 +393,117 @@ class MainActivity : FlutterFragmentActivity() {
     // that was edited and re-signed (MT Manager, apktool …) is signed with a
     // different certificate, which the Dart side (IntegrityService) notices.
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Feature: in-app update (download -> check -> install). Android does the
+    // actual installing; this only offers the helpers Dart can't do itself:
+    // hashing the file, reading the file's signing certificate, the
+    // "install unknown apps" permission, and opening the installer.
+    // ------------------------------------------------------------------
+    private val updaterChannelName = "com.nightwalker.securechat/updater"
+
+    @Suppress("DEPRECATION")
+    private fun inspectApk(path: String): Map<String, Any?> {
+        val out = HashMap<String, Any?>()
+        try {
+            val flags = if (Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES else android.content.pm.PackageManager.GET_SIGNATURES
+            val info = packageManager.getPackageArchiveInfo(path, flags)
+            if (info == null) {
+                out["error"] = "unreadable"
+                return out
+            }
+            out["packageName"] = info.packageName
+            out["versionCode"] = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+            val sigs = if (Build.VERSION.SDK_INT >= 28) {
+                val si = info.signingInfo
+                if (si == null) emptyArray<android.content.pm.Signature>() else if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+            } else info.signatures
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            out["certs"] = (sigs ?: emptyArray<android.content.pm.Signature>()).map { s ->
+                md.reset()
+                md.digest(s.toByteArray()).joinToString("") { b -> "%02x".format(b) }
+            }
+        } catch (e: Exception) {
+            out["error"] = e.toString()
+        }
+        return out
+    }
+
+    private fun handleUpdater(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+            "updateDir" -> {
+                val d = File(filesDir, "updates")
+                d.mkdirs()
+                result.success(d.absolutePath)
+            }
+            "abis" -> result.success(Build.SUPPORTED_ABIS.toList())
+            "sha256File" -> {
+                val path = call.argument<String>("path")
+                if (path == null) {
+                    result.error("args", "no path", null)
+                    return
+                }
+                Thread {
+                    try {
+                        val md = java.security.MessageDigest.getInstance("SHA-256")
+                        File(path).inputStream().use { input ->
+                            val buf = ByteArray(65536)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                md.update(buf, 0, n)
+                            }
+                        }
+                        val hex = md.digest().joinToString("") { b -> "%02x".format(b) }
+                        runOnUiThread { result.success(hex) }
+                    } catch (e: Exception) {
+                        runOnUiThread { result.error("hash", e.toString(), null) }
+                    }
+                }.start()
+            }
+            "inspectApk" -> {
+                val path = call.argument<String>("path")
+                if (path == null) result.error("args", "no path", null) else result.success(inspectApk(path))
+            }
+            "canInstall" -> result.success(if (Build.VERSION.SDK_INT >= 26) packageManager.canRequestPackageInstalls() else true)
+            "openInstallSettings" -> {
+                try {
+                    val i = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(i)
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.success(false)
+                }
+            }
+            "installApk" -> {
+                val path = call.argument<String>("path")
+                if (path == null) {
+                    result.error("args", "no path", null)
+                    return
+                }
+                try {
+                    val f = File(path)
+                    val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.updates", f)
+                    val i = Intent(Intent.ACTION_VIEW)
+                    i.setDataAndType(uri, "application/vnd.android.package-archive")
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(i)
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.error("install", e.toString(), null)
+                }
+            }
+            "cleanUpdates" -> {
+                try {
+                    File(filesDir, "updates").listFiles()?.forEach { it.delete() }
+                } catch (e: Exception) {
+                }
+                result.success(true)
+            }
+            else -> result.notImplemented()
+        }
+    }
+
     private val integrityChannelName = "com.nightwalker.securechat/integrity"
 
     @Suppress("DEPRECATION")
@@ -436,6 +547,7 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, updaterChannelName).setMethodCallHandler { call, result -> handleUpdater(call, result) }
         val sc = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, shareChannelName)
         shareChannel = sc
         sc.setMethodCallHandler { call, result ->
