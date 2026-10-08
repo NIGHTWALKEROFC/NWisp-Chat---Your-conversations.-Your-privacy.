@@ -1,3 +1,4 @@
+import 'screens/contacts/contacts_screen.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -196,6 +197,10 @@ Future<void> _setUpLocalNotifications() async {
         _openSecurityChat();
         return;
       }
+      if (payload == 'contact_request') {
+        _openContactRequests();
+        return;
+      }
       final parts = payload.split('|'); // conversationId|peerUid|peerUsername
       if (parts.length < 3) return;
       _openChat(conversationId: parts[0], peerUid: parts[1], peerUsername: parts.sublist(2).join('|'));
@@ -225,6 +230,11 @@ void _handleNotificationData(Map<String, dynamic> data) {
     _openSecurityChat();
     return;
   }
+  // Feature: a contact-request push opens the Requests tab.
+  if (data['type'] == 'contact_request') {
+    _openContactRequests();
+    return;
+  }
   // Feature: voice calls — tapping an "Incoming voice call" notification
   // just opens the app; HomeShell then shows the ringing screen if the call
   // is still ringing, so there is nothing to navigate to here.
@@ -248,6 +258,13 @@ void _handleNotificationData(Map<String, dynamic> data) {
   final peerUsername = data['senderUsername'] as String?;
   if (conversationId == null || peerUid == null) return;
   _openChat(conversationId: conversationId, peerUid: peerUid, peerUsername: peerUsername ?? 'Chat');
+}
+
+void _openContactRequests() {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (FirebaseAuth.instance.currentUser == null) return;
+    navigatorKey.currentState?.push(MaterialPageRoute(builder: (_) => const ContactsScreen(initialTab: 1)));
+  });
 }
 
 void _openSecurityChat() {
@@ -652,7 +669,9 @@ void _setUpPushNotifications() {
     }
     final payload = data['type'] == 'security_event'
         ? 'security_event'
-        : [
+        : data['type'] == 'contact_request'
+            ? 'contact_request'
+            : [
             data['conversationId'] ?? '',
             data['senderUid'] ?? '',
             data['senderUsername'] ?? 'Chat',
