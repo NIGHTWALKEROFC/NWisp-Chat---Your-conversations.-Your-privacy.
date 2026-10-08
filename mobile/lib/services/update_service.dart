@@ -22,6 +22,63 @@ class MirrorLink {
   const MirrorLink(this.label, this.url);
 }
 
+/// One downloadable APK file with the checksum the signed update file promises.
+class ApkInfo {
+  final String url;
+  final String sha256; // lower-case hex, 64 characters
+  final int sizeBytes;
+  const ApkInfo(this.url, this.sha256, this.sizeBytes);
+}
+
+/// A message from you shown at the top of the app (see update.json "notices").
+class AppNotice {
+  final String id;
+  final String text;
+  final String textMl; // optional Malayalam text
+  final String level; // info | warning | critical
+  final DateTime? startsAt;
+  final DateTime? expiresAt;
+  final bool dismissible;
+  final String linkUrl;
+  final String linkLabel;
+  const AppNotice({
+    required this.id,
+    required this.text,
+    required this.textMl,
+    required this.level,
+    required this.startsAt,
+    required this.expiresAt,
+    required this.dismissible,
+    required this.linkUrl,
+    required this.linkLabel,
+  });
+
+  static DateTime? _date(Object? v) => v is String && v.isNotEmpty ? DateTime.tryParse(v) : null;
+
+  static AppNotice? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final text = (raw['text'] as String?)?.trim() ?? '';
+    final id = (raw['id'] as String?)?.trim() ?? '';
+    if (text.isEmpty || id.isEmpty) return null;
+    final level = (raw['level'] as String?) ?? 'info';
+    return AppNotice(
+      id: id,
+      text: text,
+      textMl: (raw['textMl'] as String?)?.trim() ?? '',
+      level: const ['info', 'warning', 'critical'].contains(level) ? level : 'info',
+      startsAt: _date(raw['startsAt']),
+      expiresAt: _date(raw['expiresAt']),
+      dismissible: raw['dismissible'] != false && level != 'critical',
+      linkUrl: (raw['linkUrl'] as String?) ?? '',
+      linkLabel: (raw['linkLabel'] as String?) ?? 'Learn more',
+    );
+  }
+
+  bool activeAt(DateTime now) => (startsAt == null || !now.isBefore(startsAt!)) && (expiresAt == null || now.isBefore(expiresAt!));
+
+  int get severity => level == 'critical' ? 2 : (level == 'warning' ? 1 : 0);
+}
+
 /// The contents of update/update.json, after its signature was checked.
 class UpdateManifest {
   final String versionName;
@@ -39,6 +96,10 @@ class UpdateManifest {
   final List<ReleaseNote> history;
   final int issuedAt;
 
+  /// ABI name ("arm64-v8a" …) -> file. The key "universal" fits any phone.
+  final Map<String, ApkInfo> apks;
+  final List<AppNotice> notices;
+
   const UpdateManifest({
     required this.versionName,
     required this.versionCode,
@@ -54,7 +115,19 @@ class UpdateManifest {
     required this.fixed,
     required this.history,
     required this.issuedAt,
+    required this.apks,
+    required this.notices,
   });
+
+  /// The file that fits this phone, or null if the update file offers no
+  /// in-app download (the person is then sent to [downloadUrl]).
+  ApkInfo? apkFor(List<String> deviceAbis) {
+    for (final abi in deviceAbis) {
+      final a = apks[abi];
+      if (a != null) return a;
+    }
+    return apks['universal'];
+  }
 
   static List<String> _strings(Object? v) => (v as List? ?? const []).map((e) => e.toString()).toList();
 
@@ -80,6 +153,21 @@ class UpdateManifest {
           ReleaseNote((h['versionName'] as String?) ?? '', (h['releaseDate'] as String?) ?? '', _strings(h['notes'])),
       ],
       issuedAt: (j['issuedAt'] as num?)?.toInt() ?? 0,
+      apks: {
+        for (final e in ((j['apks'] as Map?) ?? const {}).entries)
+          if (e.value is Map &&
+              ((e.value as Map)['url'] as String?)?.startsWith('https://') == true &&
+              RegExp(r'^[0-9a-f]{64}$').hasMatch(((e.value as Map)['sha256'] as String?) ?? ''))
+            e.key.toString(): ApkInfo(
+              (e.value as Map)['url'] as String,
+              (e.value as Map)['sha256'] as String,
+              ((e.value as Map)['sizeBytes'] as num?)?.toInt() ?? 0,
+            ),
+      },
+      notices: [
+        for (final n in (j['notices'] as List? ?? const []))
+          if (AppNotice.fromJson(n) != null) AppNotice.fromJson(n)!,
+      ],
     );
   }
 }
@@ -127,6 +215,7 @@ class UpdateService extends ChangeNotifier {
   static bool get blocked => instance.status == UpdateStatus.required || IntegrityService.instance.tampered;
 
   Future<void> init() async {
+    unawaited(loadNotices());
     try {
       _highestIssued = int.tryParse(await _storage.read(key: _highestKey) ?? '') ?? 0;
       final cached = await _storage.read(key: _cacheKey);
@@ -225,6 +314,45 @@ class UpdateService extends ChangeNotifier {
       checking = false;
       notifyListeners();
     }
+  }
+
+  // ---- notices (remote banner) ----
+  Set<String> _dismissedNotices = {};
+  bool _noticesLoaded = false;
+
+  Future<void> loadNotices() async {
+    if (_noticesLoaded) return;
+    _noticesLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _dismissedNotices = (prefs.getStringList('notices_dismissed_v1') ?? const <String>[]).toSet();
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// The one notice to show right now (the most serious that is in its time
+  /// window and wasn't dismissed), or null.
+  AppNotice? get activeNotice {
+    final list = manifest?.notices ?? const <AppNotice>[];
+    final now = DateTime.now();
+    AppNotice? best;
+    for (final n in list) {
+      if (!n.activeAt(now)) continue;
+      if (n.dismissible && _dismissedNotices.contains(n.id)) continue;
+      if (best == null || n.severity > best.severity) best = n;
+    }
+    return best;
+  }
+
+  Future<void> dismissNotice(String id) async {
+    _dismissedNotices.add(id);
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Keep the list from growing forever.
+      final keep = _dismissedNotices.toList();
+      await prefs.setStringList('notices_dismissed_v1', keep.length > 50 ? keep.sublist(keep.length - 50) : keep);
+    } catch (_) {}
   }
 
   // ---- "later" memory for the optional prompt ----
