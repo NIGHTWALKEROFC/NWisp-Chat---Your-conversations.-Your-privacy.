@@ -52,6 +52,11 @@ class AuthService {
   /// message when the call fails, so screens can show it directly (same
   /// spirit as MediaService's `_throwWithDetail`, minus the 404-specific
   /// deploy-reminder text since that lives there already).
+  /// Calls one of NWisp's Edge Functions as the signed-in person (their
+  /// Firebase sign-in is sent along so the function knows who is asking).
+  static Future<Map<String, dynamic>> callFunction(String name, Map<String, dynamic> body) =>
+      _postFunction(name, body, includeIdToken: true);
+
   static Future<Map<String, dynamic>> _postFunction(
     String name,
     Map<String, dynamic> body, {
