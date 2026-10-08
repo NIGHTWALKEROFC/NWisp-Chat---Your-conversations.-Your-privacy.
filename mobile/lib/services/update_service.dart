@@ -93,6 +93,11 @@ class UpdateManifest {
   final List<String> whatsNew;
   final List<String> improved;
   final List<String> fixed;
+  // Malayalam versions (optional) — shown to people who use the app in Malayalam.
+  final String messageMl;
+  final List<String> whatsNewMl;
+  final List<String> improvedMl;
+  final List<String> fixedMl;
   final List<ReleaseNote> history;
   final int issuedAt;
 
@@ -113,6 +118,10 @@ class UpdateManifest {
     required this.whatsNew,
     required this.improved,
     required this.fixed,
+    required this.messageMl,
+    required this.whatsNewMl,
+    required this.improvedMl,
+    required this.fixedMl,
     required this.history,
     required this.issuedAt,
     required this.apks,
@@ -148,6 +157,10 @@ class UpdateManifest {
       whatsNew: _strings(j['whatsNew']),
       improved: _strings(j['improved']),
       fixed: _strings(j['fixed']),
+      messageMl: (j['messageMl'] as String?) ?? '',
+      whatsNewMl: _strings(j['whatsNewMl']),
+      improvedMl: _strings(j['improvedMl']),
+      fixedMl: _strings(j['fixedMl']),
       history: [
         for (final h in (j['history'] as List? ?? const []))
           ReleaseNote((h['versionName'] as String?) ?? '', (h['releaseDate'] as String?) ?? '', _strings(h['notes'])),
