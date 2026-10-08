@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'auth_service.dart';
 
 class ContactService {
   final _db = FirebaseFirestore.instance;
@@ -123,7 +125,7 @@ class ContactService {
     final mine = myUsername.trim().isNotEmpty ? myUsername.trim() : await _myUsername();
     final theirs = toUsername.trim().isNotEmpty ? toUsername.trim() : await usernameFor(toUid);
 
-    await _db.collection('contactRequests').add({
+    final ref = await _db.collection('contactRequests').add({
       'fromUid': _myUid,
       'fromUsername': mine,
       'toUid': toUid,
@@ -131,6 +133,11 @@ class ContactService {
       'status': 'pending',
       'createdAt': FieldValue.serverTimestamp(),
     });
+    // Feature: push notification for the new request. Best-effort — if it
+    // fails the request still exists and shows in their Requests tab + badge.
+    unawaited(
+      AuthService.callFunction('notify-contact-request', {'requestId': ref.id, 'toUid': toUid}).then((_) {}).catchError((_) {}),
+    );
   }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> incomingRequestsStream() {
