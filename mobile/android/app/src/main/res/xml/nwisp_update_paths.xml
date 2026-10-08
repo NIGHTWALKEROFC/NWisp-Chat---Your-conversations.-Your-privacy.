@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Feature: in-app updates. Lets Android's installer read the downloaded
+     update file from NWisp's own private "updates" folder, and nothing else. -->
+<paths>
+    <files-path name="updates" path="updates/" />
+</paths>
