@@ -58,5 +58,14 @@ verify_jwt = false
 [functions.nwisp-bot-manage]
 verify_jwt = false
 
+# Feature: security email when someone asks to change an account's email, and a
+# push when a contact request arrives. Both check the caller's Firebase token
+# themselves, so Supabase's own JWT check must be off (same reason as above).
+[functions.notify-email-change]
+verify_jwt = false
+
+[functions.notify-contact-request]
+verify_jwt = false
+
 [functions.nwisp-bot-api]
 verify_jwt = false
