@@ -90,7 +90,7 @@ class _AppUpdateScreenState extends State<AppUpdateScreen> {
               if (_message != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(_message!, textAlign: TextAlign.center, style: TextStyle(color: scheme.onSurfaceVariant))),
               if (hasUpdate) ...[
                 const SizedBox(height: 18),
-                GlowUpdateButton(onTap: () => openUpdateLink(context, m.downloadUrl)),
+                UpdateActions(manifest: m),
                 for (final mirror in m.mirrors.where((x) => x.url.startsWith('https://')))
                   TextButton(onPressed: () => openUpdateLink(context, mirror.url), child: Text(mirror.label)),
                 const SizedBox(height: 12),
