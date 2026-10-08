@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/integrity_service.dart';
+import '../services/update_installer.dart';
 import '../services/update_service.dart';
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,208 @@ class _GlowUpdateButtonState extends State<GlowUpdateButton> with SingleTickerPr
           ),
         );
       },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The update button area: button -> progress -> checking -> install
+// ---------------------------------------------------------------------------
+
+String _mb(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1);
+
+class UpdateActions extends StatefulWidget {
+  final UpdateManifest manifest;
+  final bool dark;
+  const UpdateActions({super.key, required this.manifest, this.dark = false});
+
+  @override
+  State<UpdateActions> createState() => _UpdateActionsState();
+}
+
+class _UpdateActionsState extends State<UpdateActions> {
+  late final Future<bool> _inApp = UpdateInstaller.instance.canDownloadInApp(widget.manifest);
+
+  @override
+  Widget build(BuildContext context) {
+    final inst = UpdateInstaller.instance;
+    final scheme = Theme.of(context).colorScheme;
+    final fg = widget.dark ? Colors.white : scheme.onSurface;
+    final sub = widget.dark ? Colors.white70 : scheme.onSurfaceVariant;
+    final m = widget.manifest;
+
+    Widget card(List<Widget> children) => Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: widget.dark ? Colors.white.withValues(alpha: 0.10) : scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: widget.dark ? Colors.white24 : scheme.outlineVariant.withValues(alpha: 0.5)),
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+        );
+
+    return FutureBuilder<bool>(
+      future: _inApp,
+      builder: (context, snap) {
+        final inApp = snap.data ?? false;
+        return ListenableBuilder(
+          listenable: inst,
+          builder: (context, _) {
+            switch (inst.phase) {
+              case InstallPhase.downloading:
+                final pct = inst.progress == null ? '' : '  ·  ${(inst.progress! * 100).toStringAsFixed(0)}%';
+                return card([
+                  Row(children: [
+                    Icon(Icons.downloading_rounded, color: fg),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text('Downloading update…', style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 16))),
+                  ]),
+                  const SizedBox(height: 14),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      minHeight: 10,
+                      value: inst.progress,
+                      backgroundColor: fg.withValues(alpha: 0.15),
+                      valueColor: const AlwaysStoppedAnimation(Color(0xFF40C4FF)),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    inst.totalBytes > 0 ? '${_mb(inst.receivedBytes)} of ${_mb(inst.totalBytes)} MB$pct' : '${_mb(inst.receivedBytes)} MB',
+                    style: TextStyle(color: sub, fontSize: 13),
+                  ),
+                  TextButton(onPressed: inst.cancel, child: Text('Cancel', style: TextStyle(color: sub))),
+                ]);
+              case InstallPhase.verifying:
+                return card([
+                  Row(children: [
+                    SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: fg)),
+                    const SizedBox(width: 14),
+                    Expanded(child: Text('Checking the file is genuine…', style: TextStyle(color: fg, fontWeight: FontWeight.w700))),
+                  ]),
+                ]);
+              case InstallPhase.needPermission:
+                return card([
+                  Text('One quick permission', style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 16)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Android needs your OK before NWisp can open the installer. Turn on "Allow from this source", then come back — the update continues by itself.',
+                    style: TextStyle(color: sub, height: 1.35, fontSize: 13.5),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(onPressed: inst.openInstallPermissionSettings, child: const Text('Open the setting')),
+                ]);
+              case InstallPhase.ready:
+                return Column(mainAxisSize: MainAxisSize.min, children: [
+                  GlowUpdateButton(label: 'Install now', onTap: inst.install),
+                  const SizedBox(height: 8),
+                  Text(
+                    "The file is checked and ready. If the installer didn't open, tap Install now. After installing, open NWisp again.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: sub, fontSize: 12.5),
+                  ),
+                ]);
+              case InstallPhase.error:
+                return card([
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Icon(Icons.error_outline_rounded, color: Color(0xFFFF8A80)),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(inst.error, style: TextStyle(color: fg, height: 1.35, fontSize: 13.5))),
+                  ]),
+                  const SizedBox(height: 12),
+                  FilledButton(onPressed: () => inst.start(m), child: const Text('Try again')),
+                  if (inst.offerBrowserFallback)
+                    TextButton(onPressed: () => openUpdateLink(context, m.downloadUrl), child: const Text('Download in browser instead')),
+                ]);
+              case InstallPhase.idle:
+                return Column(mainAxisSize: MainAxisSize.min, children: [
+                  GlowUpdateButton(
+                    onTap: inApp ? () => inst.start(m) : () => openUpdateLink(context, m.downloadUrl),
+                  ),
+                  if (inApp)
+                    TextButton(
+                      onPressed: () => openUpdateLink(context, m.downloadUrl),
+                      child: Text('Download in browser instead', style: TextStyle(color: sub, fontSize: 12.5)),
+                    ),
+                ]);
+            }
+          },
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remote notice banner (from update.json "notices")
+// ---------------------------------------------------------------------------
+
+class NoticeBanner extends StatelessWidget {
+  final AppNotice notice;
+  final double topInset;
+  const NoticeBanner({super.key, required this.notice, required this.topInset});
+
+  @override
+  Widget build(BuildContext context) {
+    final ml = Localizations.localeOf(context).languageCode == 'ml' && notice.textMl.isNotEmpty;
+    final text = ml ? notice.textMl : notice.text;
+    final Color bg;
+    final Color fg;
+    final IconData icon;
+    switch (notice.level) {
+      case 'critical':
+        bg = const Color(0xFFC62828);
+        fg = Colors.white;
+        icon = Icons.error_outline_rounded;
+        break;
+      case 'warning':
+        bg = const Color(0xFFFFB300);
+        fg = const Color(0xFF2B1B00);
+        icon = Icons.warning_amber_rounded;
+        break;
+      default:
+        bg = const Color(0xFF1565C0);
+        fg = Colors.white;
+        icon = Icons.info_outline_rounded;
+    }
+    return Material(
+      color: bg,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(14, topInset + 8, 6, 8),
+        child: Row(
+          children: [
+            Icon(icon, color: fg, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(text, maxLines: 4, overflow: TextOverflow.ellipsis, style: TextStyle(color: fg, fontSize: 13.5, height: 1.3, fontWeight: FontWeight.w600)),
+                  if (notice.linkUrl.startsWith('https://'))
+                    GestureDetector(
+                      onTap: () => openUpdateLink(context, notice.linkUrl),
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text(notice.linkLabel, style: TextStyle(color: fg, fontSize: 13, fontWeight: FontWeight.w800, decoration: TextDecoration.underline)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (notice.dismissible)
+              IconButton(
+                icon: Icon(Icons.close_rounded, color: fg, size: 20),
+                tooltip: 'Dismiss',
+                onPressed: () => UpdateService.instance.dismissNotice(notice.id),
+              )
+            else
+              const SizedBox(width: 10),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -248,7 +451,7 @@ class UpdateRequiredView extends StatelessWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      GlowUpdateButton(onTap: () => openUpdateLink(context, manifest.downloadUrl)),
+                      UpdateActions(manifest: manifest, dark: true),
                       const SizedBox(height: 6),
                       Wrap(
                         alignment: WrapAlignment.center,
@@ -387,7 +590,7 @@ Future<void> showUpdateAvailableSheet(BuildContext context, UpdateManifest m) {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
-                GlowUpdateButton(onTap: () => openUpdateLink(ctx, m.downloadUrl)),
+                UpdateActions(manifest: m),
                 const SizedBox(height: 4),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                   for (final mirror in m.mirrors.where((x) => x.url.startsWith('https://')))
@@ -465,10 +668,28 @@ class _UpdateGateState extends State<UpdateGate> with WidgetsBindingObserver {
         final tampered = IntegrityService.instance.tampered;
         final svc = UpdateService.instance;
         final required = svc.status == UpdateStatus.required && svc.manifest != null;
+        final notice = (tampered || required) ? null : svc.activeNotice;
+        final topInset = MediaQuery.of(context).padding.top;
         return Stack(
           children: [
-            // The app underneath is frozen while covered.
-            IgnorePointer(ignoring: tampered || required, child: widget.child),
+            // The app underneath is frozen while covered. The structure here
+            // never changes shape (only the banner slot grows and shrinks), so
+            // the app's screens and their state are never rebuilt from scratch.
+            IgnorePointer(
+              ignoring: tampered || required,
+              child: Column(
+                children: [
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 220),
+                    alignment: Alignment.topCenter,
+                    child: notice == null ? const SizedBox(width: double.infinity) : NoticeBanner(key: ValueKey(notice.id), notice: notice, topInset: topInset),
+                  ),
+                  Expanded(
+                    child: MediaQuery.removePadding(context: context, removeTop: notice != null, child: widget.child),
+                  ),
+                ],
+              ),
+            ),
             if (tampered)
               const Positioned.fill(child: TamperView())
             else if (required)
