@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Feature: in-app updates — lets NWisp hand its downloaded update to Android's installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- Feature: voice calls (flutter_webrtc) -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -148,6 +150,17 @@
             android:name="flutterEmbedding"
             android:value="2" />
         <!-- Feature: keeps the microphone alive during a call while NWisp is in the background -->
+        <!-- Feature: in-app updates — gives Android's installer read access to the
+             downloaded update file in NWisp's private "updates" folder. -->
+        <provider
+            android:name="com.nightwalker.securechat.UpdateFileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/nwisp_update_paths" />
+        </provider>
         <!-- Feature: message reminders — lets Android fire a scheduled notification
              while NWisp is closed, and re-arm them after the phone restarts. -->
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
