@@ -341,7 +341,12 @@ class WhatsNewCard extends StatelessWidget {
       );
     }
 
-    final empty = manifest.whatsNew.isEmpty && manifest.improved.isEmpty && manifest.fixed.isEmpty;
+    // Malayalam notes for people who use the app in Malayalam (when provided).
+    final ml = Localizations.localeOf(context).languageCode == 'ml';
+    final whatsNew = ml && manifest.whatsNewMl.isNotEmpty ? manifest.whatsNewMl : manifest.whatsNew;
+    final improved = ml && manifest.improvedMl.isNotEmpty ? manifest.improvedMl : manifest.improved;
+    final fixed = ml && manifest.fixedMl.isNotEmpty ? manifest.fixedMl : manifest.fixed;
+    final empty = whatsNew.isEmpty && improved.isEmpty && fixed.isEmpty;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 4),
@@ -353,12 +358,12 @@ class WhatsNewCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("What's new", style: TextStyle(color: fg, fontWeight: FontWeight.w900, fontSize: 17)),
+          Text(ml ? 'പുതിയ വിശേഷങ്ങൾ' : "What's new", style: TextStyle(color: fg, fontWeight: FontWeight.w900, fontSize: 17)),
           const SizedBox(height: 12),
           if (empty) Padding(padding: const EdgeInsets.only(bottom: 14), child: Text('Improvements and fixes.', style: TextStyle(color: sub))),
-          section(Icons.auto_awesome_rounded, 'New', manifest.whatsNew, const Color(0xFFFFD54F)),
-          section(Icons.trending_up_rounded, 'Improved', manifest.improved, const Color(0xFF69F0AE)),
-          section(Icons.build_circle_outlined, 'Fixed', manifest.fixed, const Color(0xFF80D8FF)),
+          section(Icons.auto_awesome_rounded, ml ? 'പുതിയത്' : 'New', whatsNew, const Color(0xFFFFD54F)),
+          section(Icons.trending_up_rounded, ml ? 'മെച്ചപ്പെടുത്തിയത്' : 'Improved', improved, const Color(0xFF69F0AE)),
+          section(Icons.build_circle_outlined, ml ? 'പരിഹരിച്ചത്' : 'Fixed', fixed, const Color(0xFF80D8FF)),
         ],
       ),
     );
@@ -435,7 +440,9 @@ class UpdateRequiredView extends StatelessWidget {
                       const Text('Update required', textAlign: TextAlign.center, style: TextStyle(color: Colors.white, fontSize: 27, fontWeight: FontWeight.w900)),
                       const SizedBox(height: 8),
                       Text(
-                        manifest.message.isNotEmpty ? manifest.message : 'This version of NWisp is no longer supported. Update to keep chatting securely.',
+                        (Localizations.localeOf(context).languageCode == 'ml' && manifest.messageMl.isNotEmpty)
+                            ? manifest.messageMl
+                            : manifest.message.isNotEmpty ? manifest.message : 'This version of NWisp is no longer supported. Update to keep chatting securely.',
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: Colors.white70, height: 1.4, fontSize: 14.5),
                       ),
