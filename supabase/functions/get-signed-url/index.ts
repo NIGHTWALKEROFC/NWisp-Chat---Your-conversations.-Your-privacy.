@@ -1,6 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import * as jose from "https://esm.sh/jose@5";
-import { rejectIfOutdated } from "../_shared/version_gate.ts";
 
 const FIREBASE_PROJECT_ID = Deno.env.get("FIREBASE_PROJECT_ID")!; // set this secret to "nwisp-c2f49" in Supabase dashboard
 const JWKS = jose.createRemoteJWKSet(
@@ -101,6 +100,57 @@ async function checkStoryNotBlocked(path: string, callerUid: string): Promise<vo
 
 class BlockedForStoryError extends Error {}
 
+
+// ---------------------------------------------------------------------------
+// Minimum app version (the server half of "you must update").
+//
+// This code is written INSIDE this file on purpose: the Supabase dashboard
+// bundles only this one function's folder, so it can't import a shared file.
+//
+// WHY: a check that lives only inside the app can be cut out of a modified
+// copy. This one runs on the server. When the app's version is below
+// "minSupportedVersionCode" in your update/update.json, the server refuses.
+// HONEST LIMIT: the version number is sent by the app, so a skilled person
+// could lie about it — this is one layer of several, not "unbreakable".
+//
+// SETUP: Edge Functions -> Secrets -> add UPDATE_JSON_URL = the "raw" address of
+// update/update.json in your GitHub repo. Without it this check does nothing.
+// If GitHub can't be reached the request is allowed through, so a GitHub
+// outage can never lock everybody out.
+// ---------------------------------------------------------------------------
+let versionGateCache: { min: number; at: number } | null = null;
+
+async function versionGateMinimum(): Promise<number> {
+  const url = Deno.env.get("UPDATE_JSON_URL");
+  if (!url) return 0;
+  if (versionGateCache && Date.now() - versionGateCache.at < 60_000) return versionGateCache.min;
+  try {
+    const res = await fetch(url, { headers: { "Cache-Control": "no-cache" } });
+    if (!res.ok) return versionGateCache?.min ?? 0;
+    const json = await res.json();
+    const min = Number(json.minSupportedVersionCode ?? 0);
+    versionGateCache = { min: Number.isFinite(min) ? min : 0, at: Date.now() };
+    return versionGateCache.min;
+  } catch (_) {
+    return versionGateCache?.min ?? 0;
+  }
+}
+
+/// Returns a ready-made 426 response if this app version is too old, else null.
+async function rejectIfOutdated(req: Request): Promise<Response | null> {
+  const min = await versionGateMinimum();
+  if (min <= 0) return null;
+  const sent = Number(req.headers.get("x-app-version") ?? "0");
+  // No version at all = a very old build from before this check existed.
+  if (!Number.isFinite(sent) || sent < min) {
+    return new Response(JSON.stringify({ error: "update_required", minVersion: min }), {
+      status: 426,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
 // BUGFIX: the previous version verified the caller's Firebase ID token but
 // never checked that `path` actually belonged to that caller. Any signed-in
 // user could pass ANY bucket/path and get a valid signed *upload* URL for
@@ -119,7 +169,7 @@ class BlockedForStoryError extends Error {}
 // just "did they block me").
 Deno.serve(async (req) => {
   try {
-    // Feature: minimum app version (see _shared/version_gate.ts).
+    // Feature: minimum app version (see "Minimum app version" above).
     const outdated = await rejectIfOutdated(req);
     if (outdated) return outdated;
     const authHeader = req.headers.get("Authorization") || "";
