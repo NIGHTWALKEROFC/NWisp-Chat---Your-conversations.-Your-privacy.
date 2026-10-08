@@ -13,7 +13,9 @@ import 'find_users_screen.dart';
 import 'qr_code_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
-  const ContactsScreen({super.key});
+  /// 0 = Contacts, 1 = Requests, 2 = Discover.
+  final int initialTab;
+  const ContactsScreen({super.key, this.initialTab = 0});
   @override
   State<ContactsScreen> createState() => _ContactsScreenState();
 }
@@ -21,7 +23,7 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> with SingleTickerProviderStateMixin {
   final _contactService = ContactService();
   final _conversationService = ConversationService();
-  late final TabController _tabController = TabController(length: 3, vsync: this);
+  late final TabController _tabController = TabController(length: 3, vsync: this, initialIndex: widget.initialTab.clamp(0, 2));
 
   String? _openingUid;
 
