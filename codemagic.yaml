@@ -11,17 +11,18 @@ workflows:
       # linux_x2 gave "instance type is not available with the current
       # billing plan".
       flutter: default
-      # ---- Fixed signing key (so in-app updates can install over the old app) ----
-      # Android only installs an update over an existing app if both are signed with
-      # the SAME key. Do this ONCE, in this order:
-      #   1. Codemagic > Teams > your team > Code signing identities > Android keystores
-      #      > "Generate keystore" (or upload your own). Give it the reference name:
-      #      nwisp_keystore     — and SAVE the keystore + passwords somewhere safe;
-      #      if it is lost you can never publish an update that installs over the app.
-      #   2. THEN remove the "#" from the next two lines. (If you remove them before
-      #      step 1 the build fails with "keystore not found".)
-      # android_signing:
-      #   - nwisp_keystore
+      # ---- Fixed signing key (so in-app updates install over the old app) ----
+      # Every build is signed with the SAME key, which is what lets Android install
+      # an update over the app already on the phone.
+      #
+      # BEFORE BUILDING, upload the keystore in Codemagic (once):
+      #   Teams > your team > Code signing identities > Android keystores >
+      #   Upload keystore. Reference name must be exactly:  nightwalker_keystore
+      #   (the file is nightwalker-release.jks, key alias: nightwalker)
+      # If this reference doesn't exist yet the build stops at the start with a
+      # "keystore not found" message — nothing else breaks.
+      android_signing:
+        - nightwalker_keystore
       vars:
         PACKAGE_NAME: "com.nightwalker.securechat"
         SUPABASE_URL: "https://bgbmrtwbndoewwwjxnxa.supabase.co"
