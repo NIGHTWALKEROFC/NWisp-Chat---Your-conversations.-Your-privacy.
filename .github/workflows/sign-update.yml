@@ -1,9 +1,17 @@
 name: Sign update file
 
-# Whenever you edit update/update.json (for example to announce a new version),
-# this signs it and writes update/update.signed.json — the file the app reads.
-# The app only trusts a file signed with YOUR private key, so nobody else can
-# push a fake "update" to your users.
+# Whenever you edit update/update.json (to announce a new version, post a
+# notice, or change links) this checks it, signs it, and writes
+# update/update.signed.json — the file the app reads.
+#
+# What it does for you:
+#  * Downloads each APK you list in "apkUrls", works out its SHA-256 checksum
+#    and puts that in the signed file. The app later refuses to install a file
+#    whose checksum differs — so a swapped or corrupted download is never run,
+#    even if the download link is taken over.
+#  * Checks your notices and links for mistakes before anything is published.
+#  * Signs everything with YOUR private key, so nobody else can push a fake
+#    update or fake banner to your users.
 #
 # One-time setup: GitHub repo -> Settings -> Secrets and variables -> Actions
 # -> New repository secret -> name  UPDATE_SIGNING_KEY  -> value: the whole
@@ -28,7 +36,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: Check and sign
+      - name: Check, fingerprint the APKs, and sign
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
@@ -36,48 +44,98 @@ jobs:
           const fs = require('fs');
           const crypto = require('crypto');
 
-          const keyPem = process.env.UPDATE_SIGNING_KEY;
-          if (!keyPem || !keyPem.includes('PRIVATE KEY')) {
-            console.error('The secret UPDATE_SIGNING_KEY is missing or is not a private key.');
-            process.exit(1);
+          const fail = (msg) => { console.error(msg); process.exit(1); };
+
+          async function main() {
+            const keyPem = process.env.UPDATE_SIGNING_KEY;
+            if (!keyPem || !keyPem.includes('PRIVATE KEY')) {
+              fail('The secret UPDATE_SIGNING_KEY is missing or is not a private key.');
+            }
+
+            let data;
+            try {
+              data = JSON.parse(fs.readFileSync('update/update.json', 'utf8'));
+            } catch (e) {
+              fail('update/update.json is not valid JSON: ' + e.message);
+            }
+
+            const problems = [];
+            const code = Number(data.versionCode);
+            const min = Number(data.minSupportedVersionCode ?? 1);
+            if (!data.versionName || typeof data.versionName !== 'string') problems.push('versionName is missing');
+            if (!Number.isInteger(code) || code < 1) problems.push('versionCode must be a whole number, 1 or more');
+            if (!Number.isInteger(min) || min < 1 || min > code) problems.push('minSupportedVersionCode must be a whole number between 1 and versionCode');
+            if (!/^https:\/\//.test(String(data.downloadUrl || ''))) problems.push('downloadUrl must start with https://');
+            for (const a of (data.alternateUrls || [])) {
+              if (!/^https:\/\//.test(String(a.url || ''))) problems.push('every alternateUrls url must start with https://');
+            }
+
+            // ---- notices (the banner at the top of the app) ----
+            const notices = data.notices || [];
+            if (!Array.isArray(notices)) problems.push('notices must be a list');
+            else {
+              if (notices.length > 5) problems.push('use at most 5 notices at a time');
+              const ids = new Set();
+              for (const n of notices) {
+                if (!n.id || typeof n.id !== 'string') { problems.push('every notice needs an "id" (any short unique text)'); continue; }
+                if (ids.has(n.id)) problems.push('notice id "' + n.id + '" is used twice');
+                ids.add(n.id);
+                if (!n.text || String(n.text).length > 300) problems.push('notice "' + n.id + '": "text" is required and must be 300 characters or fewer');
+                if (n.level && !['info', 'warning', 'critical'].includes(n.level)) problems.push('notice "' + n.id + '": level must be info, warning or critical');
+                for (const k of ['startsAt', 'expiresAt']) {
+                  if (n[k] && Number.isNaN(Date.parse(n[k]))) problems.push('notice "' + n.id + '": ' + k + ' is not a valid date (use for example 2026-10-10T22:00:00+05:30)');
+                }
+                if (n.linkUrl && !/^https:\/\//.test(n.linkUrl)) problems.push('notice "' + n.id + '": linkUrl must start with https://');
+              }
+            }
+
+            // ---- APK files: download, fingerprint ----
+            const urls = Object.assign({}, data.apkUrls || {});
+            if (data.apkUrl) urls.universal = data.apkUrl;
+            const allowedAbi = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'universal'];
+            const apks = {};
+            for (const [abi, url] of Object.entries(urls)) {
+              if (!allowedAbi.includes(abi)) { problems.push('apkUrls: "' + abi + '" is not one of ' + allowedAbi.join(', ')); continue; }
+              if (!/^https:\/\//.test(String(url))) { problems.push('apkUrls "' + abi + '" must start with https://'); continue; }
+            }
+            if (problems.length) fail('Not signed. Please fix:\n - ' + problems.join('\n - '));
+
+            for (const [abi, url] of Object.entries(urls)) {
+              console.log('Downloading ' + abi + ' to fingerprint it …');
+              const res = await fetch(url, { redirect: 'follow' });
+              if (!res.ok) fail('Could not download the ' + abi + ' file (HTTP ' + res.status + '). The link must be a DIRECT link to the .apk (a GitHub Release asset works well; Google Drive and Mega pages do not).');
+              const hash = crypto.createHash('sha256');
+              let size = 0;
+              let head = Buffer.alloc(0);
+              for await (const chunk of res.body) {
+                if (head.length < 4) head = Buffer.concat([head, Buffer.from(chunk)]).subarray(0, 4);
+                hash.update(chunk);
+                size += chunk.length;
+                if (size > 200 * 1024 * 1024) fail('The ' + abi + ' file is bigger than 200 MB.');
+              }
+              if (size < 1024 * 1024) fail('The ' + abi + ' download is only ' + size + ' bytes — that is not an app. The link probably opens a web page instead of the file.');
+              if (!(head[0] === 0x50 && head[1] === 0x4b)) fail('The ' + abi + ' download is not an APK file (an APK starts with "PK"). The link probably opens a web page instead of the file.');
+              apks[abi] = { url, sha256: hash.digest('hex'), sizeBytes: size };
+              console.log('  ' + abi + ': ' + (size / 1048576).toFixed(1) + ' MB, sha256 ' + apks[abi].sha256);
+            }
+            data.apks = apks;
+
+            // issuedAt only ever goes up, so an old signed file can't be replayed.
+            data.issuedAt = Math.floor(Date.now() / 1000);
+
+            const payload = Buffer.from(JSON.stringify(data), 'utf8');
+            const key = crypto.createPrivateKey(keyPem);
+            const sig = crypto.sign(null, payload, key);
+
+            fs.writeFileSync('update/update.signed.json', JSON.stringify({
+              alg: 'ed25519',
+              payload: payload.toString('base64'),
+              sig: sig.toString('base64'),
+            }, null, 2) + '\n');
+            console.log('Signed version ' + data.versionName + ' (code ' + code + ', minimum ' + min + '), ' + Object.keys(apks).length + ' file(s), ' + notices.length + ' notice(s)');
           }
 
-          let data;
-          try {
-            data = JSON.parse(fs.readFileSync('update/update.json', 'utf8'));
-          } catch (e) {
-            console.error('update/update.json is not valid JSON: ' + e.message);
-            process.exit(1);
-          }
-
-          const problems = [];
-          const code = Number(data.versionCode);
-          const min = Number(data.minSupportedVersionCode ?? 1);
-          if (!data.versionName || typeof data.versionName !== 'string') problems.push('versionName is missing');
-          if (!Number.isInteger(code) || code < 1) problems.push('versionCode must be a whole number, 1 or more');
-          if (!Number.isInteger(min) || min < 1 || min > code) problems.push('minSupportedVersionCode must be a whole number between 1 and versionCode');
-          if (!/^https:\/\//.test(String(data.downloadUrl || ''))) problems.push('downloadUrl must start with https://');
-          for (const a of (data.alternateUrls || [])) {
-            if (!/^https:\/\//.test(String(a.url || ''))) problems.push('every alternateUrls url must start with https://');
-          }
-          if (problems.length) {
-            console.error('Not signed. Please fix:\n - ' + problems.join('\n - '));
-            process.exit(1);
-          }
-
-          // issuedAt only ever goes up, so an old signed file can't be replayed.
-          data.issuedAt = Math.floor(Date.now() / 1000);
-
-          const payload = Buffer.from(JSON.stringify(data), 'utf8');
-          const key = crypto.createPrivateKey(keyPem);
-          const sig = crypto.sign(null, payload, key);
-
-          fs.writeFileSync('update/update.signed.json', JSON.stringify({
-            alg: 'ed25519',
-            payload: payload.toString('base64'),
-            sig: sig.toString('base64'),
-          }, null, 2) + '\n');
-          console.log('Signed version ' + data.versionName + ' (code ' + code + ', minimum ' + min + ')');
+          main().catch((e) => fail('Unexpected error: ' + e.message));
           NODE
 
       - name: Save the signed file
